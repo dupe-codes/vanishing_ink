@@ -589,28 +589,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     TouchCancel -> #(Model(..model, touch_start: None), effect.none())
 
-    TouchEnd(x, y) -> {
-      let cleared = Model(..model, touch_start: None)
-      case model.touch_start {
-        None -> #(cleared, effect.none())
-        Some(#(start_x, start_y)) ->
-          case gestures.classify(start_x, start_y, x, y) {
-            gestures.Tap -> #(cleared, effect.none())
-            gestures.SwipeLeft -> #(
-              go_to_page(cleared, cleared.current_page + 1),
-              effect.none(),
-            )
-            gestures.SwipeRight ->
-              case cleared.undo_stack {
-                [] -> #(
-                  go_to_page(cleared, cleared.current_page - 1),
-                  effect.none(),
-                )
-                _ -> #(apply_undo(cleared), effect.none())
-              }
-          }
-      }
-    }
+    TouchEnd(x, y) -> #(apply_touch_end(model, x, y), effect.none())
 
     ToggleSettings -> #(
       Model(..model, settings_open: !model.settings_open),
@@ -757,11 +736,34 @@ pub fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
   }
 }
 
+/// Resolve a `TouchEnd` into the next model state. Clears
+/// `touch_start` unconditionally, then classifies the gesture
+/// (`Tap` / `SwipeLeft` / `SwipeRight`) and routes the swipe to a
+/// page navigation or an undo. Extracted from the top-level `update`
+/// case statement so the reducer dispatch stays scannable and so the
+/// nested-case gesture pipeline reads as one named procedure.
+fn apply_touch_end(model: Model, x: Float, y: Float) -> Model {
+  let cleared = Model(..model, touch_start: None)
+  case model.touch_start {
+    None -> cleared
+    Some(#(start_x, start_y)) ->
+      case gestures.classify(start_x, start_y, x, y) {
+        gestures.Tap -> cleared
+        gestures.SwipeLeft -> go_to_page(cleared, cleared.current_page + 1)
+        gestures.SwipeRight ->
+          case cleared.undo_stack {
+            [] -> go_to_page(cleared, cleared.current_page - 1)
+            _ -> apply_undo(cleared)
+          }
+      }
+  }
+}
+
 /// Pop the most recent erase off `undo_stack` and remove its index
 /// from `erased`. Returns the model unchanged when the stack is
 /// empty. Shared between the `Undo` reducer arm and the SwipeRight
-/// branch of `TouchEnd` — both consume the head of the stack in
-/// identical ways, and a copy-and-paste here would let the two
+/// branch of `apply_touch_end` — both consume the head of the stack
+/// in identical ways, and a copy-and-paste here would let the two
 /// branches drift apart on a future refactor (e.g. one of them
 /// growing a "max-undo-count" cap that the other forgot).
 fn apply_undo(model: Model) -> Model {
