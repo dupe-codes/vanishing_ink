@@ -288,6 +288,60 @@ pub fn chapter_followed_by_non_canonical_uppercase_token_is_prose_test() {
   assert texts_s1 == ["We", "continue."]
 }
 
+pub fn chapter_with_canonical_roman_token_then_prose_is_prose_test() {
+  // Regression: the residual Roman-numeral false-positive class. "II",
+  // "V", "X" etc. are canonical numerals and pass both the uppercase
+  // check and the structural validator — without the line-only guard
+  // the entire line "Chapter II is the second one. I think." is taken
+  // as a chapter title and the prose body is dropped. The guard
+  // requires a heading to occupy the line alone.
+  let result = segmenter.segment("Chapter II is the second one. I think.")
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Chapter"),
+            Word(index: 1, global_index: 1, text: "II"),
+            Word(index: 2, global_index: 2, text: "is"),
+            Word(index: 3, global_index: 3, text: "the"),
+            Word(index: 4, global_index: 4, text: "second"),
+            Word(index: 5, global_index: 5, text: "one."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 6, text: "I"),
+            Word(index: 1, global_index: 7, text: "think."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
+pub fn chapter_with_digit_token_then_prose_is_prose_test() {
+  // The line-only guard closes the digit case symmetrically. "Chapter
+  // 1 was good." used to pass `is_all_digits` on the leading "1" and
+  // the rest of the line was swallowed as a title; with the tail
+  // check, only a bare "Chapter 1\n..." structure produces a heading.
+  let result = segmenter.segment("Chapter 1 was a good chapter.")
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Chapter"),
+            Word(index: 1, global_index: 1, text: "1"),
+            Word(index: 2, global_index: 2, text: "was"),
+            Word(index: 3, global_index: 3, text: "a"),
+            Word(index: 4, global_index: 4, text: "good"),
+            Word(index: 5, global_index: 5, text: "chapter."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
 pub fn adjacent_headings_preserve_first_title_test() {
   // Regression: two heading lines in a row (no content between them)
   // used to clobber the first title. The first chapter must survive

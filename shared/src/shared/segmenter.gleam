@@ -150,10 +150,19 @@ fn chapter_n_heading(line: String) -> Bool {
       // "chapter " prefix is pure ASCII, so dropping eight graphemes from
       // the original is safe regardless of how the original was cased.
       let rest = string.trim_start(string.drop_start(line, 8))
-      let token = take_chapter_token(string.to_graphemes(rest), [])
+      let #(token, tail) = take_chapter_token(string.to_graphemes(rest), [])
       case token {
         [] -> False
-        _ -> is_all_digits(token) || is_valid_roman_numeral(token)
+        _ ->
+          case is_all_digits(token) || is_valid_roman_numeral(token) {
+            False -> False
+            // Heading must occupy the whole line — no trailing prose
+            // after the token. Without this guard, English prose that
+            // starts "Chapter II is..." / "Chapter 1 was..." passes the
+            // structural checks on the leading token and the entire line
+            // is swallowed as a title, dropping the prose body.
+            True -> list.all(tail, is_whitespace)
+          }
       }
     }
   }
@@ -162,13 +171,13 @@ fn chapter_n_heading(line: String) -> Bool {
 fn take_chapter_token(
   graphemes: List(String),
   acc: List(String),
-) -> List(String) {
+) -> #(List(String), List(String)) {
   case graphemes {
-    [] -> list.reverse(acc)
+    [] -> #(list.reverse(acc), [])
     [g, ..rest] ->
       case is_alphanumeric(g) {
         True -> take_chapter_token(rest, [g, ..acc])
-        False -> list.reverse(acc)
+        False -> #(list.reverse(acc), graphemes)
       }
   }
 }
