@@ -11,13 +11,17 @@
 pub fn now_iso8601() -> String
 
 /// Parse a client-supplied ISO 8601 / RFC 3339 timestamp into the
-/// canonical `YYYY-MM-DDTHH:MM:SSZ` form. Returns `Error(Nil)` for
-/// anything that isn't a valid timestamp — including the literal
-/// `"ZZZZ"`, gibberish, and out-of-range dates.
+/// canonical `YYYY-MM-DDTHH:MM:SS.sssZ` form (millisecond precision,
+/// always emitted regardless of the input's sub-second width). Returns
+/// `Error(Nil)` for anything that isn't a valid timestamp — including
+/// the literal `"ZZZZ"`, gibberish, and out-of-range dates.
 ///
 /// Canonicalisation here is load-bearing: `reading_state.updated_at`
 /// is compared lexicographically inside the last-write-wins SQL guard,
 /// so every accepted timestamp must share the same width and zero-
-/// padding for the comparison to match chronological order.
+/// padding for the comparison to match chronological order. Preserving
+/// milliseconds keeps two writes that differ only in their sub-second
+/// component distinguishable, which a client tracking strict
+/// monotonicity of `updated_at` would otherwise be silently fooled by.
 @external(erlang, "vanishing_ink_time_ffi", "parse_iso8601")
 pub fn parse_iso8601(value: String) -> Result(String, Nil)
