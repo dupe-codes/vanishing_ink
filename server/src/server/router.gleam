@@ -316,18 +316,32 @@ fn persist_reading_state(
       {
         Error(_) -> wisp.internal_server_error()
         Ok(Nil) ->
-          // Re-read so the client sees the authoritative state — if
-          // the last-write-wins guard rejected the write, the
-          // response still reflects whatever's on disk.
-          case db.get_reading_state(ctx.db, id) {
+          // Stamp `books.last_read_at` with the same timestamp so the
+          // library list can sort/filter by recency. The book's
+          // existence is already verified above, so this is a pure
+          // update — a failure is genuinely a DB-level problem.
+          case
+            db.set_book_last_read_at(
+              ctx.db,
+              id: id,
+              last_read_at: updated_at,
+            )
+          {
             Error(_) -> wisp.internal_server_error()
-            Ok(None) -> wisp.internal_server_error()
-            Ok(Some(state)) -> {
-              let body =
-                types.reading_state_to_json(state)
-                |> json.to_string
-              wisp.json_response(body, 200)
-            }
+            Ok(Nil) ->
+              // Re-read so the client sees the authoritative state — if
+              // the last-write-wins guard rejected the write, the
+              // response still reflects whatever's on disk.
+              case db.get_reading_state(ctx.db, id) {
+                Error(_) -> wisp.internal_server_error()
+                Ok(None) -> wisp.internal_server_error()
+                Ok(Some(state)) -> {
+                  let body =
+                    types.reading_state_to_json(state)
+                    |> json.to_string
+                  wisp.json_response(body, 200)
+                }
+              }
           }
       }
   }

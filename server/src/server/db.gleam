@@ -196,6 +196,29 @@ pub fn get_book(
   }
 }
 
+/// Stamp `books.last_read_at` for the given book. Called whenever the
+/// reading-state for a book is upserted so the library list can sort
+/// or filter by recency. Returns `Ok(Nil)` whether the row was touched
+/// or not — the caller has already verified the book exists.
+pub fn set_book_last_read_at(
+  connection: sqlight.Connection,
+  id id: shared.BookId,
+  last_read_at last_read_at: String,
+) -> Result(Nil, sqlight.Error) {
+  let sql = "UPDATE books SET last_read_at = ? WHERE id = ?;"
+  case
+    sqlight.query(
+      sql,
+      on: connection,
+      with: [sqlight.text(last_read_at), sqlight.text(id)],
+      expecting: decode.dynamic,
+    )
+  {
+    Ok(_) -> Ok(Nil)
+    Error(error) -> Error(error)
+  }
+}
+
 fn book_meta_decoder() -> decode.Decoder(BookMeta) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
