@@ -236,13 +236,22 @@ pub fn line_starting_with_chapter_but_not_heading_is_prose_test() {
   // must not treat it as a heading.
   let result = segmenter.segment("Chapter is over for me, I think.")
 
-  let assert [chapter] = result.chapters
-  assert chapter.title == None
-  let assert [paragraph] = chapter.paragraphs
-  let assert [sentence] = paragraph.sentences
-
-  let texts = list.map(sentence.words, fn(w) { w.text })
-  assert texts == ["Chapter", "is", "over", "for", "me,", "I", "think."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Chapter"),
+            Word(index: 1, global_index: 1, text: "is"),
+            Word(index: 2, global_index: 2, text: "over"),
+            Word(index: 3, global_index: 3, text: "for"),
+            Word(index: 4, global_index: 4, text: "me,"),
+            Word(index: 5, global_index: 5, text: "I"),
+            Word(index: 6, global_index: 6, text: "think."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn chapter_followed_by_lowercase_roman_word_is_prose_test() {
@@ -255,19 +264,29 @@ pub fn chapter_followed_by_lowercase_roman_word_is_prose_test() {
   let result =
     segmenter.segment("Chapter mid is bright. We continue.\n\nMore text.")
 
-  let assert [chapter] = result.chapters
-  assert chapter.title == None
-
-  let assert [p0, p1] = chapter.paragraphs
-  let assert [s0, s1] = p0.sentences
-  let texts_s0 = list.map(s0.words, fn(w) { w.text })
-  let texts_s1 = list.map(s1.words, fn(w) { w.text })
-  assert texts_s0 == ["Chapter", "mid", "is", "bright."]
-  assert texts_s1 == ["We", "continue."]
-
-  let assert [s2] = p1.sentences
-  let texts_s2 = list.map(s2.words, fn(w) { w.text })
-  assert texts_s2 == ["More", "text."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Chapter"),
+            Word(index: 1, global_index: 1, text: "mid"),
+            Word(index: 2, global_index: 2, text: "is"),
+            Word(index: 3, global_index: 3, text: "bright."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 4, text: "We"),
+            Word(index: 1, global_index: 5, text: "continue."),
+          ]),
+        ]),
+        Paragraph(index: 1, sentences: [
+          Sentence(index: 0, global_index: 2, words: [
+            Word(index: 0, global_index: 6, text: "More"),
+            Word(index: 1, global_index: 7, text: "text."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn chapter_followed_by_non_canonical_uppercase_token_is_prose_test() {
@@ -277,15 +296,23 @@ pub fn chapter_followed_by_non_canonical_uppercase_token_is_prose_test() {
   // prose words sneak through.
   let result = segmenter.segment("Chapter MID is loud. We continue.")
 
-  let assert [chapter] = result.chapters
-  assert chapter.title == None
-  let assert [paragraph] = chapter.paragraphs
-  let assert [s0, s1] = paragraph.sentences
-
-  let texts_s0 = list.map(s0.words, fn(w) { w.text })
-  let texts_s1 = list.map(s1.words, fn(w) { w.text })
-  assert texts_s0 == ["Chapter", "MID", "is", "loud."]
-  assert texts_s1 == ["We", "continue."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Chapter"),
+            Word(index: 1, global_index: 1, text: "MID"),
+            Word(index: 2, global_index: 2, text: "is"),
+            Word(index: 3, global_index: 3, text: "loud."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 4, text: "We"),
+            Word(index: 1, global_index: 5, text: "continue."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn chapter_with_canonical_roman_token_then_prose_is_prose_test() {
@@ -392,23 +419,38 @@ pub fn trailing_heading_without_body_preserves_title_test() {
 pub fn abbreviation_does_not_split_sentence_test() {
   let result = segmenter.segment("Dr. Smith went home.")
 
-  let assert [chapter] = result.chapters
-  let assert [paragraph] = chapter.paragraphs
-  let assert [sentence] = paragraph.sentences
-
-  let texts = list.map(sentence.words, fn(w) { w.text })
-  assert texts == ["Dr.", "Smith", "went", "home."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Dr."),
+            Word(index: 1, global_index: 1, text: "Smith"),
+            Word(index: 2, global_index: 2, text: "went"),
+            Word(index: 3, global_index: 3, text: "home."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn multi_period_abbreviation_does_not_split_test() {
   let result = segmenter.segment("The U.S.A. is a country.")
 
-  let assert [chapter] = result.chapters
-  let assert [paragraph] = chapter.paragraphs
-  let assert [sentence] = paragraph.sentences
-
-  let texts = list.map(sentence.words, fn(w) { w.text })
-  assert texts == ["The", "U.S.A.", "is", "a", "country."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "The"),
+            Word(index: 1, global_index: 1, text: "U.S.A."),
+            Word(index: 2, global_index: 2, text: "is"),
+            Word(index: 3, global_index: 3, text: "a"),
+            Word(index: 4, global_index: 4, text: "country."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -418,14 +460,24 @@ pub fn multi_period_abbreviation_does_not_split_test() {
 pub fn abbreviation_followed_by_real_sentence_break_test() {
   let result = segmenter.segment("Dr. Smith went home. He was tired.")
 
-  let assert [chapter] = result.chapters
-  let assert [paragraph] = chapter.paragraphs
-  let assert [s0, s1] = paragraph.sentences
-
-  let s0_texts = list.map(s0.words, fn(w) { w.text })
-  let s1_texts = list.map(s1.words, fn(w) { w.text })
-  assert s0_texts == ["Dr.", "Smith", "went", "home."]
-  assert s1_texts == ["He", "was", "tired."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Dr."),
+            Word(index: 1, global_index: 1, text: "Smith"),
+            Word(index: 2, global_index: 2, text: "went"),
+            Word(index: 3, global_index: 3, text: "home."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 4, text: "He"),
+            Word(index: 1, global_index: 5, text: "was"),
+            Word(index: 2, global_index: 6, text: "tired."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -438,12 +490,19 @@ pub fn ellipsis_does_not_split_sentence_test() {
   // stays as a single sentence.
   let result = segmenter.segment("He waited... Then left.")
 
-  let assert [chapter] = result.chapters
-  let assert [paragraph] = chapter.paragraphs
-  let assert [sentence] = paragraph.sentences
-
-  let texts = list.map(sentence.words, fn(w) { w.text })
-  assert texts == ["He", "waited...", "Then", "left."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "He"),
+            Word(index: 1, global_index: 1, text: "waited..."),
+            Word(index: 2, global_index: 2, text: "Then"),
+            Word(index: 3, global_index: 3, text: "left."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -478,14 +537,21 @@ pub fn nbsp_after_terminator_is_treated_as_sentence_boundary_test() {
 pub fn dialogue_with_quoted_period_splits_after_closing_quote_test() {
   let result = segmenter.segment("\"Hello.\" She said nothing.")
 
-  let assert [chapter] = result.chapters
-  let assert [paragraph] = chapter.paragraphs
-  let assert [s0, s1] = paragraph.sentences
-
-  let s0_texts = list.map(s0.words, fn(w) { w.text })
-  let s1_texts = list.map(s1.words, fn(w) { w.text })
-  assert s0_texts == ["\"Hello.\""]
-  assert s1_texts == ["She", "said", "nothing."]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "\"Hello.\""),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 1, text: "She"),
+            Word(index: 1, global_index: 2, text: "said"),
+            Word(index: 2, global_index: 3, text: "nothing."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 // ---------------------------------------------------------------------------
