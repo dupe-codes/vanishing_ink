@@ -237,6 +237,22 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   #(model, effect.batch([load, resize_listener, arrow_listener, undo_listener]))
 }
 
+/// Transition the reader to the next state given a message.
+///
+/// **Touch gesture pipeline** (`TouchStart` → `TouchEnd` → classify → route):
+///
+/// 1. `TouchStart` stores the touch origin on `model.touch_start`.
+/// 2. `TouchEnd` reads that origin back, calls `gestures.classify/4`,
+///    and routes the result:
+///    - `Tap` — no-op; sentence erasure flows through the synthesised
+///      `click` event on the `.sentence` span.
+///    - `SwipeLeft` — `NextPage`.
+///    - `SwipeRight` with a non-empty undo stack — `Undo` first so a
+///      right-swipe reverses the most recent erase before backing up.
+///    - `SwipeRight` with an empty undo stack — `PreviousPage`.
+/// 3. `TouchCancel` clears `touch_start` without routing anything,
+///    preventing the stale start coordinates from corrupting the next
+///    `touchend` classification.
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     TextLoaded(text) -> #(
@@ -377,6 +393,8 @@ fn measure_after_paint() -> Effect(Msg) {
 // View
 // ---------------------------------------------------------------------------
 
+/// Top-level view. Renders a loading placeholder until `TextLoaded`
+/// delivers text, then delegates to `view_paginated`.
 pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
@@ -396,6 +414,19 @@ fn view_placeholder() -> Element(Msg) {
   html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
 }
 
+/// Build the full reading surface: visible page, page indicator, and
+/// off-screen measurement container.
+///
+/// The `#vi-measurement` container receives all paragraphs from the
+/// whole book — not just the current page. This lets `measure_after_paint`
+/// read every paragraph height in a single DOM pass after `TextLoaded` or
+/// `ViewportResized`, rather than re-measuring on every page turn.
+///
+/// Touch handlers are placed on `.reader-page` rather than the outer
+/// `.reader-text` so the page-indicator area is outside the gesture
+/// hit-target. The measurement container is `pointer-events: none`
+/// (see `.reader-measurement` in `styles.css`) so its descendants
+/// cannot intercept any touch or click events.
 fn view_paginated(
   flat_paragraphs: List(PageParagraph),
   pages: List(Page),

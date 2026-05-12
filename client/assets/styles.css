@@ -97,10 +97,18 @@ body {
 }
 
 .reader-preparing {
+  /* Shown inside `.reader-page-content` between `TextLoaded` and the
+   * first `ParagraphsMeasured` dispatch, while paragraph heights are
+   * being measured. Replaced by the first rendered page once pages
+   * are available. */
   color: var(--vi-fg-muted);
 }
 
 .reader-page-indicator {
+  /* Pinned to the bottom of `.reader-text` with `flex: 0 0 auto`.
+   * Hidden by `view_page_indicator` (returns `element.none()`) until
+   * pagination produces at least one page, so it never shows "Page 0
+   * of 0" during the measuring phase. */
   flex: 0 0 auto;
   padding: 0.5rem 0 1rem 0;
   color: var(--vi-fg-muted);
@@ -125,6 +133,11 @@ body {
 }
 
 .chapter-title {
+  /* Chapter heading rendered as the first child of a `.page-paragraph`
+   * wrapper when `PageParagraph.chapter_title` is `Some(title)`. Because
+   * it lives inside a `flow-root` wrapper, its top/bottom margins are
+   * absorbed into the measured paragraph height and accounted for by the
+   * pagination engine. */
   font-size: 1.4rem;
   font-weight: 600;
   margin: 1.5rem 0 1rem 0;
@@ -146,6 +159,11 @@ body {
 }
 
 .paragraph {
+  /* 1.2rem trailing gap between paragraphs. On `margin-bottom` so
+   * the `.page-paragraph` `flow-root` context absorbs it into the
+   * measured height — the pagination engine includes the gap in each
+   * paragraph's page budget, preventing content from overflowing page
+   * bottoms. */
   margin: 0 0 1.2rem 0;
 }
 
