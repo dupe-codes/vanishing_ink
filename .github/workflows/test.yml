@@ -10,14 +10,23 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [shared, server, client]
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
-          gleam-version: "1.14.0"
+          gleam-version: "1.16.0"
           rebar3-version: "3"
-          # elixir-version: "1"
-      - run: gleam deps download
-      - run: gleam test
-      - run: gleam format --check src test
+      - name: Download dependencies
+        run: gleam deps download
+        working-directory: ${{ matrix.package }}
+      - name: Run tests
+        run: gleam test
+        working-directory: ${{ matrix.package }}
+      - name: Check formatting
+        run: gleam format --check src test
+        working-directory: ${{ matrix.package }}

@@ -1,0 +1,25 @@
+name = "client"
+version = "0.1.0"
+description = "Vanishing Ink Lustre SPA. Compiles to JavaScript and is served as a static bundle by the BEAM server."
+target = "javascript"
+
+[javascript]
+runtime = "nodejs"
+
+# Foundation-milestone deviation: the quest also named `lustre_http`, but
+# `lustre_http` 1.0.0 (the only published version at time of writing) calls
+# `gleam/result.then`, which was removed from `gleam_stdlib`. Pinning a
+# pre-removal stdlib would fix the build but downgrades every other
+# dependency along with it. The dependency is deferred until either
+# `lustre_http` ships a stdlib-compatible release or the first quest that
+# actually needs HTTP calls from the client lands and can justify the
+# downgrade trade-off.
+[dependencies]
+gleam_stdlib = ">= 0.60.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+lustre = ">= 5.0.0 and < 6.0.0"
+shared = { path = "../shared" }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
+lustre_dev_tools = ">= 2.0.0 and < 3.0.0"

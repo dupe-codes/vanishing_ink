@@ -1,4 +1,7 @@
 *.beam
 *.ez
-/build
+build/
+dist/
+.lustre/
 erl_crash.dump
+
