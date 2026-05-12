@@ -708,8 +708,14 @@ fn is_closing_quote(g: String) -> Bool {
 }
 
 fn is_whitespace(g: String) -> Bool {
+  // Clipboard pastes from Word and Google Docs frequently substitute
+  // U+00A0 for ASCII space, and rich-text exports occasionally carry
+  // U+2028 / U+2029 (line and paragraph separators) in place of plain
+  // newlines. Recognising them here means the sentence-boundary check
+  // and the heading line-only guard treat them as separators rather
+  // than as opaque content characters.
   case g {
-    " " | "\t" | "\n" | "\r" -> True
+    " " | "\t" | "\n" | "\r" | "\u{00A0}" | "\u{2028}" | "\u{2029}" -> True
     _ -> False
   }
 }
@@ -763,13 +769,38 @@ fn push_trimmed(sent_rev: List(String), done: List(String)) -> List(String) {
 // ---------------------------------------------------------------------------
 
 fn split_words(sentence: String) -> List(String) {
+  // The sentence-boundary walker preserves whitespace graphemes inside
+  // the sentence string (it strips them from `word_rev` but not from
+  // `sent_rev`), and clipboard pastes can carry U+00A0 / U+2028 /
+  // U+2029 in addition to ASCII whitespace. Walk the graphemes and
+  // split on any whitespace so word boundaries match the boundary
+  // detector's classification — a single source of truth for what
+  // counts as separator.
   sentence
-  |> string.replace("\t", " ")
-  |> string.replace("\n", " ")
-  |> string.replace("\r", " ")
-  |> string.split(" ")
-  |> list.map(string.trim)
-  |> list.filter(fn(word) { word != "" })
+  |> string.to_graphemes
+  |> walk_words([], [])
+}
+
+fn walk_words(
+  graphemes: List(String),
+  word_rev: List(String),
+  done_rev: List(String),
+) -> List(String) {
+  case graphemes {
+    [] -> flush_word(word_rev, done_rev) |> list.reverse
+    [g, ..rest] ->
+      case is_whitespace(g) {
+        True -> walk_words(rest, [], flush_word(word_rev, done_rev))
+        False -> walk_words(rest, [g, ..word_rev], done_rev)
+      }
+  }
+}
+
+fn flush_word(word_rev: List(String), done_rev: List(String)) -> List(String) {
+  case word_rev {
+    [] -> done_rev
+    _ -> [word_rev |> list.reverse |> string.concat, ..done_rev]
+  }
 }
 
 // ---------------------------------------------------------------------------

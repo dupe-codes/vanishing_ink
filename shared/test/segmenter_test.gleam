@@ -450,6 +450,31 @@ pub fn ellipsis_does_not_split_sentence_test() {
 // 7. Dialogue
 // ---------------------------------------------------------------------------
 
+pub fn nbsp_after_terminator_is_treated_as_sentence_boundary_test() {
+  // Clipboard pastes from Word and Google Docs frequently substitute
+  // U+00A0 (non-breaking space) for ASCII space. The sentence-boundary
+  // detector must treat it as whitespace, otherwise a terminator
+  // followed by NBSP + uppercase fails to split and the two sentences
+  // collapse into one.
+  let result = segmenter.segment("First sentence.\u{00A0}Second sentence.")
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "First"),
+            Word(index: 1, global_index: 1, text: "sentence."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 2, text: "Second"),
+            Word(index: 1, global_index: 3, text: "sentence."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
 pub fn dialogue_with_quoted_period_splits_after_closing_quote_test() {
   let result = segmenter.segment("\"Hello.\" She said nothing.")
 
