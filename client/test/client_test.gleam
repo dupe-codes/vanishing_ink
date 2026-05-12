@@ -34,7 +34,7 @@ import shared/segmenter.{
 
 import client.{
   type Model, EraseSentence, Model, NextPage, ParagraphsMeasured, PreviousPage,
-  TextLoaded, TouchEnd, TouchStart, Undo, ViewportResized,
+  TextLoaded, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{Page}
@@ -824,6 +824,49 @@ pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
 
   assert updated.current_page == 0
   assert updated.touch_start == None
+}
+
+pub fn update_touch_cancel_clears_stale_touch_start_test() {
+  // The browser steals an in-flight touch — system back gesture,
+  // notification pull-down, modal scrim — and fires `touchcancel`
+  // with no matching `touchend`. Without this handler `touch_start`
+  // retains the cancelled gesture's coordinates indefinitely; the
+  // next legitimate `touchend` then classifies against those stale
+  // coordinates and produces a swipe the reader never made. The
+  // handler resets `touch_start: None` and touches nothing else.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 0,
+      erased: dict.from_list([#(3, True)]),
+      undo_stack: [3],
+      touch_start: Some(#(100.0, 200.0)),
+    )
+
+  let #(updated, _effect) = client.update(prior, TouchCancel)
+
+  assert updated.touch_start == None
+  assert updated.current_page == 0
+  assert updated.undo_stack == [3]
+  assert dict.get(updated.erased, 3) == Ok(True)
+}
+
+pub fn update_touch_end_after_cancel_is_safe_test() {
+  // Integration shape: a cancelled touch followed by an unrelated
+  // touchend (e.g. an out-of-band finger lift the system delivered
+  // after the cancellation) must not produce a phantom swipe. With
+  // `TouchCancel` clearing `touch_start`, the subsequent `TouchEnd`
+  // hits the `None` branch and exits cleanly.
+  let prior =
+    Model(..empty_model(), touch_start: Some(#(100.0, 200.0)))
+
+  let #(after_cancel, _effect) = client.update(prior, TouchCancel)
+  let #(after_end, _effect) =
+    client.update(after_cancel, TouchEnd(500.0, 200.0))
+
+  assert after_end.touch_start == None
+  assert after_end.current_page == 0
 }
 
 pub fn update_touch_end_without_matching_start_is_safe_test() {

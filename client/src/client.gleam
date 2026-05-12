@@ -167,6 +167,14 @@ pub type Msg {
   /// navigation or `Undo`. A `Tap` outcome is a no-op — sentence
   /// erasure flows through the synthesized `click` event.
   TouchEnd(x: Float, y: Float)
+
+  /// `touchcancel` fired on the reader page. The browser delivers
+  /// this when an in-flight touch is interrupted (system gesture,
+  /// modal, notification) and follows it with *no* matching
+  /// `touchend`. `update` clears `touch_start` so the next
+  /// legitimate `touchend` doesn't classify against the cancelled
+  /// gesture's coordinates and emit a phantom swipe.
+  TouchCancel
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +308,8 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
+    TouchCancel -> #(Model(..model, touch_start: None), effect.none())
+
     TouchEnd(x, y) -> {
       let cleared = Model(..model, touch_start: None)
       case model.touch_start {
@@ -414,6 +424,7 @@ fn view_paginated(
         attribute.class("reader-page"),
         gestures.on_touch_start(TouchStart),
         gestures.on_touch_end(TouchEnd),
+        gestures.on_touch_cancel(TouchCancel),
       ],
       [
         html.div(

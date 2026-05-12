@@ -110,6 +110,19 @@ pub fn on_touch_end(to_msg: fn(Float, Float) -> msg) -> Attribute(msg) {
   event.on("touchend", touch_decoder("changedTouches", to_msg))
 }
 
+/// Listen for `touchcancel`. The browser fires this — *without* a
+/// matching `touchend` — whenever it steals an in-flight touch
+/// (system back gesture, notification pull-down, modal scrim,
+/// scroll interruption). If we don't clear `touch_start` here, the
+/// stale coordinates from the cancelled gesture corrupt the next
+/// `touchend` the document sees: the classifier compares the
+/// cancelled-touch start against a fresh end and emits a phantom
+/// swipe the reader never made. The decoder is a constant — no
+/// coordinates needed, the message just resets state.
+pub fn on_touch_cancel(message: msg) -> Attribute(msg) {
+  event.on("touchcancel", decode.success(message))
+}
+
 fn touch_decoder(
   list_field: String,
   to_msg: fn(Float, Float) -> msg,
