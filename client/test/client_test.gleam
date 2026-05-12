@@ -545,12 +545,14 @@ pub fn update_erase_sentence_marks_sentence_and_pushes_undo_test() {
   // front of `undo_stack`. Both halves are pinned together because
   // erase without undo entry would orphan the undo handler, and
   // undo entry without erase would make Undo a visible no-op.
+  // Whole-Model comparison so an incidental mutation of any other
+  // field (e.g. a future bug that resets `current_page` on erase)
+  // also fails here.
   let prior = empty_model()
 
   let #(updated, _effect) = client.update(prior, EraseSentence(7))
 
-  assert set.contains(updated.erased, 7)
-  assert updated.undo_stack == [7]
+  assert updated == Model(..prior, erased: set.from_list([7]), undo_stack: [7])
 }
 
 pub fn update_erase_sentence_is_idempotent_on_already_erased_test() {
@@ -571,7 +573,11 @@ pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
   // five in `undo_stack`; the earliest erase commits and becomes
   // permanent for the duration of the current page. Pinning the
   // exact stack contents catches both off-by-one truncation and
-  // accidental reversal of the recency order.
+  // accidental reversal of the recency order. Whole-Model
+  // comparison so an unrelated field bouncing during the six-step
+  // run also fails here — `erased` carries all six indices
+  // (including the one that fell off the undo stack), and no
+  // other field is touched by EraseSentence.
   let after_5 =
     list.fold([0, 1, 2, 3, 4], empty_model(), fn(model, index) {
       let #(updated, _) = client.update(model, EraseSentence(index))
@@ -580,11 +586,12 @@ pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
 
   let #(after_6, _) = client.update(after_5, EraseSentence(5))
 
-  assert after_6.undo_stack == [5, 4, 3, 2, 1]
-  // Every erased sentence — including the one that fell off the
-  // undo stack — stays erased on the model.
-  assert set.contains(after_6.erased, 0)
-  assert set.contains(after_6.erased, 5)
+  assert after_6
+    == Model(
+      ..empty_model(),
+      erased: set.from_list([0, 1, 2, 3, 4, 5]),
+      undo_stack: [5, 4, 3, 2, 1],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -595,14 +602,15 @@ pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
   // Undo with a non-empty stack must (a) remove the top index from
   // `undo_stack` and (b) delete its `erased` entry — restoring the
   // sentence to visible. Earlier entries on the stack stay intact.
+  // Whole-Model comparison so an incidental mutation of any other
+  // field (page index, touch_start, etc.) by a future Undo refactor
+  // is caught here too.
   let prior =
     Model(..empty_model(), erased: set.from_list([2, 7]), undo_stack: [7, 2])
 
   let #(updated, _effect) = client.update(prior, Undo)
 
-  assert updated.undo_stack == [2]
-  assert !set.contains(updated.erased, 7)
-  assert set.contains(updated.erased, 2)
+  assert updated == Model(..prior, erased: set.from_list([2]), undo_stack: [2])
 }
 
 pub fn update_undo_is_noop_when_stack_empty_test() {
@@ -625,7 +633,9 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
   // Navigating forward must clear `undo_stack` — erases on the
   // page being left commit and are no longer undoable. The
   // `erased` map keeps every prior entry so the sentences stay
-  // invisible when the reader pages back later.
+  // invisible when the reader pages back later. Whole-Model
+  // comparison so an unintended mutation of `pages`, `text`, or
+  // `touch_start` on a page turn also fails here.
   let prior =
     Model(
       ..empty_model(),
@@ -637,10 +647,7 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
 
   let #(updated, _effect) = client.update(prior, NextPage)
 
-  assert updated.current_page == 1
-  assert updated.undo_stack == []
-  assert set.contains(updated.erased, 0)
-  assert set.contains(updated.erased, 1)
+  assert updated == Model(..prior, current_page: 1, undo_stack: [])
 }
 
 pub fn update_previous_page_also_clears_undo_stack_test() {
@@ -661,9 +668,7 @@ pub fn update_previous_page_also_clears_undo_stack_test() {
 
   let #(updated, _effect) = client.update(prior, PreviousPage)
 
-  assert updated.current_page == 0
-  assert updated.undo_stack == []
-  assert set.contains(updated.erased, 4)
+  assert updated == Model(..prior, current_page: 0, undo_stack: [])
 }
 
 pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
@@ -683,9 +688,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
 
   let #(updated, _effect) = client.update(prior, NextPage)
 
-  assert updated.current_page == 1
-  assert updated.undo_stack == [8]
-  assert set.contains(updated.erased, 8)
+  assert updated == prior
 }
 
 pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
@@ -703,9 +706,7 @@ pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
 
   let #(updated, _effect) = client.update(prior, PreviousPage)
 
-  assert updated.current_page == 0
-  assert updated.undo_stack == [2]
-  assert set.contains(updated.erased, 2)
+  assert updated == prior
 }
 
 pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
@@ -725,10 +726,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
   // -150px horizontal, +5px vertical → SwipeLeft → NextPage path.
   let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
 
-  assert updated.current_page == 1
-  assert updated.undo_stack == [5]
-  assert set.contains(updated.erased, 5)
-  assert updated.touch_start == None
+  assert updated == Model(..prior, touch_start: None)
 }
 
 // ---------------------------------------------------------------------------
@@ -740,7 +738,7 @@ pub fn update_touch_start_records_start_coordinates_test() {
 
   let #(updated, _effect) = client.update(prior, TouchStart(120.0, 240.0))
 
-  assert updated.touch_start == Some(#(120.0, 240.0))
+  assert updated == Model(..prior, touch_start: Some(#(120.0, 240.0)))
 }
 
 pub fn update_touch_end_below_threshold_does_nothing_test() {
@@ -758,8 +756,7 @@ pub fn update_touch_end_below_threshold_does_nothing_test() {
 
   let #(updated, _effect) = client.update(prior, TouchEnd(102.0, 199.0))
 
-  assert updated.current_page == 0
-  assert updated.touch_start == None
+  assert updated == Model(..prior, touch_start: None)
 }
 
 pub fn update_touch_end_swipe_left_advances_page_test() {
@@ -774,8 +771,7 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
   // -150px horizontal, +5px vertical → SwipeLeft → NextPage.
   let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
 
-  assert updated.current_page == 1
-  assert updated.touch_start == None
+  assert updated == Model(..prior, current_page: 1, touch_start: None)
 }
 
 pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
@@ -796,10 +792,8 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
   // +200px horizontal → SwipeRight.
   let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
 
-  assert updated.current_page == 1
-  assert updated.undo_stack == []
-  assert !set.contains(updated.erased, 9)
-  assert updated.touch_start == None
+  assert updated
+    == Model(..prior, erased: set.new(), undo_stack: [], touch_start: None)
 }
 
 pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
@@ -813,8 +807,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
 
   let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
 
-  assert updated.current_page == 0
-  assert updated.touch_start == None
+  assert updated == Model(..prior, current_page: 0, touch_start: None)
 }
 
 pub fn update_touch_cancel_clears_stale_touch_start_test() {
@@ -837,10 +830,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
 
   let #(updated, _effect) = client.update(prior, TouchCancel)
 
-  assert updated.touch_start == None
-  assert updated.current_page == 0
-  assert updated.undo_stack == [3]
-  assert set.contains(updated.erased, 3)
+  assert updated == Model(..prior, touch_start: None)
 }
 
 pub fn update_touch_end_after_cancel_is_safe_test() {
@@ -848,15 +838,16 @@ pub fn update_touch_end_after_cancel_is_safe_test() {
   // touchend (e.g. an out-of-band finger lift the system delivered
   // after the cancellation) must not produce a phantom swipe. With
   // `TouchCancel` clearing `touch_start`, the subsequent `TouchEnd`
-  // hits the `None` branch and exits cleanly.
+  // hits the `None` branch and exits cleanly. The final whole-Model
+  // assertion pins both intermediate steps (cancel clears
+  // `touch_start`; end-after-cancel keeps everything else inert).
   let prior = Model(..empty_model(), touch_start: Some(#(100.0, 200.0)))
 
   let #(after_cancel, _effect) = client.update(prior, TouchCancel)
   let #(after_end, _effect) =
     client.update(after_cancel, TouchEnd(500.0, 200.0))
 
-  assert after_end.touch_start == None
-  assert after_end.current_page == 0
+  assert after_end == Model(..prior, touch_start: None)
 }
 
 pub fn update_touch_end_without_matching_start_is_safe_test() {
