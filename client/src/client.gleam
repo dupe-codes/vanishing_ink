@@ -103,10 +103,7 @@ pub type Msg {
   /// `(global_index, height)` pairs alongside the available
   /// content-area height the pagination algorithm should fit pages
   /// into.
-  ParagraphsMeasured(
-    heights: List(#(Int, Float)),
-    available_height: Float,
-  )
+  ParagraphsMeasured(heights: List(#(Int, Float)), available_height: Float)
 
   /// Reader requested the next page (button or `ArrowRight`).
   NextPage
@@ -146,8 +143,7 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
-  let model =
-    Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
+  let model = Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
 
   // Three independent boot effects: dispatch the sample text through
   // the update loop, install the debounced resize listener, and
@@ -194,10 +190,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
       let total = list.length(pages)
       let clamped = pagination.clamp_page_index(model.current_page, total)
-      #(
-        Model(..model, pages: pages, current_page: clamped),
-        effect.none(),
-      )
+      #(Model(..model, pages: pages, current_page: clamped), effect.none())
     }
 
     NextPage -> {
