@@ -279,10 +279,10 @@ fn view_preparing() -> Element(Msg) {
 
 fn view_page(page: Page) -> Element(Msg) {
   html.div(
-    [attribute.class("page"), attribute.attribute(
-        "data-page-index",
-        int.to_string(page.index),
-      )],
+    [
+      attribute.class("page"),
+      attribute.attribute("data-page-index", int.to_string(page.index)),
+    ],
     list.map(page.paragraphs, view_page_paragraph),
   )
 }
@@ -308,9 +308,7 @@ fn view_page_indicator(total: Int, current: Int) -> Element(Msg) {
   }
 }
 
-fn view_measurement_container(
-  paragraphs: List(PageParagraph),
-) -> Element(Msg) {
+fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
   // Off-screen mirror of the visible reading area. Carries the same
   // class hierarchy (`reader-text` → paragraph spans) so paragraph
   // line-wrap heights match what the visible page will render. CSS
@@ -408,4 +406,3 @@ fn view_word(word: Word, with_trailing_space: Bool) -> Element(Msg) {
     [html.text(text_content)],
   )
 }
-

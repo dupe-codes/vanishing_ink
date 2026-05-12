@@ -181,11 +181,14 @@ pub fn update_paragraphs_measured_calculates_pages_from_text_test() {
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
 
   let #(updated, _effect) =
-    client.update(prior, ParagraphsMeasured(
-      heights: heights,
-      viewport_height: 600.0,
-      available_height: 250.0,
-    ))
+    client.update(
+      prior,
+      ParagraphsMeasured(
+        heights: heights,
+        viewport_height: 600.0,
+        available_height: 250.0,
+      ),
+    )
 
   assert list.length(updated.pages) == 2
   assert updated.viewport_height == 600.0
@@ -199,21 +202,19 @@ pub fn update_paragraphs_measured_clamps_current_page_into_new_total_test() {
   // otherwise the view would try to render a page that no longer
   // exists and fall through to the "preparing" branch.
   let text = two_chapter_text()
-  let prior =
-    Model(
-      ..empty_model(),
-      text: Some(text),
-      current_page: 5,
-    )
+  let prior = Model(..empty_model(), text: Some(text), current_page: 5)
 
   // 25px budget forces one paragraph per page → 3 pages total.
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
   let #(updated, _effect) =
-    client.update(prior, ParagraphsMeasured(
-      heights: heights,
-      viewport_height: 300.0,
-      available_height: 25.0,
-    ))
+    client.update(
+      prior,
+      ParagraphsMeasured(
+        heights: heights,
+        viewport_height: 300.0,
+        available_height: 25.0,
+      ),
+    )
 
   assert list.length(updated.pages) == 3
   assert updated.current_page == 2
@@ -225,11 +226,14 @@ pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
   // panic; the reducer just records the viewport and leaves pages
   // empty so the view stays on the loading placeholder.
   let #(updated, _effect) =
-    client.update(empty_model(), ParagraphsMeasured(
-      heights: [],
-      viewport_height: 420.0,
-      available_height: 380.0,
-    ))
+    client.update(
+      empty_model(),
+      ParagraphsMeasured(
+        heights: [],
+        viewport_height: 420.0,
+        available_height: 380.0,
+      ),
+    )
 
   assert updated.pages == []
   assert updated.viewport_height == 420.0
@@ -398,8 +402,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   // Build a 3-page slice manually — one paragraph per page.
-  let pages =
-    list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
       text: Some(text),
@@ -414,10 +417,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
     rendered,
     "<div class=\"reader-page-indicator\" id=\"vi-page-indicator\">Page 2 of 3</div>",
   )
-  assert string.contains(
-    rendered,
-    "<div class=\"page\" data-page-index=\"1\">",
-  )
+  assert string.contains(rendered, "<div class=\"page\" data-page-index=\"1\">")
   // The visible page (#1) renders paragraph 1 — but not 0 or 2.
   assert string.contains(rendered, "data-paragraph-global-index=\"1\"")
   // The measurement container always contains every paragraph; it
@@ -439,8 +439,7 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
   // chapter 1 (the "Two" chapter).
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
-  let pages =
-    list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
       text: Some(text),
@@ -531,4 +530,3 @@ pub fn sample_text_succeeds_through_the_shared_json_round_trip_test() {
   let assert [first_sentence, ..] = first_paragraph.sentences
   assert first_sentence.words != []
 }
-

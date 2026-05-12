@@ -113,7 +113,11 @@ pub fn calculate_pages(
       let has_existing_content = current_rev != []
       case exceeds && has_existing_content {
         True -> #(height, [paragraph], [list.reverse(current_rev), ..pages_rev])
-        False -> #(current_height +. height, [paragraph, ..current_rev], pages_rev)
+        False -> #(
+          current_height +. height,
+          [paragraph, ..current_rev],
+          pages_rev,
+        )
       }
     })
 
