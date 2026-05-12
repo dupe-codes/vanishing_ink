@@ -343,6 +343,10 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   use sentence_bitset <- decode.field(2, decode.optional(decode.bit_array))
   use word_bitset <- decode.field(3, decode.optional(decode.bit_array))
   use current_page <- decode.field(4, decode.int)
+  // The column is `NOT NULL` so the value is always present; wrap in
+  // `Some` to match the `Option(String)` shape of `ReadingState.updated_at`,
+  // which the wire layer needs to distinguish a persisted row from a
+  // synthesised empty default.
   use updated_at <- decode.field(5, decode.string)
   decode.success(ReadingState(
     book_id: book_id,
@@ -350,7 +354,7 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
-    updated_at: updated_at,
+    updated_at: Some(updated_at),
   ))
 }
 

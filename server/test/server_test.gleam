@@ -187,7 +187,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
   // from the stale write must not have overwritten it.
   assert state.mode == "manual"
   assert state.current_page == 3
-  assert state.updated_at == "2026-05-12T02:00:00Z"
+  assert state.updated_at == Some("2026-05-12T02:00:00Z")
 
   // Newer write at t = 3:00:00 should land.
   let assert Ok(Nil) =

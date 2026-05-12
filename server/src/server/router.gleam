@@ -390,6 +390,11 @@ fn get_reading_state_handler(ctx: Context, id: String) -> Response {
   }
 }
 
+/// Synthesised "fresh book" reading state. `updated_at` is `None`
+/// because nothing has been written yet — emitting `null` on the wire
+/// is more honest than the previous `"1970-01-01T00:00:00Z"` sentinel,
+/// which the client would have to know about (or echo back verbatim,
+/// risking a real-but-stale persisted timestamp).
 fn empty_reading_state(book_id: shared.BookId) -> ReadingState {
   ReadingState(
     book_id: book_id,
@@ -397,7 +402,7 @@ fn empty_reading_state(book_id: shared.BookId) -> ReadingState {
     sentence_bitset: None,
     word_bitset: None,
     current_page: 0,
-    updated_at: "1970-01-01T00:00:00Z",
+    updated_at: None,
   )
 }
 

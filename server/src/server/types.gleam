@@ -63,6 +63,11 @@ pub type UserSettings {
 /// sentences / words by their global index as assigned by the
 /// segmenter; on the wire they go out as base64 so JSON stays
 /// transport-safe.
+///
+/// `updated_at` is `Option` rather than `String` because a `GET` for a
+/// book that has never been written to surfaces an empty default — the
+/// wire shape should be honest about the absence (`null`) rather than
+/// hand a 1970 sentinel back to the client.
 pub type ReadingState {
   ReadingState(
     book_id: shared.BookId,
@@ -70,7 +75,7 @@ pub type ReadingState {
     sentence_bitset: Option(BitArray),
     word_bitset: Option(BitArray),
     current_page: Int,
-    updated_at: String,
+    updated_at: Option(String),
   )
 }
 
@@ -142,7 +147,7 @@ pub fn reading_state_to_json(state: ReadingState) -> json.Json {
     ),
     #("word_bitset", json.nullable(state.word_bitset, bit_array_to_json)),
     #("current_page", json.int(state.current_page)),
-    #("updated_at", json.string(state.updated_at)),
+    #("updated_at", json.nullable(state.updated_at, json.string)),
   ])
 }
 
