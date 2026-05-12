@@ -28,9 +28,7 @@ pub fn main() -> Nil {
       // loaded outside a browser by mistake). Log the structured reason
       // before panicking so the operator sees what went wrong rather
       // than a bare runtime error.
-      io.println(
-        "Lustre failed to mount on #app: " <> string.inspect(reason),
-      )
+      io.println("Lustre failed to mount on #app: " <> string.inspect(reason))
       panic as "lustre.start failed; see the logged reason above"
     }
   }
