@@ -350,13 +350,10 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
   let text = two_chapter_text()
   let prior =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
     )
 
   let #(updated, _effect) = client.update(prior, ViewportResized)
@@ -537,10 +534,6 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
   let chunks = rendered |> string.split("class=\"word\"") |> list.length
   assert chunks == 7
 }
-
-// ---------------------------------------------------------------------------
-// sample fixture
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // update — EraseSentence
@@ -1021,6 +1014,10 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
 
   assert !string.contains(rendered, "opacity")
 }
+
+// ---------------------------------------------------------------------------
+// sample fixture
+// ---------------------------------------------------------------------------
 
 pub fn sample_text_succeeds_through_the_shared_json_round_trip_test() {
   // `sample.text()` segments the bundled prose and then routes the
