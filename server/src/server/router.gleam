@@ -488,15 +488,79 @@ fn put_settings_handler(req: Request, ctx: Context) -> Response {
   case decode.run(body, user_settings_decoder()) {
     Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
     Ok(settings) ->
-      case db.update_settings(ctx.db, settings) {
-        Error(error) -> db_error_response("db.update_settings", error)
-        Ok(Nil) -> {
-          let body =
-            types.user_settings_to_json(settings)
-            |> json.to_string
-          wisp.json_response(body, 200)
-        }
+      case validate_user_settings(settings) {
+        Error(detail) -> wisp.bad_request(detail)
+        Ok(settings) ->
+          case db.update_settings(ctx.db, settings) {
+            Error(error) -> db_error_response("db.update_settings", error)
+            Ok(Nil) -> {
+              let body =
+                types.user_settings_to_json(settings)
+                |> json.to_string
+              wisp.json_response(body, 200)
+            }
+          }
       }
+  }
+}
+
+/// Boundary validation for the eight settings fields. The SQLite
+/// schema declares no CHECK constraints, so without this gate a
+/// `font_size: -5` or `ghost_opacity: 7.5` would persist silently and
+/// then poison every subsequent read. Each predicate is the smallest
+/// invariant that still rules out nonsensical values: sizes and rates
+/// must be strictly positive, delays may be zero (instant transition)
+/// but never negative, and `ghost_opacity` is an alpha channel so it
+/// belongs in `[0.0, 1.0]`.
+fn validate_user_settings(
+  settings: UserSettings,
+) -> Result(UserSettings, String) {
+  use _ <- result.try(require_positive_int("font_size", settings.font_size))
+  use _ <- result.try(require_positive_float(
+    "line_spacing",
+    settings.line_spacing,
+  ))
+  use _ <- result.try(require_unit_interval(
+    "ghost_opacity",
+    settings.ghost_opacity,
+  ))
+  use _ <- result.try(require_positive_int("default_wpm", settings.default_wpm))
+  use _ <- result.try(require_non_negative_int(
+    "default_paragraph_delay_ms",
+    settings.default_paragraph_delay_ms,
+  ))
+  use _ <- result.try(require_non_negative_int(
+    "default_page_delay_ms",
+    settings.default_page_delay_ms,
+  ))
+  Ok(settings)
+}
+
+fn require_positive_int(field: String, value: Int) -> Result(Nil, String) {
+  case value > 0 {
+    True -> Ok(Nil)
+    False -> Error(field <> " must be a positive integer")
+  }
+}
+
+fn require_non_negative_int(field: String, value: Int) -> Result(Nil, String) {
+  case value >= 0 {
+    True -> Ok(Nil)
+    False -> Error(field <> " must be a non-negative integer")
+  }
+}
+
+fn require_positive_float(field: String, value: Float) -> Result(Nil, String) {
+  case value >. 0.0 {
+    True -> Ok(Nil)
+    False -> Error(field <> " must be a positive number")
+  }
+}
+
+fn require_unit_interval(field: String, value: Float) -> Result(Nil, String) {
+  case value >=. 0.0 && value <=. 1.0 {
+    True -> Ok(Nil)
+    False -> Error(field <> " must be between 0.0 and 1.0 inclusive")
   }
 }
 
