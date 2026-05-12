@@ -40,9 +40,9 @@ import shared/segmenter.{
 import client.{
   type Model, EraseFocused, EraseSentence, FocusNext, FocusParagraphDown,
   FocusParagraphUp, FocusPrevious, Model, NextPage, ParagraphsMeasured,
-  PreviousPage, SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{type Page, Page}
@@ -266,7 +266,7 @@ pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
 }
 
 // ---------------------------------------------------------------------------
-// update — NextPage / PreviousPage
+// update — NextPage
 // ---------------------------------------------------------------------------
 
 pub fn update_next_page_advances_one_when_not_on_last_page_test() {
@@ -301,32 +301,6 @@ pub fn update_next_page_holds_on_last_page_test() {
   let #(updated, _effect) = client.update(prior, NextPage)
 
   assert updated.current_page == 1
-}
-
-pub fn update_previous_page_steps_back_when_not_on_first_page_test() {
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 1,
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated.current_page == 0
-}
-
-pub fn update_previous_page_holds_on_first_page_test() {
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 0,
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated.current_page == 0
 }
 
 pub fn update_next_page_holds_when_no_pages_yet_test() {
@@ -647,27 +621,6 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
   assert updated == Model(..prior, current_page: 1, undo_stack: [])
 }
 
-pub fn update_previous_page_also_clears_undo_stack_test() {
-  // Symmetry with `NextPage`: paging *backwards* also commits
-  // erases on the page being left, so the undo stack must clear in
-  // both directions. Without this, a reader who erased a sentence
-  // on page 2 and paged back to page 1 could undo a sentence from
-  // page 2 while reading page 1 — confusing at best, broken at
-  // worst.
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 1,
-      erased: set.from_list([4]),
-      undo_stack: [4],
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated == Model(..prior, current_page: 0, undo_stack: [])
-}
-
 pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
   // A reader on the last page has unfinished erase work and presses
   // ArrowRight (or swipes left) by reflex. `current_page` clamps to
@@ -684,24 +637,6 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
-
-  assert updated == prior
-}
-
-pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
-  // Mirror of the previous test for the page-0 boundary: an
-  // ArrowLeft at the start of the book must not destroy the undo
-  // stack either.
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 0,
-      erased: set.from_list([2]),
-      undo_stack: [2],
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
 
   assert updated == prior
 }
@@ -793,7 +728,9 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
     == Model(..prior, erased: set.new(), undo_stack: [], touch_start: None)
 }
 
-pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
+pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
+  // Swipe-right with an empty undo stack is a no-op — backward page
+  // navigation is disabled. The only effect is clearing `touch_start`.
   let prior =
     Model(
       ..empty_model(),
@@ -804,7 +741,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
 
   let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
 
-  assert updated == Model(..prior, current_page: 0, touch_start: None)
+  assert updated == Model(..prior, touch_start: None)
 }
 
 pub fn update_touch_cancel_clears_stale_touch_start_test() {
@@ -1317,16 +1254,15 @@ pub fn update_focus_next_crosses_page_forward_test() {
   assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
 
-pub fn update_focus_previous_crosses_page_backward_test() {
-  // Mirror of forward: cursor at the first sentence of page 1
-  // (sentence 3); FocusPrevious moves the page back AND lands the
-  // cursor on the *last* non-erased sentence of page 0 (sentence 2),
-  // not the first — `h` consistently steps one sentence backward.
+pub fn update_focus_previous_at_page_start_stops_test() {
+  // `h` stops at the page boundary. Cursor at the first sentence of
+  // page 1 (sentence 3) — there is no previous sentence on page 1,
+  // so FocusPrevious is a no-op rather than crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
   let #(updated, _) = client.update(prior, FocusPrevious)
 
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+  assert updated == prior
 }
 
 pub fn update_focus_next_crossing_page_clears_undo_stack_test() {
@@ -1391,15 +1327,16 @@ pub fn update_focus_paragraph_up_lands_on_first_of_previous_test() {
   assert updated == Model(..prior, focused_sentence: Some(0))
 }
 
-pub fn update_focus_paragraph_up_crosses_page_test() {
-  // From the first paragraph of page 1, `k` crosses back to page 0
-  // and lands on the first sentence of paragraph 1 (the previous
-  // paragraph in document order).
+pub fn update_focus_paragraph_up_at_page_start_stops_test() {
+  // `k` stops at the page boundary. Cursor at the first paragraph of
+  // page 1 (sentence 3 in paragraph 2) — there is no earlier
+  // paragraph on page 1, so FocusParagraphUp is a no-op rather than
+  // crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
   let #(updated, _) = client.update(prior, FocusParagraphUp)
 
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+  assert updated == prior
 }
 
 pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
@@ -1561,17 +1498,6 @@ pub fn update_next_page_keeps_dormant_cursor_dormant_test() {
   let #(updated, _) = client.update(prior, NextPage)
 
   assert updated == Model(..prior, current_page: 1)
-}
-
-pub fn update_previous_page_resets_cursor_when_vim_mode_active_test() {
-  // Mirror of next-page: PreviousPage in vim mode lands the cursor
-  // on the first non-erased sentence of the previous page (sentence
-  // 0), regardless of where the cursor was before.
-  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(4))
-
-  let #(updated, _) = client.update(prior, PreviousPage)
-
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(0))
 }
 
 // ---------------------------------------------------------------------------

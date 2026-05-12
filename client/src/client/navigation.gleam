@@ -13,7 +13,7 @@
 //// actually on screen.
 
 import gleam/list
-import gleam/option.{type Option, None}
+import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
 
 import client/pagination.{type Page}
@@ -83,20 +83,43 @@ pub fn first_on_page(
 /// status — `next_sentence` walks past it before searching. Returns
 /// `None` when no visible sentence exists in the requested
 /// direction.
+///
+/// Backward navigation stops at the page boundary: if the previous
+/// sentence lives on an earlier page, `None` is returned instead of
+/// crossing to that page. Forward navigation crosses freely.
 pub fn next_sentence(
   locations: List(SentenceLocation),
   current: Int,
   erased: Set(Int),
   direction: Direction,
 ) -> Option(SentenceLocation) {
-  let ordered = case direction {
-    Forward -> locations
-    Backward -> list.reverse(locations)
+  case direction {
+    Forward ->
+      locations
+      |> drop_through(current)
+      |> list.find(fn(loc) { !set.contains(erased, loc.sentence_global_index) })
+      |> option.from_result
+
+    Backward -> {
+      let current_page =
+        locations
+        |> list.find(fn(loc) { loc.sentence_global_index == current })
+        |> option.from_result
+        |> option.map(fn(loc) { loc.page_index })
+      case current_page {
+        None -> None
+        Some(page) ->
+          locations
+          |> list.filter(fn(loc) { loc.page_index == page })
+          |> list.reverse
+          |> drop_through(current)
+          |> list.find(fn(loc) {
+            !set.contains(erased, loc.sentence_global_index)
+          })
+          |> option.from_result
+      }
+    }
   }
-  ordered
-  |> drop_through(current)
-  |> list.find(fn(loc) { !set.contains(erased, loc.sentence_global_index) })
-  |> option.from_result
 }
 
 /// First non-erased sentence of the immediately adjacent paragraph
@@ -127,27 +150,42 @@ pub fn next_paragraph_sentence(
       |> option.from_result
 
     Backward -> {
-      let candidates =
+      // Backward paragraph-jump stops at the page boundary: only
+      // paragraphs on the same page as current_paragraph are eligible.
+      let current_page =
         locations
-        |> list.filter(fn(loc) {
-          loc.paragraph_global_index < current_paragraph
-          && !set.contains(erased, loc.sentence_global_index)
+        |> list.find(fn(loc) {
+          loc.paragraph_global_index == current_paragraph
         })
-      case list.last(candidates) {
-        Error(_) -> None
-        Ok(last_candidate) -> {
-          // `candidates` is in document order, so `list.last` is
-          // the highest paragraph_global_index strictly less than
-          // current_paragraph that still has a visible sentence.
-          // Re-scan from the start for the first sentence in that
-          // paragraph — that is the top of the previous-visible
-          // paragraph, which is where `k` should land.
-          let target_paragraph = last_candidate.paragraph_global_index
-          candidates
-          |> list.find(fn(loc) {
-            loc.paragraph_global_index == target_paragraph
-          })
-          |> option.from_result
+        |> option.from_result
+        |> option.map(fn(loc) { loc.page_index })
+      case current_page {
+        None -> None
+        Some(page) -> {
+          let candidates =
+            locations
+            |> list.filter(fn(loc) {
+              loc.paragraph_global_index < current_paragraph
+              && loc.page_index == page
+              && !set.contains(erased, loc.sentence_global_index)
+            })
+          case list.last(candidates) {
+            Error(_) -> None
+            Ok(last_candidate) -> {
+              // `candidates` is in document order, so `list.last` is
+              // the highest paragraph_global_index strictly less than
+              // current_paragraph on the same page that still has a
+              // visible sentence. Re-scan for the first sentence in
+              // that paragraph — the top of the previous visible
+              // paragraph, where `k` should land.
+              let target_paragraph = last_candidate.paragraph_global_index
+              candidates
+              |> list.find(fn(loc) {
+                loc.paragraph_global_index == target_paragraph
+              })
+              |> option.from_result
+            }
+          }
         }
       }
     }

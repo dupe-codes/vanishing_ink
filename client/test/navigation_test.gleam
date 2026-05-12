@@ -265,17 +265,12 @@ pub fn next_sentence_backward_skips_erased_test() {
     ))
 }
 
-pub fn next_sentence_backward_crosses_page_boundary_test() {
-  // Sentence 3 is the first on page 1; Backward must land on the
-  // last sentence of page 0.
+pub fn next_sentence_backward_stops_at_page_boundary_test() {
+  // Sentence 3 is the first on page 1; Backward must stop at the
+  // page boundary and return None rather than crossing to page 0.
   let locations = locate_sentences(two_page_layout())
 
-  assert next_sentence(locations, 3, set.new(), Backward)
-    == Some(SentenceLocation(
-      page_index: 0,
-      paragraph_global_index: 1,
-      sentence_global_index: 2,
-    ))
+  assert next_sentence(locations, 3, set.new(), Backward) == None
 }
 
 pub fn next_sentence_backward_at_start_returns_none_test() {
@@ -372,30 +367,22 @@ pub fn next_paragraph_sentence_backward_jumps_to_first_of_previous_test() {
     ))
 }
 
-pub fn next_paragraph_sentence_backward_crosses_page_boundary_test() {
-  // From paragraph 2 (first on page 1), `k` must land on the first
-  // sentence of paragraph 1 — which is on page 0.
+pub fn next_paragraph_sentence_backward_stops_at_page_boundary_test() {
+  // From paragraph 2 (first paragraph on page 1), `k` must stop at
+  // the page boundary and return None rather than crossing to page 0.
   let locations = locate_sentences(two_page_layout())
 
-  assert next_paragraph_sentence(locations, 2, set.new(), Backward)
-    == Some(SentenceLocation(
-      page_index: 0,
-      paragraph_global_index: 1,
-      sentence_global_index: 2,
-    ))
+  assert next_paragraph_sentence(locations, 2, set.new(), Backward) == None
 }
 
-pub fn next_paragraph_sentence_backward_skips_fully_erased_paragraphs_test() {
-  // Paragraph 1 is fully erased; `k` from paragraph 2 must skip it
-  // and land on the first sentence of paragraph 0.
+pub fn next_paragraph_sentence_backward_no_cross_page_even_when_erased_test() {
+  // Paragraph 1 on page 0 is fully erased; `k` from paragraph 2
+  // (page 1) still returns None — page boundary stops apply
+  // regardless of erase state on the other page.
   let locations = locate_sentences(two_page_layout())
 
   assert next_paragraph_sentence(locations, 2, set.from_list([2]), Backward)
-    == Some(SentenceLocation(
-      page_index: 0,
-      paragraph_global_index: 0,
-      sentence_global_index: 0,
-    ))
+    == None
 }
 
 pub fn next_paragraph_sentence_backward_lands_on_first_non_erased_in_target_test() {
