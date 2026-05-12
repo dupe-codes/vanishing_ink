@@ -36,12 +36,12 @@ pub fn segments_plain_prose_test() {
   assert s1.index == 1
   assert s1.global_index == 1
 
-  // "Hello world." → ["Hello", "world."]
+  // "Hello world." segments into ["Hello", "world."].
   let assert [w0, w1] = s0.words
   assert w0 == Word(index: 0, global_index: 0, text: "Hello")
   assert w1 == Word(index: 1, global_index: 1, text: "world.")
 
-  // "This is a test." → ["This", "is", "a", "test."]
+  // "This is a test." segments into ["This", "is", "a", "test."].
   let assert [w2, w3, w4, w5] = s1.words
   assert w2 == Word(index: 0, global_index: 2, text: "This")
   assert w3 == Word(index: 1, global_index: 3, text: "is")
@@ -57,18 +57,25 @@ pub fn splits_paragraphs_on_double_newlines_test() {
   let result =
     segmenter.segment("First paragraph here.\n\nSecond paragraph here.")
 
-  let assert [chapter] = result.chapters
-  let assert [p0, p1] = chapter.paragraphs
-
-  assert p0.index == 0
-  assert p1.index == 1
-
-  let assert [s0] = p0.sentences
-  let assert [s1] = p1.sentences
-
-  // Global sentence indices increment across paragraphs within a chapter.
-  assert s0.global_index == 0
-  assert s1.global_index == 1
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "First"),
+            Word(index: 1, global_index: 1, text: "paragraph"),
+            Word(index: 2, global_index: 2, text: "here."),
+          ]),
+        ]),
+        Paragraph(index: 1, sentences: [
+          Sentence(index: 0, global_index: 1, words: [
+            Word(index: 0, global_index: 3, text: "Second"),
+            Word(index: 1, global_index: 4, text: "paragraph"),
+            Word(index: 2, global_index: 5, text: "here."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn empty_paragraphs_are_skipped_test() {
@@ -78,8 +85,21 @@ pub fn empty_paragraphs_are_skipped_test() {
   // *and* prior content survives the run — see the chapter-break test).
   let result = segmenter.segment("Alpha.\n\nBeta.")
 
-  let assert [chapter] = result.chapters
-  assert list.length(chapter.paragraphs) == 2
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Alpha."),
+          ]),
+        ]),
+        Paragraph(index: 1, sentences: [
+          Sentence(index: 0, global_index: 1, words: [
+            Word(index: 0, global_index: 1, text: "Beta."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -91,19 +111,28 @@ pub fn detects_chapter_n_headings_test() {
     "Chapter 1\n\nFirst chapter prose here.\n\nChapter 2\n\nSecond chapter prose."
   let result = segmenter.segment(text)
 
-  let assert [c0, c1] = result.chapters
-  assert c0.index == 0
-  assert c1.index == 1
-  assert c0.title == Some("Chapter 1")
-  assert c1.title == Some("Chapter 2")
-
-  // Sentence globals continue across chapters.
-  let assert [p0] = c0.paragraphs
-  let assert [p1] = c1.paragraphs
-  let assert [s0] = p0.sentences
-  let assert [s1] = p1.sentences
-  assert s0.global_index == 0
-  assert s1.global_index == 1
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: Some("Chapter 1"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "First"),
+            Word(index: 1, global_index: 1, text: "chapter"),
+            Word(index: 2, global_index: 2, text: "prose"),
+            Word(index: 3, global_index: 3, text: "here."),
+          ]),
+        ]),
+      ]),
+      Chapter(index: 1, title: Some("Chapter 2"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 1, words: [
+            Word(index: 0, global_index: 4, text: "Second"),
+            Word(index: 1, global_index: 5, text: "chapter"),
+            Word(index: 2, global_index: 6, text: "prose."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn detects_roman_numeral_chapter_headings_test() {
@@ -123,6 +152,95 @@ pub fn detects_roman_numeral_chapter_headings_test() {
         ]),
       ]),
     ])
+}
+
+pub fn detects_markdown_headings_test() {
+  let text = "# Prologue\n\nIt begins here.\n\n## Part Two\n\nIt ends here."
+  let result = segmenter.segment(text)
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: Some("Prologue"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "It"),
+            Word(index: 1, global_index: 1, text: "begins"),
+            Word(index: 2, global_index: 2, text: "here."),
+          ]),
+        ]),
+      ]),
+      Chapter(index: 1, title: Some("Part Two"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 1, words: [
+            Word(index: 0, global_index: 3, text: "It"),
+            Word(index: 1, global_index: 4, text: "ends"),
+            Word(index: 2, global_index: 5, text: "here."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
+pub fn triple_newlines_create_untitled_chapter_break_test() {
+  let text = "Some text here.\n\n\nMore text here."
+  let result = segmenter.segment(text)
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Some"),
+            Word(index: 1, global_index: 1, text: "text"),
+            Word(index: 2, global_index: 2, text: "here."),
+          ]),
+        ]),
+      ]),
+      Chapter(index: 1, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 1, words: [
+            Word(index: 0, global_index: 3, text: "More"),
+            Word(index: 1, global_index: 4, text: "text"),
+            Word(index: 2, global_index: 5, text: "here."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
+pub fn no_chapter_patterns_wraps_in_single_implicit_chapter_test() {
+  let result = segmenter.segment("Just some prose without any structure.")
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Just"),
+            Word(index: 1, global_index: 1, text: "some"),
+            Word(index: 2, global_index: 2, text: "prose"),
+            Word(index: 3, global_index: 3, text: "without"),
+            Word(index: 4, global_index: 4, text: "any"),
+            Word(index: 5, global_index: 5, text: "structure."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
+pub fn line_starting_with_chapter_but_not_heading_is_prose_test() {
+  // "Chapter is over" is regular prose — the word after "Chapter " is
+  // neither a digit run nor a valid roman numeral, so the segmenter
+  // must not treat it as a heading.
+  let result = segmenter.segment("Chapter is over for me, I think.")
+
+  let assert [chapter] = result.chapters
+  assert chapter.title == None
+  let assert [paragraph] = chapter.paragraphs
+  let assert [sentence] = paragraph.sentences
+
+  let texts = list.map(sentence.words, fn(w) { w.text })
+  assert texts == ["Chapter", "is", "over", "for", "me,", "I", "think."]
 }
 
 pub fn chapter_followed_by_lowercase_roman_word_is_prose_test() {
@@ -175,15 +293,18 @@ pub fn adjacent_headings_preserve_first_title_test() {
   let text = "Chapter 1\n# Prologue\n\nText here."
   let result = segmenter.segment(text)
 
-  let assert [c0, c1] = result.chapters
-  assert c0 == Chapter(index: 0, title: Some("Chapter 1"), paragraphs: [])
-  let assert [paragraph] = c1.paragraphs
-  let texts = list.map(paragraph.sentences, fn(s) {
-    list.map(s.words, fn(w) { w.text })
-  })
-  assert c1.index == 1
-  assert c1.title == Some("Prologue")
-  assert texts == [["Text", "here."]]
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: Some("Chapter 1"), paragraphs: []),
+      Chapter(index: 1, title: Some("Prologue"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Text"),
+            Word(index: 1, global_index: 1, text: "here."),
+          ]),
+        ]),
+      ]),
+    ])
 }
 
 pub fn trailing_heading_without_body_preserves_title_test() {
@@ -193,54 +314,19 @@ pub fn trailing_heading_without_body_preserves_title_test() {
   let text = "First chapter prose.\n\n# Epilogue"
   let result = segmenter.segment(text)
 
-  let assert [c0, c1] = result.chapters
-  assert c0.title == None
-  let assert [paragraph] = c0.paragraphs
-  let texts = list.map(paragraph.sentences, fn(s) {
-    list.map(s.words, fn(w) { w.text })
-  })
-  assert texts == [["First", "chapter", "prose."]]
-  assert c1 == Chapter(index: 1, title: Some("Epilogue"), paragraphs: [])
-}
-
-pub fn detects_markdown_headings_test() {
-  let text = "# Prologue\n\nIt begins here.\n\n## Part Two\n\nIt ends here."
-  let result = segmenter.segment(text)
-
-  let assert [c0, c1] = result.chapters
-  assert c0.title == Some("Prologue")
-  assert c1.title == Some("Part Two")
-}
-
-pub fn triple_newlines_create_untitled_chapter_break_test() {
-  let text = "Some text here.\n\n\nMore text here."
-  let result = segmenter.segment(text)
-
-  let assert [c0, c1] = result.chapters
-  assert c0.title == None
-  assert c1.title == None
-  assert c0.index == 0
-  assert c1.index == 1
-}
-
-pub fn no_chapter_patterns_wraps_in_single_implicit_chapter_test() {
-  let result = segmenter.segment("Just some prose without any structure.")
-
-  let assert [chapter] = result.chapters
-  assert chapter.title == None
-  assert chapter.index == 0
-}
-
-pub fn line_starting_with_chapter_but_not_heading_is_prose_test() {
-  // "Chapter is over" is regular prose — the word after "Chapter " is
-  // neither a digit run nor a valid roman numeral, so the segmenter
-  // must not treat it as a heading.
-  let result = segmenter.segment("Chapter is over for me, I think.")
-
-  let assert [chapter] = result.chapters
-  assert chapter.title == None
-  let assert [paragraph] = chapter.paragraphs
-  let assert [_] = paragraph.sentences
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "First"),
+            Word(index: 1, global_index: 1, text: "chapter"),
+            Word(index: 2, global_index: 2, text: "prose."),
+          ]),
+        ]),
+      ]),
+      Chapter(index: 1, title: Some("Epilogue"), paragraphs: []),
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +349,10 @@ pub fn multi_period_abbreviation_does_not_split_test() {
 
   let assert [chapter] = result.chapters
   let assert [paragraph] = chapter.paragraphs
-  let assert [_one] = paragraph.sentences
+  let assert [sentence] = paragraph.sentences
+
+  let texts = list.map(sentence.words, fn(w) { w.text })
+  assert texts == ["The", "U.S.A.", "is", "a", "country."]
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +384,10 @@ pub fn ellipsis_does_not_split_sentence_test() {
 
   let assert [chapter] = result.chapters
   let assert [paragraph] = chapter.paragraphs
-  let assert [_only_sentence] = paragraph.sentences
+  let assert [sentence] = paragraph.sentences
+
+  let texts = list.map(sentence.words, fn(w) { w.text })
+  assert texts == ["He", "waited...", "Then", "left."]
 }
 
 // ---------------------------------------------------------------------------
