@@ -70,7 +70,7 @@ pub fn book_id_decoder_rejects_non_string_on_js_target_test() {
 // ---------------------------------------------------------------------------
 
 fn empty_model() -> Model {
-  Model(text: None, pages: [], current_page: 0, viewport_height: 0.0)
+  Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
 }
 
 fn two_chapter_text() -> SegmentedText {
@@ -105,12 +105,15 @@ fn two_chapter_text() -> SegmentedText {
 
 pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
   // `TextLoaded` must (a) move `text: None` into `text: Some(payload)`
-  // so the renderer stops drawing the placeholder, and (b) reset the
-  // paginated view state — empty pages, current_page back to 0. The
-  // follow-up `ParagraphsMeasured` from the after_paint effect is
-  // what fills `pages` in, so the immediate post-`TextLoaded` state
-  // is "text loaded, pagination pending". Asserting on the full
-  // model pins both transitions in one place.
+  // so the renderer stops drawing the placeholder, (b) refresh the
+  // cached `flat_paragraphs` so neither `update` nor `view` has to
+  // re-flatten the book on every page-change keystroke, and (c)
+  // reset the paginated view state — empty pages, current_page
+  // back to 0. The follow-up `ParagraphsMeasured` from the
+  // after_paint effect is what fills `pages` in, so the immediate
+  // post-`TextLoaded` state is "text loaded, pagination pending".
+  // Asserting on the full model pins all three transitions in one
+  // place.
   let payload =
     SegmentedText(chapters: [
       Chapter(index: 0, title: None, paragraphs: [
@@ -127,17 +130,18 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
   assert updated
     == Model(
       text: Some(payload),
+      flat_paragraphs: pagination.flatten(payload),
       pages: [],
       current_page: 0,
-      viewport_height: 0.0,
     )
 }
 
 pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() {
   // A second `TextLoaded` replaces the prior payload rather than
-  // merging it; it also resets `pages` and `current_page` so the
-  // reader cannot land on a stale page index from the prior book
-  // while measurement of the new payload is in flight.
+  // merging it; it also resets `pages`, `current_page`, and the
+  // cached `flat_paragraphs` so the reader cannot land on a stale
+  // page index from the prior book while measurement of the new
+  // payload is in flight.
   let first =
     SegmentedText(chapters: [
       Chapter(index: 0, title: None, paragraphs: []),
@@ -149,9 +153,9 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
   let prior =
     Model(
       text: Some(first),
+      flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
-      viewport_height: 800.0,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -159,9 +163,9 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
   assert updated
     == Model(
       text: Some(second),
+      flat_paragraphs: pagination.flatten(second),
       pages: [],
       current_page: 0,
-      viewport_height: 800.0,
     )
 }
 
@@ -177,21 +181,21 @@ pub fn update_paragraphs_measured_calculates_pages_from_text_test() {
   // budget dropped from the message) or the pagination algorithm
   // (greedy fit broken).
   let text = two_chapter_text()
-  let prior = Model(..empty_model(), text: Some(text))
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
 
   let #(updated, _effect) =
     client.update(
       prior,
-      ParagraphsMeasured(
-        heights: heights,
-        viewport_height: 600.0,
-        available_height: 250.0,
-      ),
+      ParagraphsMeasured(heights: heights, available_height: 250.0),
     )
 
   assert list.length(updated.pages) == 2
-  assert updated.viewport_height == 600.0
   assert updated.current_page == 0
 }
 
@@ -202,18 +206,20 @@ pub fn update_paragraphs_measured_clamps_current_page_into_new_total_test() {
   // otherwise the view would try to render a page that no longer
   // exists and fall through to the "preparing" branch.
   let text = two_chapter_text()
-  let prior = Model(..empty_model(), text: Some(text), current_page: 5)
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      current_page: 5,
+    )
 
   // 25px budget forces one paragraph per page → 3 pages total.
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
   let #(updated, _effect) =
     client.update(
       prior,
-      ParagraphsMeasured(
-        heights: heights,
-        viewport_height: 300.0,
-        available_height: 25.0,
-      ),
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
     )
 
   assert list.length(updated.pages) == 3
@@ -223,20 +229,15 @@ pub fn update_paragraphs_measured_clamps_current_page_into_new_total_test() {
 pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
   // Defensive: a measurement that arrives while `text` is still
   // `None` (in practice impossible without a future bug) must not
-  // panic; the reducer just records the viewport and leaves pages
-  // empty so the view stays on the loading placeholder.
+  // panic; the reducer just leaves pages empty so the view stays
+  // on the loading placeholder.
   let #(updated, _effect) =
     client.update(
       empty_model(),
-      ParagraphsMeasured(
-        heights: [],
-        viewport_height: 420.0,
-        available_height: 380.0,
-      ),
+      ParagraphsMeasured(heights: [], available_height: 380.0),
     )
 
   assert updated.pages == []
-  assert updated.viewport_height == 420.0
 }
 
 // ---------------------------------------------------------------------------
@@ -329,9 +330,9 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
   let prior =
     Model(
       text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
-      viewport_height: 800.0,
     )
 
   let #(updated, _effect) = client.update(prior, ViewportResized)
@@ -375,7 +376,12 @@ pub fn view_renders_measurement_container_and_preparing_when_pages_empty_test() 
         ]),
       ]),
     ])
-  let model = Model(..empty_model(), text: Some(text))
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
 
   let rendered = client.view(model) |> element.to_string
 
@@ -406,9 +412,9 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   let model =
     Model(
       text: Some(text),
+      flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      viewport_height: 600.0,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -444,9 +450,9 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
   let model =
     Model(
       text: Some(text),
+      flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
-      viewport_height: 600.0,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -484,9 +490,9 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
   let model =
     Model(
       text: Some(text),
+      flat_paragraphs: flat,
       pages: pages,
       current_page: 0,
-      viewport_height: 600.0,
     )
 
   let rendered = client.view(model) |> element.to_string

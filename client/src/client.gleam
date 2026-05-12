@@ -64,20 +64,24 @@ const page_content_selector: String = "#vi-page-content"
 /// * `text` — `None` before the sample (or a future server payload)
 ///   has been dispatched through the update loop, `Some(text)`
 ///   afterwards.
+/// * `flat_paragraphs` — the flattened `PageParagraph` list cached
+///   alongside `text`. Computed once on `TextLoaded` and reused by
+///   both `ParagraphsMeasured` (to feed `calculate_pages`) and
+///   `view_paginated` (to populate the off-screen measurement
+///   container). Recomputing it per render would walk the whole
+///   `SegmentedText` on every `NextPage` / `PreviousPage` keystroke
+///   for no semantic reason.
 /// * `pages` — pre-calculated page boundaries. Empty between
 ///   `TextLoaded` and the first `ParagraphsMeasured`, and during a
 ///   resize while measurement is in flight.
 /// * `current_page` — zero-based index into `pages`. Always clamped
 ///   into `[0, list.length(pages))` after a measurement.
-/// * `viewport_height` — last measured `window.innerHeight`, kept on
-///   the model so a future quest can react to size changes without
-///   re-running FFI.
 pub type Model {
   Model(
     text: Option(SegmentedText),
+    flat_paragraphs: List(PageParagraph),
     pages: List(Page),
     current_page: Int,
-    viewport_height: Float,
   )
 }
 
@@ -89,12 +93,11 @@ pub type Msg {
   TextLoaded(SegmentedText)
 
   /// Browser paragraph heights have been read via FFI. Carries the
-  /// `(global_index, height)` pairs alongside the latest viewport
-  /// height and the available content-area height the pagination
-  /// algorithm should fit pages into.
+  /// `(global_index, height)` pairs alongside the available
+  /// content-area height the pagination algorithm should fit pages
+  /// into.
   ParagraphsMeasured(
     heights: List(#(Int, Float)),
-    viewport_height: Float,
     available_height: Float,
   )
 
@@ -137,7 +140,7 @@ pub fn main() -> Nil {
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   let model =
-    Model(text: None, pages: [], current_page: 0, viewport_height: 0.0)
+    Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
 
   // Three independent boot effects: dispatch the sample text through
   // the update loop, install the debounced resize listener, and
@@ -163,16 +166,21 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     TextLoaded(text) -> #(
-      Model(..model, text: Some(text), pages: [], current_page: 0),
+      Model(
+        text: Some(text),
+        flat_paragraphs: pagination.flatten(text),
+        pages: [],
+        current_page: 0,
+      ),
       measure_after_paint(),
     )
 
-    ParagraphsMeasured(heights, viewport_height, available_height) -> {
+    ParagraphsMeasured(heights, available_height) -> {
       let pages = case model.text {
         None -> []
-        Some(text) ->
+        Some(_) ->
           pagination.calculate_pages(
-            pagination.flatten(text),
+            model.flat_paragraphs,
             pagination.heights_from_pairs(heights),
             available_height,
           )
@@ -180,12 +188,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       let total = list.length(pages)
       let clamped = pagination.clamp_page_index(model.current_page, total)
       #(
-        Model(
-          ..model,
-          pages: pages,
-          current_page: clamped,
-          viewport_height: viewport_height,
-        ),
+        Model(..model, pages: pages, current_page: clamped),
         effect.none(),
       )
     }
@@ -208,20 +211,18 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
 /// Schedule an `after_paint` effect that reads paragraph heights and
 /// the available content-area height from the live DOM, then
-/// dispatches `ParagraphsMeasured`. Falls back to `viewport_height`
+/// dispatches `ParagraphsMeasured`. Falls back to `window.innerHeight`
 /// when the page-content sentinel cannot be located so pagination
 /// still produces output rather than getting wedged.
 fn measure_after_paint() -> Effect(Msg) {
   effect.after_paint(fn(dispatch, _root) {
-    let viewport_height = ffi.get_viewport_height()
     let available_height = case ffi.get_element_height(page_content_selector) {
       Ok(height) -> height
-      Error(_) -> viewport_height
+      Error(_) -> ffi.get_viewport_height()
     }
     let heights = ffi.measure_paragraphs(measurement_container_selector)
     dispatch(ParagraphsMeasured(
       heights: heights,
-      viewport_height: viewport_height,
       available_height: available_height,
     ))
   })
@@ -234,7 +235,8 @@ fn measure_after_paint() -> Effect(Msg) {
 pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
-    Some(text) -> view_paginated(text, model.pages, model.current_page)
+    Some(_) ->
+      view_paginated(model.flat_paragraphs, model.pages, model.current_page)
   }
 
   html.div([attribute.id("vi-shell"), attribute.class("reader")], [body])
@@ -245,11 +247,10 @@ fn view_placeholder() -> Element(Msg) {
 }
 
 fn view_paginated(
-  text: SegmentedText,
+  flat_paragraphs: List(PageParagraph),
   pages: List(Page),
   current_page: Int,
 ) -> Element(Msg) {
-  let flat = pagination.flatten(text)
   let total = list.length(pages)
   let visible = case pagination.nth(pages, current_page) {
     Some(page) -> view_page(page)
@@ -267,7 +268,7 @@ fn view_paginated(
       ),
     ]),
     view_page_indicator(total, current_page),
-    view_measurement_container(flat),
+    view_measurement_container(flat_paragraphs),
   ])
 }
 
