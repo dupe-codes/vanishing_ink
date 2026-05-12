@@ -56,10 +56,6 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
 
 fn status(req: Request) -> Response {
   use <- wisp.require_method(req, Get)
-  // The shared `BookId` type is touched here so the cross-target path
-  // dependency keeps getting exercised on every build. Drop this once
-  // a real handler covers it.
-  let _: shared.BookId = shared.book_id("placeholder")
   let body =
     json.object([#("status", json.string("ok"))])
     |> json.to_string
@@ -537,17 +533,27 @@ fn user_settings_decoder() -> decode.Decoder(UserSettings) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Render every decode failure on a single line. Reporting only the
+/// first error meant a client missing two fields had to fix one,
+/// re-request, then learn about the second; rolling them all up
+/// removes that round-trip.
 fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
   case errors {
     [] -> "invalid JSON body"
-    [decode.DecodeError(expected, found, path), ..] -> {
-      let path_str = case path {
-        [] -> "<root>"
-        _ -> string_join_dot(path)
-      }
-      "expected " <> expected <> " at " <> path_str <> " but found " <> found
-    }
+    _ ->
+      errors
+      |> list.map(describe_decode_error)
+      |> string.join("; ")
   }
+}
+
+fn describe_decode_error(error: decode.DecodeError) -> String {
+  let decode.DecodeError(expected, found, path) = error
+  let path_str = case path {
+    [] -> "<root>"
+    _ -> string.join(path, ".")
+  }
+  "expected " <> expected <> " at " <> path_str <> " but found " <> found
 }
 
 /// Log a SQLite error with operator-visible context, then return the
@@ -559,27 +565,28 @@ fn db_error_response(operation: String, error: sqlight.Error) -> Response {
   wisp.internal_server_error()
 }
 
-fn string_join_dot(path: List(String)) -> String {
-  list.fold(path, "", fn(acc, segment) {
-    case acc {
-      "" -> segment
-      _ -> acc <> "." <> segment
-    }
-  })
-}
-
-/// Walk the segmented tree once to compute the word and sentence
-/// counts that get stored on the `books` row. Done here rather than
-/// inside `segmenter` so the segmenter stays focused on segmentation —
-/// counting is a server-only concern (the client uses the same
-/// numbers it receives in the upload response).
+/// Word and sentence totals for the stored `books` row. Global indices
+/// are assigned by the segmenter in document reading order starting at
+/// zero, so the totals are just `last.global_index + 1`; walking to
+/// the last sentence/word is cheap and skips the cost of summing
+/// `list.length` over every word list. Returns `(0, 0)` for an empty
+/// document (no chapters, or chapters with no paragraphs / sentences /
+/// words).
 fn count_segments(segmented: segmenter.SegmentedText) -> #(Int, Int) {
-  list.fold(segmented.chapters, #(0, 0), fn(outer, chapter) {
-    list.fold(chapter.paragraphs, outer, fn(mid, paragraph) {
-      list.fold(paragraph.sentences, mid, fn(inner, sentence) {
-        let #(words, sentences) = inner
-        #(words + list.length(sentence.words), sentences + 1)
-      })
-    })
-  })
+  let last_sentence =
+    segmented.chapters
+    |> list.flat_map(fn(chapter) { chapter.paragraphs })
+    |> list.flat_map(fn(paragraph) { paragraph.sentences })
+    |> list.last
+  case last_sentence {
+    Error(_) -> #(0, 0)
+    Ok(sentence) -> {
+      let last_word = list.last(sentence.words)
+      let word_count = case last_word {
+        Error(_) -> 0
+        Ok(word) -> word.global_index + 1
+      }
+      #(word_count, sentence.global_index + 1)
+    }
+  }
 }

@@ -6,6 +6,7 @@
 
 import gleam/dynamic/decode
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import server/types.{
   type Book, type BookMeta, type ReadingState, type UserSettings, Book, BookMeta,
   ReadingState, UserSettings,
@@ -24,22 +25,11 @@ const default_settings_id = "default"
 /// better than rollback-journal mode, which is the right default for a
 /// single-process desktop-style app like this one.
 pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
-  case sqlight.open(path) {
-    Error(error) -> Error(error)
-    Ok(connection) ->
-      case sqlight.exec(pragmas_sql, connection) {
-        Error(error) -> Error(error)
-        Ok(Nil) ->
-          case sqlight.exec(schema_sql, connection) {
-            Error(error) -> Error(error)
-            Ok(Nil) ->
-              case ensure_default_settings(connection) {
-                Error(error) -> Error(error)
-                Ok(_) -> Ok(connection)
-              }
-          }
-      }
-  }
+  use connection <- result.try(sqlight.open(path))
+  use _ <- result.try(sqlight.exec(pragmas_sql, connection))
+  use _ <- result.try(sqlight.exec(schema_sql, connection))
+  use _ <- result.try(ensure_default_settings(connection))
+  Ok(connection)
 }
 
 const pragmas_sql = "
@@ -72,6 +62,12 @@ CREATE TABLE IF NOT EXISTS user_settings (
   default_page_delay_ms INTEGER NOT NULL DEFAULT 2000
 );
 
+-- NOTE: `book_settings.book_id` and `reading_state.book_id` reference
+-- `books(id)` without an `ON DELETE CASCADE` clause. There is no book
+-- deletion endpoint today, but when one lands the foreign keys must
+-- gain `ON DELETE CASCADE` (or the delete handler must purge the
+-- dependent rows first) or the delete will fail with a FK violation
+-- under `PRAGMA foreign_keys = ON`.
 CREATE TABLE IF NOT EXISTS book_settings (
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   wpm INTEGER,
@@ -113,6 +109,15 @@ fn ensure_default_settings(
 // ---------------------------------------------------------------------------
 // Books
 // ---------------------------------------------------------------------------
+//
+// COLUMN-ORDER CONTRACT: the decoders below address row columns by
+// ordinal (`decode.field(0, ...)` etc.), so the `SELECT` column lists
+// in `list_books`, `get_book`, `get_reading_state`, `get_settings`, and
+// `update_settings` MUST match their corresponding decoders position
+// for position. Adding a column means appending it to both the SELECT
+// list and the decoder in the same order. The test suite covers a
+// round-trip of every field, which catches a mis-ordering as a value
+// mismatch on the changed field.
 
 /// Insert a new book row. `uploaded_at` is supplied by the caller so
 /// request handlers can stamp the time once and tests can pass a fixed
