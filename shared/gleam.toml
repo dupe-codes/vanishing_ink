@@ -1,0 +1,10 @@
+name = "shared"
+version = "0.1.0"
+description = "Shared types and serialisation used by the Vanishing Ink server and client. Compiles to both Erlang and JavaScript targets — keep dependencies target-agnostic."
+
+[dependencies]
+gleam_stdlib = ">= 0.60.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
