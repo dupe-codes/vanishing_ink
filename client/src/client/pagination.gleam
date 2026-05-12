@@ -97,6 +97,16 @@ pub fn flatten(text: SegmentedText) -> List(PageParagraph) {
 /// occupies its own page: pages always contain at least one
 /// paragraph, and pagination never splits mid-paragraph.
 ///
+/// **CSS contract:** the `heights` values must come from elements
+/// that establish a block formatting context — in practice the
+/// `.page-paragraph` wrappers in `client.gleam`, which use
+/// `display: flow-root` (see `styles.css`). `flow-root` contains the
+/// inner `.paragraph` bottom margin inside the wrapper, so
+/// `getBoundingClientRect().height` equals the full vertical space
+/// the paragraph occupies on-page, including the trailing gap. Heights
+/// measured without `flow-root` would silently exclude that margin and
+/// overflow content off page bottoms.
+///
 /// Returns `[]` when the input is empty.
 pub fn calculate_pages(
   paragraphs: List(PageParagraph),

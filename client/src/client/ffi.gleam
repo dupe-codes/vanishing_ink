@@ -24,6 +24,13 @@ pub fn get_element_height(selector: String) -> Result(Float, Nil)
 /// `data-paragraph-global-index` attribute and return their
 /// `(global_index, rendered_height)` pairs. Element order matches
 /// document order; entries with a non-integer index are skipped.
+///
+/// Heights are sourced from `getBoundingClientRect().height`. For the
+/// values to be accurate, the measured elements must establish a block
+/// formatting context — the `.page-paragraph` wrappers in `client.gleam`
+/// satisfy this via `display: flow-root` (see `styles.css`), which
+/// contains inner margins and makes the reported height equal the actual
+/// vertical page budget consumed by that paragraph.
 @external(javascript, "./ffi.ffi.mjs", "measure_paragraphs")
 pub fn measure_paragraphs(container_selector: String) -> List(#(Int, Float))
 

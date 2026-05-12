@@ -1,20 +1,30 @@
-// JavaScript implementation of `client/ffi.gleam`. Returns
-// runtime-shaped Gleam values so the Gleam-side signatures
-// (`Result(Float, Nil)`, `List(#(Int, Float))`) round-trip without
-// extra adaptation. `Ok`/`Error` and `toList` are imported from the
-// compiled client `gleam.mjs` re-export (which itself re-exports the
-// prelude) so the constructed values match the runtime classes the
-// rest of the program builds.
+/**
+ * JavaScript implementation of `client/ffi.gleam`.
+ *
+ * Gleam runtime encoding used in return values:
+ * - `Ok(value)` / `Error(undefined)` — Gleam `Result(T, Nil)` variants,
+ *   imported from the compiled prelude so they match the runtime classes
+ *   the rest of the program expects.
+ * - `toList(array)` — converts a JS array to a Gleam-runtime linked list.
+ * - `#(a, b)` tuples are represented as two-element JS arrays `[a, b]`.
+ */
 
 import { Ok, Error as GleamError, toList } from "../gleam.mjs";
 
 const PARAGRAPH_INDEX_ATTRIBUTE = "data-paragraph-global-index";
 const RESIZE_DEBOUNCE_MS = 250;
 
+/** @returns {number} The viewport height in CSS pixels, read at call time. */
 export function get_viewport_height() {
   return window.innerHeight;
 }
 
+/**
+ * Returns the rendered height of the first element matching `selector`.
+ * @param {string} selector CSS selector
+ * @returns {Ok<number>|GleamError} `Ok(height)` in CSS pixels, or `Error(Nil)`
+ *   when the selector matches no element.
+ */
 export function get_element_height(selector) {
   const el = document.querySelector(selector);
   if (el === null) {
@@ -23,6 +33,18 @@ export function get_element_height(selector) {
   return new Ok(el.getBoundingClientRect().height);
 }
 
+/**
+ * Measures all paragraphs inside `container_selector` by reading the
+ * `data-paragraph-global-index` attribute on each descendant element and
+ * recording its `getBoundingClientRect().height`.
+ *
+ * Accurate heights require the measured elements to use `display: flow-root`
+ * (see `.page-paragraph` in `styles.css`) so inner margins are captured
+ * rather than escaping the wrapper.
+ *
+ * @param {string} container_selector CSS selector for the measurement container
+ * @returns {List} Gleam-encoded list of `[global_index, height]` pairs
+ */
 export function measure_paragraphs(container_selector) {
   const container = document.querySelector(container_selector);
   if (container === null) {
@@ -43,6 +65,14 @@ export function measure_paragraphs(container_selector) {
   return toList(pairs);
 }
 
+/**
+ * Installs a debounced `resize` listener on `window`. Uses a
+ * trailing-edge debounce: the callback fires once, `RESIZE_DEBOUNCE_MS`
+ * after the *last* resize event in a burst. This prevents the Lustre
+ * update loop from being flooded during a continuous window-drag.
+ *
+ * @param {function(): void} callback Fired after each resize burst settles.
+ */
 export function on_resize(callback) {
   let pending = null;
   window.addEventListener("resize", () => {
@@ -56,6 +86,15 @@ export function on_resize(callback) {
   });
 }
 
+/**
+ * Installs a `keydown` listener for `ArrowLeft` and `ArrowRight`.
+ * `preventDefault()` suppresses the browser's default scroll-by-line
+ * behaviour so arrow key presses turn pages rather than also scrolling
+ * the viewport.
+ *
+ * @param {function(): void} previous_callback Fired on `ArrowLeft`.
+ * @param {function(): void} next_callback Fired on `ArrowRight`.
+ */
 export function on_arrow_key(previous_callback, next_callback) {
   window.addEventListener("keydown", (event) => {
     if (event.key === "ArrowLeft") {
@@ -68,6 +107,16 @@ export function on_arrow_key(previous_callback, next_callback) {
   });
 }
 
+/**
+ * Installs a `keydown` listener for the platform undo chord (`Cmd+Z`
+ * on macOS, `Ctrl+Z` elsewhere). `preventDefault()` stops the browser's
+ * native undo (e.g. undeleting typed text in a focused input) from
+ * running alongside the reader's undo. The `Shift` variant is excluded
+ * so a future redo handler can claim `Cmd+Shift+Z` / `Ctrl+Shift+Z`
+ * without conflict.
+ *
+ * @param {function(): void} callback Fired on the undo chord.
+ */
 export function on_undo_key(callback) {
   window.addEventListener("keydown", (event) => {
     // The undo chord is Cmd+Z on macOS and Ctrl+Z everywhere else.
