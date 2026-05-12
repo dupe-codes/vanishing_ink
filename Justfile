@@ -12,8 +12,16 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list --unsorted
 
-# Start the BEAM server on port 3000.
+# Start both the BEAM server and Lustre dev server in parallel.
+# Lustre dev server has built-in hot reload. The BEAM server restarts
+# on file changes via watchexec (install: cargo install watchexec-cli).
 dev:
+    watchexec -r -w server/src -w shared/src -- gleam run --target erlang -m server &
+    cd client && gleam run -m lustre/dev start &
+    wait
+
+# Start only the BEAM server (no hot reload).
+server-dev:
     cd server && gleam run
 
 # Build the server and the client bundle.
