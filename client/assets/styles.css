@@ -26,7 +26,10 @@
  *
  * Body classes:
  *   vi-light-mode      — flip --vi-bg / --vi-fg to the light palette
- *   vi-dyslexia-font   — switch font-family to OpenDyslexic
+ *   vi-dyslexia-font   — switch font-family to OpenDyslexic (the font
+ *                        face itself is loaded via a `<link>` declared
+ *                        in `gleam.toml`, not an `@import` here — see
+ *                        the comment near `.vi-dyslexia-font` below)
  *   vi-ghost-mode      — gate the `.sentence-erased` opacity variable
  *                        from --vi-ghost-opacity instead of `0`
  *   vi-reduced-motion  — strip the fade transition from `.sentence`
@@ -79,11 +82,15 @@ body.vi-reduced-motion {
   --vi-transition-duration: 0s;
 }
 
-/* OpenDyslexic — Google Fonts CDN. Self-hosting would be cleaner, but
- * the asset pipeline doesn't ship binaries, so the CDN avoids adding
- * a binary dependency just for the toggle. The body opts in via
+/* OpenDyslexic is loaded via a `<link rel="stylesheet">` declared in
+ * `gleam.toml` under `[[tools.lustre.html.stylesheets]]`, not an
+ * `@import` here. Per the CSS Cascading and Inheritance specification,
+ * `@import` must precede every other at-rule and style rule; an
+ * `@import` placed after `:root` / `body.vi-light-mode` /
+ * `body.vi-reduced-motion` is silently invalidated by the browser,
+ * which is what shipped in the previous revision and left the
+ * `.vi-dyslexia-font` toggle non-functional. The body opts in via
  * `.vi-dyslexia-font`; default body retains the system stack. */
-@import url("https://fonts.googleapis.com/css2?family=OpenDyslexic:wght@400;700&display=swap");
 
 * {
   box-sizing: border-box;
