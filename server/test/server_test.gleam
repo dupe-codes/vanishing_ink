@@ -14,6 +14,7 @@ import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/http
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import gleeunit
@@ -415,7 +416,9 @@ pub fn put_reading_state_round_trips_through_http_test() {
       sentence_bitset: Some(bytes),
       word_bitset: None,
       current_page: 5,
-      updated_at: Some("2026-05-12T02:00:00Z"),
+      // Canonicalised to millisecond precision so all timestamps
+      // share width — `parse_iso8601` always emits `.sss`.
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
     )
 
   // A subsequent GET must return the same payload — the upsert is
@@ -445,7 +448,67 @@ pub fn put_reading_state_stamps_books_last_read_at_test() {
       word_count: 12,
       sentence_count: 2,
       uploaded_at: created.book.uploaded_at,
-      last_read_at: Some("2026-05-12T04:00:00Z"),
+      last_read_at: Some("2026-05-12T04:00:00.000Z"),
+    )
+  assert books == [expected]
+}
+
+/// End-to-end LWW guard: a stale PUT must not regress either
+/// `reading_state.updated_at` OR `books.last_read_at`. The SQL-layer
+/// test below verifies the upsert predicate in isolation; this test
+/// closes the seam at the HTTP layer where a successful fresh PUT is
+/// followed by an older PUT — both the reading-state body and the
+/// library listing's `last_read_at` must reflect the FRESH timestamp.
+pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  // Fresh write at 03:00 — lands.
+  let fresh_body = put_reading_state_body("ghost", 7, "2026-05-12T03:00:00Z")
+  let fresh_response = http_put_reading_state(ctx, created.book.id, fresh_body)
+  assert fresh_response.status == 200
+  let fresh_decoded = decode_body(fresh_response, reading_state_wire_decoder())
+  assert fresh_decoded
+    == ReadingState(
+      book_id: created.book.id,
+      mode: "ghost",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 7,
+      updated_at: Some("2026-05-12T03:00:00.000Z"),
+    )
+
+  // Stale write at 02:00 — must be a no-op on disk. The server's
+  // response still re-reads, so it surfaces the 03:00 row.
+  let stale_body = put_reading_state_body("manual", 99, "2026-05-12T02:00:00Z")
+  let stale_response = http_put_reading_state(ctx, created.book.id, stale_body)
+  assert stale_response.status == 200
+  let stale_decoded = decode_body(stale_response, reading_state_wire_decoder())
+  assert stale_decoded == fresh_decoded
+
+  // The reading-state read path agrees.
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  assert decode_body(get_response, reading_state_wire_decoder())
+    == fresh_decoded
+
+  // Critically: the listing's `last_read_at` must STILL be the fresh
+  // 03:00 timestamp, not the stale 02:00 one. An earlier iteration of
+  // this code stamped `books.last_read_at` unconditionally, which
+  // would have surfaced here as a 02:00 value — a silent disagreement
+  // between the reading_state and books views of "when was this last
+  // touched".
+  let listing =
+    router.handle_request(simulate.browser_request(http.Get, "/api/books"), ctx)
+  let books = decode_body(listing, decode.list(book_meta_wire_decoder()))
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Title",
+      author: None,
+      word_count: 12,
+      sentence_count: 2,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: Some("2026-05-12T03:00:00.000Z"),
     )
   assert books == [expected]
 }
@@ -487,11 +550,39 @@ pub fn put_reading_state_canonicalises_updated_at_test() {
   // An ISO 8601 timestamp with a numeric `+00:00` offset is equivalent
   // to a UTC timestamp; the server must canonicalise it to the `Z`
   // form so the SQL-side lexicographic comparison stays valid.
+  // Sub-second precision is also normalised to millisecond width so
+  // all stored timestamps share the same `.sss` suffix.
   let body = put_reading_state_body("manual", 0, "2026-05-12T02:00:00+00:00")
   let response = http_put_reading_state(ctx, created.book.id, body)
   assert response.status == 200
   let decoded = decode_body(response, reading_state_wire_decoder())
-  assert decoded.updated_at == Some("2026-05-12T02:00:00Z")
+  assert decoded.updated_at == Some("2026-05-12T02:00:00.000Z")
+}
+
+/// A client that sends millisecond precision should see it preserved
+/// in the canonical form — strict monotonicity of `updated_at` would
+/// be silently broken if the server truncated to whole seconds.
+pub fn put_reading_state_preserves_millisecond_precision_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let body = put_reading_state_body("manual", 0, "2026-05-12T02:00:00.250Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  assert decoded.updated_at == Some("2026-05-12T02:00:00.250Z")
+}
+
+pub fn put_reading_state_rejects_negative_current_page_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let body = put_reading_state_body("manual", -1, "2026-05-12T02:00:00Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 400
+  assert string.contains(simulate.read_body(response), "current_page")
+  // Persisted state should still be the empty default.
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let decoded = decode_body(get_response, reading_state_wire_decoder())
+  assert decoded.updated_at == None
 }
 
 pub fn put_reading_state_for_missing_book_is_404_test() {
@@ -627,6 +718,72 @@ pub fn settings_update_round_trips_test() {
   let assert Ok(Nil) = db.update_settings(ctx.db, new_settings)
   let assert Ok(read_back) = db.get_settings(ctx.db)
   assert read_back == new_settings
+}
+
+pub fn settings_put_rejects_out_of_range_values_test() {
+  use ctx <- with_context
+  // Each field is exercised in isolation by starting from a known-
+  // good record and poisoning one value. Asserting the body contains
+  // the field name keeps the test honest about which validator fired.
+  let cases = [
+    #(
+      "font_size",
+      types.UserSettings(..valid_settings(), font_size: -1),
+      "font_size",
+    ),
+    #(
+      "line_spacing",
+      types.UserSettings(..valid_settings(), line_spacing: 0.0),
+      "line_spacing",
+    ),
+    #(
+      "ghost_opacity_high",
+      types.UserSettings(..valid_settings(), ghost_opacity: 7.5),
+      "ghost_opacity",
+    ),
+    #(
+      "ghost_opacity_low",
+      types.UserSettings(..valid_settings(), ghost_opacity: -0.1),
+      "ghost_opacity",
+    ),
+    #(
+      "default_wpm",
+      types.UserSettings(..valid_settings(), default_wpm: 0),
+      "default_wpm",
+    ),
+    #(
+      "default_paragraph_delay_ms",
+      types.UserSettings(..valid_settings(), default_paragraph_delay_ms: -1),
+      "default_paragraph_delay_ms",
+    ),
+    #(
+      "default_page_delay_ms",
+      types.UserSettings(..valid_settings(), default_page_delay_ms: -1),
+      "default_page_delay_ms",
+    ),
+  ]
+  list.each(cases, fn(case_) {
+    let #(_name, bad_settings, expected_field) = case_
+    let response =
+      simulate.browser_request(http.Put, "/api/settings")
+      |> simulate.json_body(user_settings_to_json(bad_settings))
+      |> router.handle_request(ctx)
+    assert response.status == 400
+    assert string.contains(simulate.read_body(response), expected_field)
+  })
+  // Settings on disk should still be the defaults — none of the bad
+  // writes can have squeaked through.
+  let get_response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/settings"),
+      ctx,
+    )
+  assert decode_body(get_response, user_settings_wire_decoder())
+    == default_user_settings
+}
+
+fn valid_settings() -> UserSettings {
+  default_user_settings
 }
 
 pub fn settings_put_endpoint_round_trips_test() {
