@@ -76,10 +76,6 @@ body {
 }
 
 .word {
-  /* Inline span so the reading flow wraps naturally. The opacity
-   * transition is staged ahead of the erase feature — toggling
-   * `opacity: 0` on a `.word` will fade it out smoothly when the
-   * erase interaction lands. */
+  /* Inline span so the reading flow wraps naturally. */
   display: inline;
-  transition: opacity 0.3s ease;
 }
