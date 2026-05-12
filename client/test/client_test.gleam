@@ -596,11 +596,7 @@ pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
   // `undo_stack` and (b) delete its `erased` entry — restoring the
   // sentence to visible. Earlier entries on the stack stay intact.
   let prior =
-    Model(
-      ..empty_model(),
-      erased: set.from_list([2, 7]),
-      undo_stack: [7, 2],
-    )
+    Model(..empty_model(), erased: set.from_list([2, 7]), undo_stack: [7, 2])
 
   let #(updated, _effect) = client.update(prior, Undo)
 
@@ -853,8 +849,7 @@ pub fn update_touch_end_after_cancel_is_safe_test() {
   // after the cancellation) must not produce a phantom swipe. With
   // `TouchCancel` clearing `touch_start`, the subsequent `TouchEnd`
   // hits the `None` branch and exits cleanly.
-  let prior =
-    Model(..empty_model(), touch_start: Some(#(100.0, 200.0)))
+  let prior = Model(..empty_model(), touch_start: Some(#(100.0, 200.0)))
 
   let #(after_cancel, _effect) = client.update(prior, TouchCancel)
   let #(after_end, _effect) =

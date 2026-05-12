@@ -445,11 +445,7 @@ fn view_preparing() -> Element(Msg) {
   ])
 }
 
-fn view_page(
-  page: Page,
-  erased: Set(Int),
-  interactive: Bool,
-) -> Element(Msg) {
+fn view_page(page: Page, erased: Set(Int), interactive: Bool) -> Element(Msg) {
   html.div(
     [
       attribute.class("page"),
@@ -546,7 +542,10 @@ fn view_page_paragraph(
         int.to_string(page_paragraph.chapter_index),
       ),
     ],
-    [title_element, view_paragraph(page_paragraph.paragraph, erased, interactive)],
+    [
+      title_element,
+      view_paragraph(page_paragraph.paragraph, erased, interactive),
+    ],
   )
 }
 
