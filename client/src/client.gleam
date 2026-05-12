@@ -8,7 +8,6 @@
 //// `lustre_http`) so a later quest will replace the sample wiring with
 //// a real server request without changing the message shape.
 
-import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
@@ -29,27 +28,11 @@ import shared/segmenter.{
 // Application state
 // ---------------------------------------------------------------------------
 
-/// Top-level reader state. The non-text fields are scaffolded ahead of
-/// the features that drive them — `sentence_erased` is the future
-/// erase-bitset (keyed by sentence `global_index`), `current_page`
-/// belongs to the pagination quest, and `settings` will be wired into
-/// a settings panel. They live on the model now so the rendering
-/// pipeline and reducer shape don't have to be rewritten when those
-/// features land.
+/// Top-level reader state. The loaded book lives here as an
+/// `Option(SegmentedText)`: `None` before the sample has been
+/// dispatched through the update loop, `Some(text)` afterwards.
 pub type Model {
-  Model(
-    text: Option(SegmentedText),
-    sentence_erased: Dict(Int, Bool),
-    current_page: Int,
-    settings: ReaderSettings,
-  )
-}
-
-/// User-tunable reader appearance. Defaults match the dark-mode CSS
-/// shipped in `assets/styles.css`; the settings panel will surface
-/// these as controls in a later quest.
-pub type ReaderSettings {
-  ReaderSettings(font_size: Int, line_spacing: Float, dark_mode: Bool)
+  Model(text: Option(SegmentedText))
 }
 
 /// Application messages. Currently just the loaded-text path —
@@ -88,13 +71,7 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
-  let model =
-    Model(
-      text: None,
-      sentence_erased: dict.new(),
-      current_page: 0,
-      settings: default_settings(),
-    )
+  let model = Model(text: None)
 
   // Dispatch the sample text through the update loop so the
   // `TextLoaded` wiring is exercised end-to-end. When the HTTP path
@@ -105,13 +82,9 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   #(model, load)
 }
 
-fn default_settings() -> ReaderSettings {
-  ReaderSettings(font_size: 18, line_spacing: 1.6, dark_mode: True)
-}
-
-fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
+pub fn update(_model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> #(Model(..model, text: Some(text)), effect.none())
+    TextLoaded(text) -> #(Model(text: Some(text)), effect.none())
   }
 }
 
@@ -119,7 +92,7 @@ fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 // View
 // ---------------------------------------------------------------------------
 
-fn view(model: Model) -> Element(Msg) {
+pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
     Some(text) -> view_text(text)
