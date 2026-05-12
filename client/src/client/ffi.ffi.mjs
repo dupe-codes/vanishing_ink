@@ -59,8 +59,10 @@ export function on_resize(callback) {
 export function on_arrow_key(previous_callback, next_callback) {
   window.addEventListener("keydown", (event) => {
     if (event.key === "ArrowLeft") {
+      event.preventDefault();
       previous_callback();
     } else if (event.key === "ArrowRight") {
+      event.preventDefault();
       next_callback();
     }
   });
