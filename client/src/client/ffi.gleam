@@ -43,3 +43,11 @@ pub fn on_arrow_key(
   previous_callback previous_callback: fn() -> Nil,
   next_callback next_callback: fn() -> Nil,
 ) -> Nil
+
+/// Install a `keydown` listener on `window` that fires `callback`
+/// for the platform-conventional undo chord — `Cmd+Z` on macOS and
+/// `Ctrl+Z` everywhere else. `Cmd+Shift+Z` / `Ctrl+Shift+Z` (redo)
+/// is intentionally not caught here; there is no redo stack in the
+/// reader today. The listener persists for the lifetime of the page.
+@external(javascript, "./ffi.ffi.mjs", "on_undo_key")
+pub fn on_undo_key(callback: fn() -> Nil) -> Nil

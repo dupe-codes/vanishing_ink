@@ -151,6 +151,14 @@ body {
 
 .sentence {
   display: inline;
+  /* Opacity is driven by the reducer's `erased` map: an erased
+   * sentence renders with `style="opacity:0;"`, an un-erased one
+   * has no inline opacity at all. The transition fades both
+   * directions — erase fades out, undo fades back in — so the
+   * exposure step reads visibly rather than snapping. The duration
+   * is on the short side of "manual erase therapy" interactions so
+   * the page does not feel sluggish between rapid taps. */
+  transition: opacity 0.3s ease;
 }
 
 .word {
