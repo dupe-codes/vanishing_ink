@@ -86,6 +86,14 @@ fn empty_model() -> Model {
     undo_stack: [],
     touch_start: None,
     focused_sentence: None,
+    dark_mode: True,
+    font_size: client.default_font_size,
+    line_spacing: client.default_line_spacing,
+    ghost_mode: False,
+    ghost_opacity: client.default_ghost_opacity,
+    dyslexia_font: False,
+    reduced_motion: False,
+    settings_open: False,
   )
 }
 
@@ -145,14 +153,9 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
 
   assert updated
     == Model(
+      ..empty_model(),
       text: Some(payload),
       flat_paragraphs: pagination.flatten(payload),
-      pages: [],
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 }
 
@@ -172,28 +175,19 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
     ])
   let prior =
     Model(
+      ..empty_model(),
       text: Some(first),
       flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
 
   assert updated
     == Model(
+      ..empty_model(),
       text: Some(second),
       flat_paragraphs: pagination.flatten(second),
-      pages: [],
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 }
 
@@ -439,21 +433,18 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
 
   assert string.contains(
     rendered,
-    "<div class=\"reader-page-indicator\" id=\"vi-page-indicator\">Page 2 of 3</div>",
+    "<div class=\"reader-page-indicator\">Page 2 of 3</div>",
   )
   assert string.contains(rendered, "<div class=\"page\" data-page-index=\"1\">")
   // The visible page (#1) renders paragraph 1 — but not 0 or 2.
@@ -481,14 +472,11 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -525,14 +513,10 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
   let pages = [Page(index: 0, paragraphs: flat)]
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -918,14 +902,13 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
       erased: set.from_list([1]),
       undo_stack: [1],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -951,7 +934,8 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), None, True) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, True, "0")
+    |> click_event_names
 
   assert click_events == ["click"]
 }
@@ -968,7 +952,8 @@ pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), None, False) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, False, "0")
+    |> click_event_names
 
   assert click_events == []
 }
@@ -1008,14 +993,10 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let assert Ok(reading_area) =
@@ -1092,14 +1073,11 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
   let model =
     Model(
+      ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -1213,14 +1191,11 @@ fn vim_pages() -> List(Page) {
 
 fn vim_model_on_page(page_index: Int) -> Model {
   Model(
+    ..empty_model(),
     text: Some(vim_text()),
     flat_paragraphs: pagination.flatten(vim_text()),
     pages: vim_pages(),
     current_page: page_index,
-    erased: set.new(),
-    undo_stack: [],
-    touch_start: None,
-    focused_sentence: None,
   )
 }
 

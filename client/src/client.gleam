@@ -451,7 +451,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   // - `load` injects the sample text through the update loop.
   // - The four listener effects (`resize`, `arrow`, `undo`, `vim`)
   //   wire keyboard navigation and the debounced resize handler.
-  let viewport_meta = effect.from(fn(_dispatch) { ffi.ensure_viewport_fit_cover() })
+  let viewport_meta =
+    effect.from(fn(_dispatch) { ffi.ensure_viewport_fit_cover() })
   let system_preferences =
     effect.from(fn(dispatch) {
       dispatch(SystemPreferencesDetected(
@@ -663,8 +664,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     SetLineSpacing(spacing) -> {
-      let clamped =
-        clamp_float(spacing, min_line_spacing, max_line_spacing)
+      let clamped = clamp_float(spacing, min_line_spacing, max_line_spacing)
       #(
         Model(..model, line_spacing: clamped),
         effect.batch([
@@ -695,8 +695,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     SetGhostOpacity(opacity) -> {
-      let clamped =
-        clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
+      let clamped = clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
       #(
         Model(..model, ghost_opacity: clamped),
         effect.from(fn(_dispatch) {
@@ -1017,7 +1016,13 @@ fn view_paginated(model: Model) -> Element(Msg) {
   let erased_opacity = erased_opacity_value(model)
   let visible = case pagination.nth(model.pages, model.current_page) {
     Some(page) ->
-      view_page(page, model.erased, model.focused_sentence, True, erased_opacity)
+      view_page(
+        page,
+        model.erased,
+        model.focused_sentence,
+        True,
+        erased_opacity,
+      )
     None -> view_preparing()
   }
 
@@ -1093,8 +1098,7 @@ fn view_page(
 fn view_control_bar(total: Int, current: Int) -> Element(Msg) {
   let indicator_text = case total {
     0 -> ""
-    _ ->
-      "Page " <> int.to_string(current + 1) <> " of " <> int.to_string(total)
+    _ -> "Page " <> int.to_string(current + 1) <> " of " <> int.to_string(total)
   }
   html.div([attribute.class("reader-control-bar")], [
     html.div([attribute.class("reader-page-indicator")], [
