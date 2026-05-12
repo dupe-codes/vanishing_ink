@@ -70,12 +70,19 @@ pub fn classify(
   let dy = end_y -. start_y
   let abs_dx = float_abs(dx)
   let abs_dy = float_abs(dy)
-  case abs_dx >. swipe_threshold && abs_dx >. abs_dy {
+  // Compound conditions are split into nested `case` discriminators
+  // per the coding conventions ("Split compound conditions into
+  // nested if/else").
+  case abs_dx >. swipe_threshold {
     False -> Tap
     True ->
-      case dx <. 0.0 {
-        True -> SwipeLeft
-        False -> SwipeRight
+      case abs_dx >. abs_dy {
+        False -> Tap
+        True ->
+          case dx <. 0.0 {
+            True -> SwipeLeft
+            False -> SwipeRight
+          }
       }
   }
 }
