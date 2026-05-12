@@ -109,8 +109,63 @@ pub fn detects_chapter_n_headings_test() {
 pub fn detects_roman_numeral_chapter_headings_test() {
   let text = "Chapter IV\n\nFour. Roman."
   let result = segmenter.segment(text)
+
+  assert result
+    == SegmentedText(chapters: [
+      Chapter(index: 0, title: Some("Chapter IV"), paragraphs: [
+        Paragraph(index: 0, sentences: [
+          Sentence(index: 0, global_index: 0, words: [
+            Word(index: 0, global_index: 0, text: "Four."),
+          ]),
+          Sentence(index: 1, global_index: 1, words: [
+            Word(index: 0, global_index: 1, text: "Roman."),
+          ]),
+        ]),
+      ]),
+    ])
+}
+
+pub fn chapter_followed_by_lowercase_roman_word_is_prose_test() {
+  // Regression: the Roman-numeral chapter heuristic must not admit
+  // English words whose letters all happen to live in the Roman set
+  // (i, v, x, l, c, d, m). Words like "mid", "civil", "lid", "mix"
+  // are all-lowercase prose, not chapter labels. Without this guard
+  // the entire first line is swallowed as a chapter title and the
+  // prose after the first period gets dropped from the body.
+  let result =
+    segmenter.segment("Chapter mid is bright. We continue.\n\nMore text.")
+
   let assert [chapter] = result.chapters
-  assert chapter.title == Some("Chapter IV")
+  assert chapter.title == None
+
+  let assert [p0, p1] = chapter.paragraphs
+  let assert [s0, s1] = p0.sentences
+  let texts_s0 = list.map(s0.words, fn(w) { w.text })
+  let texts_s1 = list.map(s1.words, fn(w) { w.text })
+  assert texts_s0 == ["Chapter", "mid", "is", "bright."]
+  assert texts_s1 == ["We", "continue."]
+
+  let assert [s2] = p1.sentences
+  let texts_s2 = list.map(s2.words, fn(w) { w.text })
+  assert texts_s2 == ["More", "text."]
+}
+
+pub fn chapter_followed_by_non_canonical_uppercase_token_is_prose_test() {
+  // "MID" passes the uppercase + character-set check but is not a
+  // canonical Roman numeral (the value 1499 canonicalises to MCDXCIX).
+  // The structural validator must reject it, otherwise all-uppercase
+  // prose words sneak through.
+  let result = segmenter.segment("Chapter MID is loud. We continue.")
+
+  let assert [chapter] = result.chapters
+  assert chapter.title == None
+  let assert [paragraph] = chapter.paragraphs
+  let assert [s0, s1] = paragraph.sentences
+
+  let texts_s0 = list.map(s0.words, fn(w) { w.text })
+  let texts_s1 = list.map(s1.words, fn(w) { w.text })
+  assert texts_s0 == ["Chapter", "MID", "is", "loud."]
+  assert texts_s1 == ["We", "continue."]
 }
 
 pub fn detects_markdown_headings_test() {

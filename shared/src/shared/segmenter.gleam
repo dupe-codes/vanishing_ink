@@ -143,15 +143,18 @@ fn consume_hashes(graphemes: List(String), count: Int) -> Option(String) {
 }
 
 fn chapter_n_heading(line: String) -> Bool {
-  let lower = string.lowercase(line)
-  case string.starts_with(lower, "chapter ") {
+  case string.starts_with(string.lowercase(line), "chapter ") {
     False -> False
     True -> {
-      let rest = string.trim_start(string.drop_start(lower, 8))
+      // Take the chapter token from the *original* line so case-sensitive
+      // structural checks — uppercase-only Roman numerals — can run. The
+      // "chapter " prefix is pure ASCII, so dropping eight graphemes from
+      // the original is safe regardless of how the original was cased.
+      let rest = string.trim_start(string.drop_start(line, 8))
       let token = take_chapter_token(string.to_graphemes(rest), [])
       case token {
         [] -> False
-        _ -> is_all_digits(token) || is_all_roman(token)
+        _ -> is_all_digits(token) || is_valid_roman_numeral(token)
       }
     }
   }
@@ -225,13 +228,92 @@ fn is_all_digits(token: List(String)) -> Bool {
   })
 }
 
-fn is_all_roman(token: List(String)) -> Bool {
-  list.all(token, fn(g) {
-    case g {
-      "i" | "v" | "x" | "l" | "c" | "d" | "m" -> True
-      _ -> False
+// ---------------------------------------------------------------------------
+// Roman numerals
+// ---------------------------------------------------------------------------
+//
+// The earlier heuristic accepted any token composed of {i,v,x,l,c,d,m}
+// after lowercasing, which let English words like "mid", "civil", "lid"
+// and "mix" pose as chapter numbers and swallow the rest of the line.
+// The replacement requires uppercase letters in the original input and
+// verifies that re-encoding the decoded value yields the same token.
+// That rejects lowercase prose, malformed structures like "MID" or
+// "IIII", and out-of-range values; only the standard 1..3999 forms pass.
+
+fn is_valid_roman_numeral(token: List(String)) -> Bool {
+  case list.all(token, is_uppercase_roman_char) {
+    False -> False
+    True -> {
+      let value = decode_roman_numeral(token)
+      case value >= 1 && value <= 3999 {
+        False -> False
+        True -> encode_roman_numeral(value) == token
+      }
     }
-  })
+  }
+}
+
+fn is_uppercase_roman_char(g: String) -> Bool {
+  case g {
+    "I" | "V" | "X" | "L" | "C" | "D" | "M" -> True
+    _ -> False
+  }
+}
+
+fn roman_char_value(g: String) -> Int {
+  case g {
+    "I" -> 1
+    "V" -> 5
+    "X" -> 10
+    "L" -> 50
+    "C" -> 100
+    "D" -> 500
+    "M" -> 1000
+    _ -> 0
+  }
+}
+
+fn decode_roman_numeral(graphemes: List(String)) -> Int {
+  decode_roman_loop(graphemes, 0)
+}
+
+fn decode_roman_loop(graphemes: List(String), acc: Int) -> Int {
+  case graphemes {
+    [] -> acc
+    [a, b, ..rest] -> {
+      let va = roman_char_value(a)
+      let vb = roman_char_value(b)
+      case va < vb {
+        True -> decode_roman_loop(rest, acc + vb - va)
+        False -> decode_roman_loop([b, ..rest], acc + va)
+      }
+    }
+    [a] -> acc + roman_char_value(a)
+  }
+}
+
+fn encode_roman_numeral(value: Int) -> List(String) {
+  encode_roman_loop(value, [])
+  |> list.reverse
+}
+
+fn encode_roman_loop(value: Int, acc: List(String)) -> List(String) {
+  case value {
+    v if v >= 1000 -> encode_roman_loop(v - 1000, ["M", ..acc])
+    v if v >= 900 -> encode_roman_loop(v - 900, ["M", "C", ..acc])
+    v if v >= 500 -> encode_roman_loop(v - 500, ["D", ..acc])
+    v if v >= 400 -> encode_roman_loop(v - 400, ["D", "C", ..acc])
+    v if v >= 100 -> encode_roman_loop(v - 100, ["C", ..acc])
+    v if v >= 90 -> encode_roman_loop(v - 90, ["C", "X", ..acc])
+    v if v >= 50 -> encode_roman_loop(v - 50, ["L", ..acc])
+    v if v >= 40 -> encode_roman_loop(v - 40, ["L", "X", ..acc])
+    v if v >= 10 -> encode_roman_loop(v - 10, ["X", ..acc])
+    v if v >= 9 -> encode_roman_loop(v - 9, ["X", "I", ..acc])
+    v if v >= 5 -> encode_roman_loop(v - 5, ["V", ..acc])
+    v if v >= 4 -> encode_roman_loop(v - 4, ["V", "I", ..acc])
+    v if v >= 1 -> encode_roman_loop(v - 1, ["I", ..acc])
+    _ -> acc
+  }
 }
 
 fn build_chapter_blocks(lines: List(LineKind)) -> List(ChapterBlock) {
