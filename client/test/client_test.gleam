@@ -675,6 +675,71 @@ pub fn update_previous_page_also_clears_undo_stack_test() {
   assert dict.get(updated.erased, 4) == Ok(True)
 }
 
+pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
+  // A reader on the last page has unfinished erase work and presses
+  // ArrowRight (or swipes left) by reflex. `current_page` clamps to
+  // itself — no actual page boundary is crossed — so the undo stack
+  // must survive. The previous implementation cleared it
+  // unconditionally and silently destroyed undoable erases.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      erased: dict.from_list([#(8, True)]),
+      undo_stack: [8],
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 1
+  assert updated.undo_stack == [8]
+  assert dict.get(updated.erased, 8) == Ok(True)
+}
+
+pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
+  // Mirror of the previous test for the page-0 boundary: an
+  // ArrowLeft at the start of the book must not destroy the undo
+  // stack either.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 0,
+      erased: dict.from_list([#(2, True)]),
+      undo_stack: [2],
+    )
+
+  let #(updated, _effect) = client.update(prior, PreviousPage)
+
+  assert updated.current_page == 0
+  assert updated.undo_stack == [2]
+  assert dict.get(updated.erased, 2) == Ok(True)
+}
+
+pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
+  // The touch-gesture path threads through `go_to_page` too — a
+  // SwipeLeft on the last page must not clear the undo stack any
+  // more than a keyboard ArrowRight does.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      erased: dict.from_list([#(5, True)]),
+      undo_stack: [5],
+      touch_start: Some(#(300.0, 200.0)),
+    )
+
+  // -150px horizontal, +5px vertical → SwipeLeft → NextPage path.
+  let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
+
+  assert updated.current_page == 1
+  assert updated.undo_stack == [5]
+  assert dict.get(updated.erased, 5) == Ok(True)
+  assert updated.touch_start == None
+}
+
 // ---------------------------------------------------------------------------
 // update — touch gestures
 // ---------------------------------------------------------------------------

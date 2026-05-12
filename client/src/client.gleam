@@ -332,13 +332,20 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 }
 
 /// Move the reader to `candidate` after clamping to the current
-/// `pages` range. Always clears `undo_stack` so erases stay scoped
-/// to the page they were performed on — a navigation away commits
-/// every erase that has not yet been undone.
+/// `pages` range. Clears `undo_stack` only when `clamped` differs
+/// from `current_page` — a real page change commits every erase
+/// that has not yet been undone, but a clamp-to-self (ArrowRight on
+/// the last page, ArrowLeft on the first) must leave the undo stack
+/// intact so a reader's stray reflex tap does not silently destroy
+/// erases that were undoable a moment earlier.
 fn go_to_page(model: Model, candidate: Int) -> Model {
   let total = list.length(model.pages)
   let clamped = pagination.clamp_page_index(candidate, total)
-  Model(..model, current_page: clamped, undo_stack: [])
+  let undo_stack = case clamped == model.current_page {
+    True -> model.undo_stack
+    False -> []
+  }
+  Model(..model, current_page: clamped, undo_stack: undo_stack)
 }
 
 /// Schedule an `after_paint` effect that reads paragraph heights and
