@@ -44,16 +44,23 @@ import shared/segmenter.{
 }
 
 // ---------------------------------------------------------------------------
-// DOM selectors
+// DOM ids
 // ---------------------------------------------------------------------------
 //
-// Centralised so the FFI calls in `update` and the element ids in
-// `view` stay in lock-step. A drift here is the most plausible way
-// the pagination engine can silently stop receiving measurements.
+// Centralised so the FFI calls in `update` and the `attribute.id(...)`
+// calls in `view` stay in lock-step. A drift here is the most
+// plausible way the pagination engine can silently stop receiving
+// measurements. Selector strings ("#vi-...") are built at the call
+// site by prepending `"#"` so the selector form cannot diverge from
+// the attribute form.
 
-const measurement_container_selector: String = "#vi-measurement"
+const reading_area_id: String = "vi-reading-area"
 
-const page_content_selector: String = "#vi-page-content"
+const page_content_id: String = "vi-page-content"
+
+const page_indicator_id: String = "vi-page-indicator"
+
+const measurement_id: String = "vi-measurement"
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -216,11 +223,11 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 /// still produces output rather than getting wedged.
 fn measure_after_paint() -> Effect(Msg) {
   effect.after_paint(fn(dispatch, _root) {
-    let available_height = case ffi.get_element_height(page_content_selector) {
+    let available_height = case ffi.get_element_height("#" <> page_content_id) {
       Ok(height) -> height
       Error(_) -> ffi.get_viewport_height()
     }
-    let heights = ffi.measure_paragraphs(measurement_container_selector)
+    let heights = ffi.measure_paragraphs("#" <> measurement_id)
     dispatch(ParagraphsMeasured(
       heights: heights,
       available_height: available_height,
@@ -258,12 +265,9 @@ fn view_paginated(
   }
 
   html.div([attribute.class("reader-text")], [
-    html.div([attribute.id("vi-reading-area"), attribute.class("reader-page")], [
+    html.div([attribute.id(reading_area_id), attribute.class("reader-page")], [
       html.div(
-        [
-          attribute.id("vi-page-content"),
-          attribute.class("reader-page-content"),
-        ],
+        [attribute.id(page_content_id), attribute.class("reader-page-content")],
         [visible],
       ),
     ]),
@@ -294,7 +298,7 @@ fn view_page_indicator(total: Int, current: Int) -> Element(Msg) {
     _ ->
       html.div(
         [
-          attribute.id("vi-page-indicator"),
+          attribute.id(page_indicator_id),
           attribute.class("reader-page-indicator"),
         ],
         [
@@ -319,7 +323,7 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
   // values to the FFI.
   html.div(
     [
-      attribute.id("vi-measurement"),
+      attribute.id(measurement_id),
       attribute.class("reader-measurement"),
       attribute.attribute("aria-hidden", "true"),
     ],
