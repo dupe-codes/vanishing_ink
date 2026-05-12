@@ -1,12 +1,29 @@
 //// Vanishing Ink Lustre client. Mounts the reader as a Model-View-
-//// Update application on `#app` and renders a `SegmentedText` as
-//// styled, span-per-word HTML so subsequent quests can hang
-//// per-word/per-sentence interactivity off stable DOM addresses.
+//// Update application on `#app` and renders one viewport-sized page
+//// of a `SegmentedText` at a time, paginated against actual DOM
+//// dimensions instead of character-count estimates.
 ////
 //// The scaffold loads a hardcoded sample text at init — the HTTP
 //// client is intentionally absent (see the `gleam.toml` note on
-//// `lustre_http`) so a later quest will replace the sample wiring with
-//// a real server request without changing the message shape.
+//// `lustre_http`) so a later quest will replace the sample wiring
+//// with a real server request without changing the message shape.
+////
+//// Pagination flow on first paint and on every viewport resize:
+////
+//// 1. `TextLoaded` (or `ViewportResized`) lands in `update`.
+//// 2. `update` returns an `after_paint` effect that, once the DOM is
+////    laid out, measures each paragraph in the off-screen
+////    `#vi-measurement` container plus the available content height
+////    of the visible `#vi-page-content` element.
+//// 3. The measurement effect dispatches `ParagraphsMeasured`, which
+////    runs `pagination.calculate_pages` and stores the resulting
+////    page boundaries on the model. `current_page` is clamped so an
+////    in-progress reader does not slide off the new last page after
+////    a resize.
+////
+//// Keyboard navigation (`ArrowLeft`/`ArrowRight`) and `resize` are
+//// both wired through `client/ffi.gleam`. `resize` is debounced in
+//// the FFI so a continuous drag does not flood the update loop.
 
 import gleam/int
 import gleam/io
@@ -19,30 +36,85 @@ import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 
+import client/ffi
+import client/pagination.{type Page, type PageParagraph}
 import client/sample
 import shared/segmenter.{
-  type Chapter, type Paragraph, type SegmentedText, type Sentence, type Word,
+  type Paragraph, type SegmentedText, type Sentence, type Word,
 }
+
+// ---------------------------------------------------------------------------
+// DOM ids
+// ---------------------------------------------------------------------------
+//
+// Centralised so the FFI calls in `update` and the `attribute.id(...)`
+// calls in `view` stay in lock-step. A drift here is the most
+// plausible way the pagination engine can silently stop receiving
+// measurements. Selector strings ("#vi-...") are built at the call
+// site by prepending `"#"` so the selector form cannot diverge from
+// the attribute form.
+
+const reading_area_id: String = "vi-reading-area"
+
+const page_content_id: String = "vi-page-content"
+
+const page_indicator_id: String = "vi-page-indicator"
+
+const measurement_id: String = "vi-measurement"
 
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 
-/// Top-level reader state. The loaded book lives here as an
-/// `Option(SegmentedText)`: `None` before the sample has been
-/// dispatched through the update loop, `Some(text)` afterwards.
+/// Top-level reader state.
+///
+/// * `text` — `None` before the sample (or a future server payload)
+///   has been dispatched through the update loop, `Some(text)`
+///   afterwards.
+/// * `flat_paragraphs` — the flattened `PageParagraph` list cached
+///   alongside `text`. Computed once on `TextLoaded` and reused by
+///   both `ParagraphsMeasured` (to feed `calculate_pages`) and
+///   `view_paginated` (to populate the off-screen measurement
+///   container). Recomputing it per render would walk the whole
+///   `SegmentedText` on every `NextPage` / `PreviousPage` keystroke
+///   for no semantic reason.
+/// * `pages` — pre-calculated page boundaries. Empty between
+///   `TextLoaded` and the first `ParagraphsMeasured`, and during a
+///   resize while measurement is in flight.
+/// * `current_page` — zero-based index into `pages`. Always clamped
+///   into `[0, list.length(pages))` after a measurement.
 pub type Model {
-  Model(text: Option(SegmentedText))
+  Model(
+    text: Option(SegmentedText),
+    flat_paragraphs: List(PageParagraph),
+    pages: List(Page),
+    current_page: Int,
+  )
 }
 
-/// Application messages. Currently just the loaded-text path —
-/// extra variants (erase a sentence, change page, update a setting)
-/// arrive with the quests that need them.
+/// Application messages.
 pub type Msg {
   /// A book has been segmented and is ready to render. Fired from
-  /// `init` with the hardcoded sample today; will carry a server
-  /// payload once the HTTP path is restored.
+  /// `init` with the hardcoded sample today; a future quest will
+  /// dispatch the same message with a server payload.
   TextLoaded(SegmentedText)
+
+  /// Browser paragraph heights have been read via FFI. Carries the
+  /// `(global_index, height)` pairs alongside the available
+  /// content-area height the pagination algorithm should fit pages
+  /// into.
+  ParagraphsMeasured(heights: List(#(Int, Float)), available_height: Float)
+
+  /// Reader requested the next page (button or `ArrowRight`).
+  NextPage
+
+  /// Reader requested the previous page (button or `ArrowLeft`).
+  PreviousPage
+
+  /// Debounced `window.resize` fired. The handler re-runs the
+  /// measurement effect — paragraph heights change with viewport
+  /// width because of line wrapping.
+  ViewportResized
 }
 
 // ---------------------------------------------------------------------------
@@ -71,21 +143,89 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
-  let model = Model(text: None)
+  let model = Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
 
-  // Dispatch the sample text through the update loop so the
-  // `TextLoaded` wiring is exercised end-to-end. When the HTTP path
-  // is restored this effect will be swapped for a real request that
-  // dispatches the same message — keeping `init` and `update`
-  // untouched.
+  // Three independent boot effects: dispatch the sample text through
+  // the update loop, install the debounced resize listener, and
+  // install the arrow-key navigation listener. The listeners persist
+  // for the lifetime of the page — they only need to fire once at
+  // boot.
   let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
-  #(model, load)
+  let resize_listener =
+    effect.from(fn(dispatch) {
+      ffi.on_resize(fn() { dispatch(ViewportResized) })
+    })
+  let keyboard_listener =
+    effect.from(fn(dispatch) {
+      ffi.on_arrow_key(
+        previous_callback: fn() { dispatch(PreviousPage) },
+        next_callback: fn() { dispatch(NextPage) },
+      )
+    })
+
+  #(model, effect.batch([load, resize_listener, keyboard_listener]))
 }
 
-pub fn update(_model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
+pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> #(Model(text: Some(text)), effect.none())
+    TextLoaded(text) -> #(
+      Model(
+        text: Some(text),
+        flat_paragraphs: pagination.flatten(text),
+        pages: [],
+        current_page: 0,
+      ),
+      measure_after_paint(),
+    )
+
+    ParagraphsMeasured(heights, available_height) -> {
+      let pages = case model.text {
+        None -> []
+        Some(_) ->
+          pagination.calculate_pages(
+            model.flat_paragraphs,
+            pagination.heights_from_pairs(heights),
+            available_height,
+          )
+      }
+      let total = list.length(pages)
+      let clamped = pagination.clamp_page_index(model.current_page, total)
+      #(Model(..model, pages: pages, current_page: clamped), effect.none())
+    }
+
+    NextPage -> {
+      let total = list.length(model.pages)
+      let next = pagination.clamp_page_index(model.current_page + 1, total)
+      #(Model(..model, current_page: next), effect.none())
+    }
+
+    PreviousPage -> {
+      let total = list.length(model.pages)
+      let prev = pagination.clamp_page_index(model.current_page - 1, total)
+      #(Model(..model, current_page: prev), effect.none())
+    }
+
+    ViewportResized -> #(model, measure_after_paint())
   }
+}
+
+/// Schedule an `after_paint` effect that reads paragraph heights and
+/// the available content-area height from the live DOM, then
+/// dispatches `ParagraphsMeasured`. Falls back to `window.innerHeight`
+/// when the page-content sentinel cannot be located so pagination
+/// still produces output rather than getting wedged.
+fn measure_after_paint() -> Effect(Msg) {
+  effect.after_paint(fn(dispatch, _root) {
+    let available_height = case ffi.get_element_height("#" <> page_content_id) {
+      Ok(height) -> height
+      Error(_) -> ffi.get_viewport_height()
+    }
+    let heights = ffi.measure_paragraphs("#" <> measurement_id)
+    dispatch(ParagraphsMeasured(
+      heights: heights,
+      available_height: available_height,
+    ))
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -95,7 +235,8 @@ pub fn update(_model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
-    Some(text) -> view_text(text)
+    Some(_) ->
+      view_paginated(model.flat_paragraphs, model.pages, model.current_page)
   }
 
   html.div([attribute.id("vi-shell"), attribute.class("reader")], [body])
@@ -105,28 +246,117 @@ fn view_placeholder() -> Element(Msg) {
   html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
 }
 
-fn view_text(text: SegmentedText) -> Element(Msg) {
+fn view_paginated(
+  flat_paragraphs: List(PageParagraph),
+  pages: List(Page),
+  current_page: Int,
+) -> Element(Msg) {
+  let total = list.length(pages)
+  let visible = case pagination.nth(pages, current_page) {
+    Some(page) -> view_page(page)
+    None -> view_preparing()
+  }
+
+  html.div([attribute.class("reader-text")], [
+    html.div([attribute.id(reading_area_id), attribute.class("reader-page")], [
+      html.div(
+        [attribute.id(page_content_id), attribute.class("reader-page-content")],
+        [visible],
+      ),
+    ]),
+    view_page_indicator(total, current_page),
+    view_measurement_container(flat_paragraphs),
+  ])
+}
+
+fn view_preparing() -> Element(Msg) {
+  html.div([attribute.class("reader-preparing")], [
+    html.text("Preparing pages..."),
+  ])
+}
+
+fn view_page(page: Page) -> Element(Msg) {
   html.div(
-    [attribute.class("reader-text")],
-    list.map(text.chapters, view_chapter),
+    [
+      attribute.class("page"),
+      attribute.attribute("data-page-index", int.to_string(page.index)),
+    ],
+    list.map(page.paragraphs, view_page_paragraph),
   )
 }
 
-fn view_chapter(chapter: Chapter) -> Element(Msg) {
-  let title_element = case chapter.title {
+fn view_page_indicator(total: Int, current: Int) -> Element(Msg) {
+  case total {
+    0 -> element.none()
+    _ ->
+      html.div(
+        [
+          attribute.id(page_indicator_id),
+          attribute.class("reader-page-indicator"),
+        ],
+        [
+          html.text(
+            "Page "
+            <> int.to_string(current + 1)
+            <> " of "
+            <> int.to_string(total),
+          ),
+        ],
+      )
+  }
+}
+
+fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
+  // Off-screen mirror of the visible reading area. Carries the same
+  // class hierarchy (`reader-text` → paragraph spans) so paragraph
+  // line-wrap heights match what the visible page will render. CSS
+  // hides it from layout flow (`position: absolute; visibility:
+  // hidden`) without removing it from the DOM, so
+  // `getBoundingClientRect().height` still reports valid pixel
+  // values to the FFI.
+  html.div(
+    [
+      attribute.id(measurement_id),
+      attribute.class("reader-measurement"),
+      attribute.attribute("aria-hidden", "true"),
+    ],
+    list.map(paragraphs, view_page_paragraph),
+  )
+}
+
+fn view_page_paragraph(page_paragraph: PageParagraph) -> Element(Msg) {
+  // `data-paragraph-global-index` lives on the `.page-paragraph`
+  // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
+  // `getBoundingClientRect().height`. The wrapper establishes a
+  // block formatting context (`display: flow-root` in `styles.css`)
+  // so the inner `.chapter-title`/`.paragraph` vertical margins are
+  // contained — the measured height equals the page space the
+  // wrapper actually occupies. Measuring the inner `<p>` instead
+  // would silently drop the 1.2rem paragraph margin (and any
+  // chapter-title chrome), and the reader would lose lines at every
+  // page bottom.
+  //
+  // `data-chapter-index` rides on the wrapper too — unconditionally,
+  // so untitled chapters are still inspectable in the DOM.
+  let title_element = case page_paragraph.chapter_title {
     Some(title) ->
       html.h2([attribute.class("chapter-title")], [html.text(title)])
     None -> element.none()
   }
 
-  let paragraphs = list.map(chapter.paragraphs, view_paragraph)
-
-  html.section(
+  html.div(
     [
-      attribute.class("chapter"),
-      attribute.attribute("data-chapter-index", int.to_string(chapter.index)),
+      attribute.class("page-paragraph"),
+      attribute.attribute(
+        "data-paragraph-global-index",
+        int.to_string(page_paragraph.global_index),
+      ),
+      attribute.attribute(
+        "data-chapter-index",
+        int.to_string(page_paragraph.chapter_index),
+      ),
     ],
-    [title_element, ..paragraphs],
+    [title_element, view_paragraph(page_paragraph.paragraph)],
   )
 }
 
@@ -147,8 +377,8 @@ fn view_sentence(sentence: Sentence) -> Element(Msg) {
     list.index_map(sentence.words, fn(word, index) {
       // Words carry their own trailing space so adjacent word spans
       // wrap cleanly under `display: inline`. The final word in a
-      // sentence drops the space — the inter-sentence separator above
-      // owns that boundary instead.
+      // sentence drops the space — the inter-sentence separator
+      // above owns that boundary instead.
       let with_trailing_space = index < word_count - 1
       view_word(word, with_trailing_space)
     })
