@@ -288,18 +288,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
     }
 
-    Undo -> {
-      case model.undo_stack {
-        [] -> #(model, effect.none())
-        [last, ..rest] -> {
-          let next_erased = set.delete(model.erased, last)
-          #(
-            Model(..model, erased: next_erased, undo_stack: rest),
-            effect.none(),
-          )
-        }
-      }
-    }
+    Undo -> #(apply_undo(model), effect.none())
 
     TouchStart(x, y) -> #(
       Model(..model, touch_start: Some(#(x, y))),
@@ -325,17 +314,26 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
                   go_to_page(cleared, cleared.current_page - 1),
                   effect.none(),
                 )
-                [last, ..rest] -> {
-                  let next_erased = set.delete(cleared.erased, last)
-                  #(
-                    Model(..cleared, erased: next_erased, undo_stack: rest),
-                    effect.none(),
-                  )
-                }
+                _ -> #(apply_undo(cleared), effect.none())
               }
           }
       }
     }
+  }
+}
+
+/// Pop the most recent erase off `undo_stack` and remove its index
+/// from `erased`. Returns the model unchanged when the stack is
+/// empty. Shared between the `Undo` reducer arm and the SwipeRight
+/// branch of `TouchEnd` — both consume the head of the stack in
+/// identical ways, and a copy-and-paste here would let the two
+/// branches drift apart on a future refactor (e.g. one of them
+/// growing a "max-undo-count" cap that the other forgot).
+fn apply_undo(model: Model) -> Model {
+  case model.undo_stack {
+    [] -> model
+    [last, ..rest] ->
+      Model(..model, erased: set.delete(model.erased, last), undo_stack: rest)
   }
 }
 
