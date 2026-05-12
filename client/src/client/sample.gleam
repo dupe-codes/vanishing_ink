@@ -29,7 +29,8 @@ The house was dark. That was strange — her aunt usually left the porch light b
 /// — a panic here means CI missed a regression in the shared
 /// JSON contract.
 pub fn text() -> SegmentedText {
-  let encoded = raw_text |> segmenter.segment |> segmenter.to_json |> json.to_string
+  let encoded =
+    raw_text |> segmenter.segment |> segmenter.to_json |> json.to_string
   let assert Ok(decoded) = json.parse(encoded, segmenter.decoder())
   decoded
 }
