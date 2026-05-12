@@ -55,4 +55,6 @@ curl http://localhost:3000/
 For the client, `just client-build` produces `client/dist/index.html`
 mounting the Lustre app at `#app`. Serve `client/dist/` with any static
 file server (or open `index.html` after adjusting the script path) to
-see "Hello from Vanishing Ink" in the browser.
+see the bundled sample text rendered as per-word `<span>`s under
+`#vi-shell` — a brief `Loading...` placeholder is replaced once the
+hardcoded sample has been dispatched through the update loop.
