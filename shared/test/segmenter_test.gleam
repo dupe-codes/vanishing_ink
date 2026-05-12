@@ -6,9 +6,11 @@
 //// the same assertions on BEAM here and JavaScript over in
 //// `client/test/` once the client wires the segmenter in.
 
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import gleeunit
 import shared/segmenter.{Chapter, Paragraph, SegmentedText, Sentence, Word}
 
@@ -454,7 +456,80 @@ pub fn segmentation_is_deterministic_test() {
 }
 
 // ---------------------------------------------------------------------------
-// 11. JSON round-trip
+// 11. Long input
+// ---------------------------------------------------------------------------
+
+pub fn segments_very_long_input_test() {
+  // The done-when criterion for this quest names a very long text path
+  // explicitly. Synthesise a multi-chapter, multi-thousand-word book
+  // and assert the global-index contract holds end to end — the first
+  // sentence/word are at zero, the chapter count matches, and the
+  // final sentence/word globals equal (total - 1).
+  let chapter_count = 10
+  let sentences_per_chapter = 50
+  let words_per_sentence = 10
+  let total_sentences = chapter_count * sentences_per_chapter
+  let total_words = total_sentences * words_per_sentence
+
+  let text =
+    build_synthetic_book(
+      chapter_count,
+      sentences_per_chapter,
+      words_per_sentence,
+    )
+  let result = segmenter.segment(text)
+
+  assert list.length(result.chapters) == chapter_count
+
+  let assert [first_chapter, ..] = result.chapters
+  let assert [first_paragraph, ..] = first_chapter.paragraphs
+  let assert [first_sentence, ..] = first_paragraph.sentences
+  let assert [first_word, ..] = first_sentence.words
+  assert first_chapter.index == 0
+  assert first_chapter.title == Some("Chapter 1")
+  assert first_sentence.index == 0
+  assert first_sentence.global_index == 0
+  assert first_word == Word(index: 0, global_index: 0, text: "Word")
+
+  let assert Ok(last_chapter) = list.last(result.chapters)
+  let assert Ok(last_paragraph) = list.last(last_chapter.paragraphs)
+  let assert Ok(last_sentence) = list.last(last_paragraph.sentences)
+  let assert Ok(last_word) = list.last(last_sentence.words)
+  assert last_chapter.index == chapter_count - 1
+  assert last_chapter.title == Some("Chapter 10")
+  assert last_sentence.global_index == total_sentences - 1
+  assert last_word.global_index == total_words - 1
+}
+
+fn build_synthetic_book(
+  chapters: Int,
+  sentences: Int,
+  words_per_sentence: Int,
+) -> String {
+  // `int.range` is exclusive of its `to` argument, so the upper bounds
+  // are `+ 1` to make the ranges inclusive of the natural chapter and
+  // sentence counts.
+  let chapter_parts_rev =
+    int.range(1, chapters + 1, [], fn(acc, c) {
+      let header = "Chapter " <> int.to_string(c)
+      // Sentences must start with an uppercase letter so the
+      // sentence-boundary heuristic actually splits them; otherwise
+      // the body collapses into one long sentence and the long-input
+      // path is never exercised.
+      let sentence_parts_rev =
+        int.range(1, sentences + 1, [], fn(s_acc, _) {
+          let assert [first, ..rest] = list.repeat("word", words_per_sentence)
+          let word_list = [string.capitalise(first), ..rest]
+          [string.join(word_list, " ") <> ".", ..s_acc]
+        })
+      let body = sentence_parts_rev |> list.reverse |> string.join(" ")
+      [header <> "\n\n" <> body, ..acc]
+    })
+  chapter_parts_rev |> list.reverse |> string.join("\n\n")
+}
+
+// ---------------------------------------------------------------------------
+// 12. JSON round-trip
 // ---------------------------------------------------------------------------
 
 pub fn json_round_trip_test() {
