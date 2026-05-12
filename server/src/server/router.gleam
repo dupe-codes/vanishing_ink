@@ -27,6 +27,7 @@ import server/types.{
 import server/web.{type Context}
 import shared
 import shared/segmenter
+import sqlight
 import wisp.{type Request, type Response}
 
 /// Closed vocabulary for `reading_state.mode`. The schema defaults to
@@ -85,7 +86,7 @@ fn list_books_handler(ctx: Context) -> Response {
         |> json.to_string
       wisp.json_response(body, 200)
     }
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.list_books", error)
   }
 }
 
@@ -153,7 +154,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
       uploaded_at: uploaded_at,
     )
   {
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.create_book", error)
     Ok(Nil) -> {
       let meta =
         BookMeta(
@@ -192,7 +193,7 @@ fn books_item(req: Request, ctx: Context, id: String) -> Response {
 
 fn get_book_handler(ctx: Context, id: String) -> Response {
   case db.get_book(ctx.db, id) {
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(book)) -> {
       // The stored `segments_json` is parsed and re-embedded as
@@ -201,7 +202,15 @@ fn get_book_handler(ctx: Context, id: String) -> Response {
       // the on-disk encoding ever changes (different key ordering,
       // whitespace, etc).
       case json.parse(book.segments_json, segmenter.decoder()) {
-        Error(_) -> wisp.internal_server_error()
+        Error(error) -> {
+          wisp.log_error(
+            "segments_json failed to decode for book "
+            <> id
+            <> ": "
+            <> string.inspect(error),
+          )
+          wisp.internal_server_error()
+        }
         Ok(segments) -> {
           let body =
             types.book_to_json(book, segmenter.to_json(segments))
@@ -300,7 +309,7 @@ fn persist_reading_state(
   // the SQLite layer — and so a missing book maps to a clean 404
   // instead of an opaque 500.
   case db.get_book(ctx.db, id) {
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
       case
@@ -314,7 +323,7 @@ fn persist_reading_state(
           updated_at: updated_at,
         )
       {
-        Error(_) -> wisp.internal_server_error()
+        Error(error) -> db_error_response("db.update_reading_state", error)
         Ok(Nil) ->
           // Stamp `books.last_read_at` with the same timestamp so the
           // library list can sort/filter by recency. The book's
@@ -327,14 +336,22 @@ fn persist_reading_state(
               last_read_at: updated_at,
             )
           {
-            Error(_) -> wisp.internal_server_error()
+            Error(error) ->
+              db_error_response("db.set_book_last_read_at", error)
             Ok(Nil) ->
               // Re-read so the client sees the authoritative state — if
               // the last-write-wins guard rejected the write, the
               // response still reflects whatever's on disk.
               case db.get_reading_state(ctx.db, id) {
-                Error(_) -> wisp.internal_server_error()
-                Ok(None) -> wisp.internal_server_error()
+                Error(error) ->
+                  db_error_response("db.get_reading_state", error)
+                Ok(None) -> {
+                  wisp.log_error(
+                    "reading_state vanished immediately after upsert for book "
+                    <> id,
+                  )
+                  wisp.internal_server_error()
+                }
                 Ok(Some(state)) -> {
                   let body =
                     types.reading_state_to_json(state)
@@ -349,11 +366,11 @@ fn persist_reading_state(
 
 fn get_reading_state_handler(ctx: Context, id: String) -> Response {
   case db.get_book(ctx.db, id) {
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
       case db.get_reading_state(ctx.db, id) {
-        Error(_) -> wisp.internal_server_error()
+        Error(error) -> db_error_response("db.get_reading_state", error)
         // A book with no recorded reading state surfaces as an empty
         // default; that's simpler for the client than a 404 because
         // every book starts with no reading progress.
@@ -459,7 +476,7 @@ fn settings(req: Request, ctx: Context) -> Response {
 
 fn get_settings_handler(ctx: Context) -> Response {
   case db.get_settings(ctx.db) {
-    Error(_) -> wisp.internal_server_error()
+    Error(error) -> db_error_response("db.get_settings", error)
     Ok(settings) -> {
       let body =
         types.user_settings_to_json(settings)
@@ -476,7 +493,7 @@ fn put_settings_handler(req: Request, ctx: Context) -> Response {
     Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
     Ok(settings) ->
       case db.update_settings(ctx.db, settings) {
-        Error(_) -> wisp.internal_server_error()
+        Error(error) -> db_error_response("db.update_settings", error)
         Ok(Nil) -> {
           let body =
             types.user_settings_to_json(settings)
@@ -526,6 +543,15 @@ fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
       "expected " <> expected <> " at " <> path_str <> " but found " <> found
     }
   }
+}
+
+/// Log a SQLite error with operator-visible context, then return the
+/// generic 500. Centralised so every call site has the same shape
+/// (operation tag plus a structured Sqlight error inspection) and no
+/// future error path can silently drop the trail.
+fn db_error_response(operation: String, error: sqlight.Error) -> Response {
+  wisp.log_error(operation <> " failed: " <> string.inspect(error))
+  wisp.internal_server_error()
 }
 
 fn string_join_dot(path: List(String)) -> String {
