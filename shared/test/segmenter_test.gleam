@@ -168,6 +168,41 @@ pub fn chapter_followed_by_non_canonical_uppercase_token_is_prose_test() {
   assert texts_s1 == ["We", "continue."]
 }
 
+pub fn adjacent_headings_preserve_first_title_test() {
+  // Regression: two heading lines in a row (no content between them)
+  // used to clobber the first title. The first chapter must survive
+  // as a titled-but-empty chapter so the heading is not silently lost.
+  let text = "Chapter 1\n# Prologue\n\nText here."
+  let result = segmenter.segment(text)
+
+  let assert [c0, c1] = result.chapters
+  assert c0 == Chapter(index: 0, title: Some("Chapter 1"), paragraphs: [])
+  let assert [paragraph] = c1.paragraphs
+  let texts = list.map(paragraph.sentences, fn(s) {
+    list.map(s.words, fn(w) { w.text })
+  })
+  assert c1.index == 1
+  assert c1.title == Some("Prologue")
+  assert texts == [["Text", "here."]]
+}
+
+pub fn trailing_heading_without_body_preserves_title_test() {
+  // A trailing heading with no body still produces an empty titled
+  // chapter — symmetric with the adjacent-heading rule. Without this
+  // the trailing title would be silently dropped at document close.
+  let text = "First chapter prose.\n\n# Epilogue"
+  let result = segmenter.segment(text)
+
+  let assert [c0, c1] = result.chapters
+  assert c0.title == None
+  let assert [paragraph] = c0.paragraphs
+  let texts = list.map(paragraph.sentences, fn(s) {
+    list.map(s.words, fn(w) { w.text })
+  })
+  assert texts == [["First", "chapter", "prose."]]
+  assert c1 == Chapter(index: 1, title: Some("Epilogue"), paragraphs: [])
+}
+
 pub fn detects_markdown_headings_test() {
   let text = "# Prologue\n\nIt begins here.\n\n## Part Two\n\nIt ends here."
   let result = segmenter.segment(text)

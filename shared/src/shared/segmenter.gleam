@@ -340,11 +340,19 @@ fn fold_line(state: ChapterState, kind: LineKind) -> ChapterState {
       )
 
     HeadingLine(title) -> {
-      // A heading always starts a new chapter. If the current chapter
-      // already has any content, close it and push it onto `finalized`;
-      // otherwise just overwrite the (empty) chapter's title.
+      // A heading always starts a new chapter. Push the current chapter
+      // to `finalized` if it carries either content or a title — a
+      // titled-but-empty chapter is a legitimate outcome of two
+      // headings in a row, and dropping it would silently lose the
+      // first title.
       let with_para_closed = close_current_paragraph(state)
-      let next_finalized = case with_para_closed.saw_content_in_chapter {
+      let has_title_only = case with_para_closed.current_title {
+        Some(_) -> True
+        None -> False
+      }
+      let next_finalized = case
+        with_para_closed.saw_content_in_chapter || has_title_only
+      {
         True -> [
           ChapterBlock(
             with_para_closed.current_title,
@@ -423,8 +431,16 @@ fn close_current_paragraph(state: ChapterState) -> ChapterState {
 }
 
 fn close_current_chapter(state: ChapterState) -> ChapterState {
+  // Push a final chapter if it has content or a title. The
+  // title-only branch keeps the close-of-document rule symmetric with
+  // the adjacent-heading handling in `fold_line`: a trailing heading
+  // produces a titled-but-empty chapter rather than disappearing.
   let with_para_closed = close_current_paragraph(state)
-  case with_para_closed.saw_content_in_chapter {
+  let has_title_only = case with_para_closed.current_title {
+    Some(_) -> True
+    None -> False
+  }
+  case with_para_closed.saw_content_in_chapter || has_title_only {
     False -> with_para_closed
     True ->
       ChapterState(
