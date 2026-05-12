@@ -179,6 +179,21 @@ body {
   transition: opacity 0.3s ease;
 }
 
+.sentence-focused {
+  /* Subtle warm tint marking the vim-keys cursor's current
+   * sentence. Kept low-contrast on purpose — this is a therapeutic
+   * reading app, and a hard highlight would compete with the prose
+   * for attention. `box-decoration-break: clone` paints the tint on
+   * every line a multi-line sentence wraps to instead of stretching
+   * one rectangle across the full inline run, so the cursor reads
+   * as "this sentence" rather than "this rectangle of empty space
+   * between the first and last words". */
+  background-color: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
 .word {
   /* Inline span so the reading flow wraps naturally. */
   display: inline;

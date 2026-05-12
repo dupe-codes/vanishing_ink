@@ -31,15 +31,18 @@ import lustre/vdom/vattr
 import lustre/vdom/vnode
 import shared
 import shared/segmenter.{
-  type SegmentedText, Chapter, Paragraph, SegmentedText, Sentence, Word,
+  type Paragraph, type SegmentedText, type Sentence, Chapter, Paragraph,
+  SegmentedText, Sentence, Word,
 }
 
 import client.{
-  type Model, EraseSentence, Model, NextPage, ParagraphsMeasured, PreviousPage,
-  TextLoaded, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  type Model, EraseFocused, EraseSentence, FocusNext, FocusParagraphDown,
+  FocusParagraphUp, FocusPrevious, Model, NextPage, ParagraphsMeasured,
+  PreviousPage, TextLoaded, TouchCancel, TouchEnd, TouchStart, Undo,
+  ViewportResized,
 }
 import client/gestures
-import client/pagination.{Page}
+import client/pagination.{type Page, Page}
 import client/sample
 
 pub fn main() -> Nil {
@@ -82,6 +85,7 @@ fn empty_model() -> Model {
     erased: set.new(),
     undo_stack: [],
     touch_start: None,
+    focused_sentence: None,
   )
 }
 
@@ -148,6 +152,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 }
 
@@ -174,6 +179,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -187,6 +193,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 }
 
@@ -439,6 +446,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -480,6 +488,7 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -523,6 +532,7 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -915,6 +925,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       erased: set.from_list([1]),
       undo_stack: [1],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -940,7 +951,7 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), True) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, True) |> click_event_names
 
   assert click_events == ["click"]
 }
@@ -957,7 +968,7 @@ pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), False) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, False) |> click_event_names
 
   assert click_events == []
 }
@@ -1004,6 +1015,7 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let assert Ok(reading_area) =
@@ -1087,6 +1099,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -1123,4 +1136,498 @@ pub fn sample_text_succeeds_through_the_shared_json_round_trip_test() {
   assert first_paragraph.sentences != []
   let assert [first_sentence, ..] = first_paragraph.sentences
   assert first_sentence.words != []
+}
+
+// ---------------------------------------------------------------------------
+// vim-keys fixtures
+// ---------------------------------------------------------------------------
+//
+// The vim-keys integration tests use a hand-built two-page layout
+// rather than `two_chapter_text()` + `pagination.flatten` /
+// `pagination.calculate_pages` so the page/paragraph/sentence
+// indices the assertions read off the model are fixed at the test
+// source rather than dependent on the pagination algorithm. If the
+// pagination engine ever changes how it groups paragraphs into
+// pages, these tests still describe the keyboard navigation
+// contract on the same nominal layout.
+//
+// Layout:
+//   Page 0:
+//     Paragraph 0 (global) — sentences 0, 1
+//     Paragraph 1 (global) — sentence  2
+//   Page 1:
+//     Paragraph 2 (global) — sentence  3
+//     Paragraph 3 (global) — sentences 4, 5
+
+fn vim_sentence(local_index: Int, global_index: Int) -> Sentence {
+  Sentence(index: local_index, global_index: global_index, words: [
+    Word(index: 0, global_index: global_index, text: "x"),
+  ])
+}
+
+fn vim_paragraph(local_index: Int, sentences: List(Sentence)) -> Paragraph {
+  Paragraph(index: local_index, sentences: sentences)
+}
+
+fn vim_page_paragraph(
+  global_index: Int,
+  paragraph: Paragraph,
+) -> pagination.PageParagraph {
+  pagination.PageParagraph(
+    global_index: global_index,
+    chapter_index: 0,
+    chapter_title: None,
+    paragraph: paragraph,
+  )
+}
+
+fn vim_text() -> SegmentedText {
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      vim_paragraph(0, [vim_sentence(0, 0), vim_sentence(1, 1)]),
+      vim_paragraph(1, [vim_sentence(0, 2)]),
+      vim_paragraph(2, [vim_sentence(0, 3)]),
+      vim_paragraph(3, [vim_sentence(0, 4), vim_sentence(1, 5)]),
+    ]),
+  ])
+}
+
+fn vim_pages() -> List(Page) {
+  [
+    Page(index: 0, paragraphs: [
+      vim_page_paragraph(
+        0,
+        vim_paragraph(0, [vim_sentence(0, 0), vim_sentence(1, 1)]),
+      ),
+      vim_page_paragraph(1, vim_paragraph(1, [vim_sentence(0, 2)])),
+    ]),
+    Page(index: 1, paragraphs: [
+      vim_page_paragraph(2, vim_paragraph(2, [vim_sentence(0, 3)])),
+      vim_page_paragraph(
+        3,
+        vim_paragraph(3, [vim_sentence(0, 4), vim_sentence(1, 5)]),
+      ),
+    ]),
+  ]
+}
+
+fn vim_model_on_page(page_index: Int) -> Model {
+  Model(
+    text: Some(vim_text()),
+    flat_paragraphs: pagination.flatten(vim_text()),
+    pages: vim_pages(),
+    current_page: page_index,
+    erased: set.new(),
+    undo_stack: [],
+    touch_start: None,
+    focused_sentence: None,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// update — FocusNext / FocusPrevious initialisation
+// ---------------------------------------------------------------------------
+
+pub fn update_focus_next_initialises_cursor_when_dormant_test() {
+  // A first vim-key press on a fresh page must wake the cursor up
+  // rather than move it: there's nothing to move from. The cursor
+  // lands on the first non-erased sentence of the current page —
+  // sentence 0 on page 0 — so the reader sees the cursor appear
+  // exactly where it would expect.
+  let prior = vim_model_on_page(0)
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == Model(..prior, focused_sentence: Some(0))
+}
+
+pub fn update_focus_previous_initialises_cursor_when_dormant_test() {
+  // Symmetry: even `h` (Backward) initialises to the *first*
+  // non-erased sentence on the current page. The first press wakes
+  // the cursor, the next press is what actually moves — landing on
+  // the last sentence of the previous page on the very first press
+  // would skip past the visible current page entirely.
+  let prior = vim_model_on_page(1)
+
+  let #(updated, _) = client.update(prior, FocusPrevious)
+
+  assert updated == Model(..prior, focused_sentence: Some(3))
+}
+
+pub fn update_focus_next_initialises_skipping_erased_test() {
+  // First press with sentence 0 already erased (e.g. via click)
+  // must initialise to sentence 1, not land on the invisible
+  // erased sentence.
+  let prior =
+    Model(..vim_model_on_page(0), erased: set.from_list([0]), undo_stack: [0])
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == Model(..prior, focused_sentence: Some(1))
+}
+
+// ---------------------------------------------------------------------------
+// update — FocusNext / FocusPrevious movement
+// ---------------------------------------------------------------------------
+
+pub fn update_focus_next_advances_one_sentence_test() {
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == Model(..prior, focused_sentence: Some(1))
+}
+
+pub fn update_focus_next_skips_erased_sentence_test() {
+  // Sentence 1 erased; FocusNext from sentence 0 must skip it and
+  // land on sentence 2. Pinning the skip is the core contract for
+  // `l` on a partially-erased page.
+  let prior =
+    Model(
+      ..vim_model_on_page(0),
+      erased: set.from_list([1]),
+      undo_stack: [1],
+      focused_sentence: Some(0),
+    )
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == Model(..prior, focused_sentence: Some(2))
+}
+
+pub fn update_focus_next_at_end_holds_test() {
+  // FocusNext from the document's final sentence is a no-op. The
+  // cursor stays put rather than wrapping around to the start.
+  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(5))
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == prior
+}
+
+pub fn update_focus_previous_steps_back_one_sentence_test() {
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
+
+  let #(updated, _) = client.update(prior, FocusPrevious)
+
+  assert updated == Model(..prior, focused_sentence: Some(1))
+}
+
+pub fn update_focus_previous_at_start_holds_test() {
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, FocusPrevious)
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — FocusNext / FocusPrevious page-boundary crossing
+// ---------------------------------------------------------------------------
+
+pub fn update_focus_next_crosses_page_forward_test() {
+  // Cursor at the last sentence of page 0 (sentence 2); FocusNext
+  // must advance the page to 1 AND set focus to the first non-erased
+  // sentence on the new page (sentence 3). The transition is one
+  // logical action — the reader presses `l` once and the cursor
+  // appears at the top of the next page without a separate
+  // ArrowRight press.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
+}
+
+pub fn update_focus_previous_crosses_page_backward_test() {
+  // Mirror of forward: cursor at the first sentence of page 1
+  // (sentence 3); FocusPrevious moves the page back AND lands the
+  // cursor on the *last* non-erased sentence of page 0 (sentence 2),
+  // not the first — `h` consistently steps one sentence backward.
+  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
+
+  let #(updated, _) = client.update(prior, FocusPrevious)
+
+  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+}
+
+pub fn update_focus_next_crossing_page_clears_undo_stack_test() {
+  // The vim path through `change_page` shares the same undo-stack
+  // contract as the arrow-key path: a real page change commits
+  // every undoable erase on the page being left. Pinning this means
+  // a future vim-handler that forgot to thread through `change_page`
+  // (and skipped the undo clear) fails here.
+  let prior =
+    Model(
+      ..vim_model_on_page(0),
+      erased: set.from_list([1]),
+      undo_stack: [1],
+      focused_sentence: Some(2),
+    )
+
+  let #(updated, _) = client.update(prior, FocusNext)
+
+  assert updated
+    == Model(
+      ..prior,
+      current_page: 1,
+      undo_stack: [],
+      focused_sentence: Some(3),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// update — FocusParagraphDown / FocusParagraphUp
+// ---------------------------------------------------------------------------
+
+pub fn update_focus_paragraph_down_jumps_to_next_paragraph_test() {
+  // From sentence 0 (paragraph 0), `j` must land on the *first*
+  // sentence of paragraph 1 — sentence 2 — not the next sentence in
+  // the current paragraph (sentence 1).
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, FocusParagraphDown)
+
+  assert updated == Model(..prior, focused_sentence: Some(2))
+}
+
+pub fn update_focus_paragraph_down_crosses_page_test() {
+  // Paragraph-down from paragraph 1 (last paragraph on page 0)
+  // must cross to page 1 and land on the first sentence of
+  // paragraph 2.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
+
+  let #(updated, _) = client.update(prior, FocusParagraphDown)
+
+  assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
+}
+
+pub fn update_focus_paragraph_up_lands_on_first_of_previous_test() {
+  // `k` lands on the *first* sentence of the previous paragraph —
+  // sentence 0, not sentence 1 — even though sentence 1 is the
+  // closest sentence in the previous paragraph going backward.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
+
+  let #(updated, _) = client.update(prior, FocusParagraphUp)
+
+  assert updated == Model(..prior, focused_sentence: Some(0))
+}
+
+pub fn update_focus_paragraph_up_crosses_page_test() {
+  // From the first paragraph of page 1, `k` crosses back to page 0
+  // and lands on the first sentence of paragraph 1 (the previous
+  // paragraph in document order).
+  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
+
+  let #(updated, _) = client.update(prior, FocusParagraphUp)
+
+  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+}
+
+pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
+  // Paragraph 1 is fully erased (sentence 2). `j` from paragraph 0
+  // must skip past paragraph 1 and land on the first sentence of
+  // paragraph 2 — the cursor doesn't stall on a paragraph with no
+  // remaining visible text. The page advance from 0 → 1 also
+  // clears the undo stack: page changes commit erases regardless of
+  // what triggered them.
+  let prior =
+    Model(
+      ..vim_model_on_page(0),
+      erased: set.from_list([2]),
+      undo_stack: [2],
+      focused_sentence: Some(0),
+    )
+
+  let #(updated, _) = client.update(prior, FocusParagraphDown)
+
+  assert updated
+    == Model(
+      ..prior,
+      current_page: 1,
+      undo_stack: [],
+      focused_sentence: Some(3),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// update — EraseFocused
+// ---------------------------------------------------------------------------
+
+pub fn update_erase_focused_erases_and_advances_test() {
+  // Space on a focused sentence must (a) insert that sentence's
+  // index into `erased`, (b) push it onto `undo_stack`, and (c)
+  // advance the cursor forward to the next non-erased sentence.
+  // Pinning all three together as one whole-Model comparison stops
+  // a future refactor from separating them — losing any one of the
+  // three would break the keyboard-erase flow.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, EraseFocused)
+
+  assert updated
+    == Model(
+      ..prior,
+      erased: set.from_list([0]),
+      undo_stack: [0],
+      focused_sentence: Some(1),
+    )
+}
+
+pub fn update_erase_focused_advances_page_when_last_visible_test() {
+  // Erasing the focused sentence when it's the last visible
+  // sentence on the page must advance the cursor (and the page) to
+  // the first non-erased sentence on the next page. The reader's
+  // erase flow doesn't get wedged at the end of a page.
+  //
+  // The undo stack clears on the page advance — every page change
+  // commits every erase on the page being left, including the one
+  // that just triggered the advance. This is consistent with
+  // ArrowRight: any page change commits, regardless of what
+  // triggered it.
+  let prior =
+    Model(
+      ..vim_model_on_page(0),
+      erased: set.from_list([0, 1]),
+      undo_stack: [1, 0],
+      focused_sentence: Some(2),
+    )
+
+  let #(updated, _) = client.update(prior, EraseFocused)
+
+  assert updated
+    == Model(
+      ..prior,
+      current_page: 1,
+      erased: set.from_list([0, 1, 2]),
+      undo_stack: [],
+      focused_sentence: Some(3),
+    )
+}
+
+pub fn update_erase_focused_with_no_focus_is_noop_test() {
+  // Space pressed before any vim navigation key — there is no
+  // cursor to act on. The reducer must hold the model unchanged
+  // rather than initialising the cursor first.
+  let prior = vim_model_on_page(0)
+
+  let #(updated, _) = client.update(prior, EraseFocused)
+
+  assert updated == prior
+}
+
+pub fn update_erase_focused_at_end_of_document_clears_cursor_test() {
+  // Erasing the final visible sentence anywhere has no forward
+  // target to advance to. The reducer parks the cursor as `None`;
+  // the next vim key from the reader re-initialises.
+  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(5))
+
+  let #(updated, _) = client.update(prior, EraseFocused)
+
+  assert updated
+    == Model(
+      ..prior,
+      erased: set.from_list([5]),
+      undo_stack: [5],
+      focused_sentence: None,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// update — click/tap erase leaves cursor alone
+// ---------------------------------------------------------------------------
+
+pub fn update_erase_sentence_does_not_move_focused_cursor_test() {
+  // Click/tap and keyboard are independent input modes. An
+  // `EraseSentence` triggered by a click on a non-focused sentence
+  // must not move the keyboard cursor — the reader using both
+  // hands (mouse + keyboard) would otherwise lose their cursor
+  // position every time they clicked.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, EraseSentence(1))
+
+  assert updated
+    == Model(
+      ..prior,
+      erased: set.from_list([1]),
+      undo_stack: [1],
+      // focused_sentence stays at Some(0), untouched.
+    )
+}
+
+// ---------------------------------------------------------------------------
+// update — page navigation resets cursor in vim mode
+// ---------------------------------------------------------------------------
+
+pub fn update_next_page_resets_cursor_when_vim_mode_active_test() {
+  // The reader paged forward with ArrowRight while the keyboard
+  // cursor was active. The cursor must move to the first non-erased
+  // sentence on the new page so it stays on screen — leaving it on
+  // the previous page's sentence would let it disappear from view
+  // without an obvious recovery.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
+
+  let #(updated, _) = client.update(prior, NextPage)
+
+  assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
+}
+
+pub fn update_next_page_keeps_dormant_cursor_dormant_test() {
+  // The reader is on a touch device (no vim keys yet). ArrowRight /
+  // swipe-left advances the page without waking the cursor up; the
+  // visible reading area shouldn't suddenly grow a highlight just
+  // because the page turned.
+  let prior = vim_model_on_page(0)
+
+  let #(updated, _) = client.update(prior, NextPage)
+
+  assert updated == Model(..prior, current_page: 1)
+}
+
+pub fn update_previous_page_resets_cursor_when_vim_mode_active_test() {
+  // Mirror of next-page: PreviousPage in vim mode lands the cursor
+  // on the first non-erased sentence of the previous page (sentence
+  // 0), regardless of where the cursor was before.
+  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(4))
+
+  let #(updated, _) = client.update(prior, PreviousPage)
+
+  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(0))
+}
+
+// ---------------------------------------------------------------------------
+// view — focused class rendering
+// ---------------------------------------------------------------------------
+
+pub fn view_renders_sentence_focused_class_for_cursor_test() {
+  // The focused sentence must pick up the `sentence-focused` class
+  // so the CSS cursor styling applies. The class appears exactly
+  // once in the rendered output (the off-screen measurement
+  // container passes `focused: None` and therefore stays unstyled),
+  // and it appears on the sentence whose `data-sentence-index`
+  // matches `focused_sentence`.
+  let prior = Model(..vim_model_on_page(0), focused_sentence: Some(1))
+
+  let rendered = client.view(prior) |> element.to_string
+
+  let focused_chunks =
+    rendered |> string.split("sentence sentence-focused") |> list.length
+  assert focused_chunks == 2
+  assert string.contains(
+    rendered,
+    "<span class=\"sentence sentence-focused\" data-sentence-index=\"1\">",
+  )
+}
+
+pub fn view_omits_focused_class_when_cursor_dormant_test() {
+  // With `focused_sentence: None`, no sentence carries the cursor
+  // styling — neither the visible page nor the measurement mirror.
+  // The inverse pin guards against a regression where the class is
+  // always emitted (e.g. defaulting to sentence 0).
+  let prior = vim_model_on_page(0)
+
+  let rendered = client.view(prior) |> element.to_string
+
+  assert !string.contains(rendered, "sentence-focused")
 }

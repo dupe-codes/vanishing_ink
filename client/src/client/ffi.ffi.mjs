@@ -133,3 +133,57 @@ export function on_undo_key(callback) {
     }
   });
 }
+
+export function on_vim_keys(
+  focus_previous_callback,
+  focus_paragraph_down_callback,
+  focus_paragraph_up_callback,
+  focus_next_callback,
+  erase_focused_callback,
+  undo_callback,
+) {
+  window.addEventListener("keydown", (event) => {
+    // Skip when the reader is typing into an input — the cursor
+    // would otherwise eat the keystroke. Form controls aren't on
+    // any page today, but this is the lowest-cost guard against a
+    // future search box or settings panel.
+    const tag = event.target && event.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+
+    // Modifier chords belong to the existing undo handler and to
+    // the browser (Ctrl+L focuses the URL bar, Cmd+H hides the
+    // window on macOS, etc.). Bailing here keeps every modifier
+    // combination available rather than silently stealing it.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    switch (event.key) {
+      case "h":
+        event.preventDefault();
+        focus_previous_callback();
+        break;
+      case "j":
+        event.preventDefault();
+        focus_paragraph_down_callback();
+        break;
+      case "k":
+        event.preventDefault();
+        focus_paragraph_up_callback();
+        break;
+      case "l":
+        event.preventDefault();
+        focus_next_callback();
+        break;
+      case " ":
+        // Without preventDefault the browser scrolls one viewport
+        // height per Space — the reader's vertical reading flow
+        // would jump out from under the cursor.
+        event.preventDefault();
+        erase_focused_callback();
+        break;
+      case "u":
+        event.preventDefault();
+        undo_callback();
+        break;
+    }
+  });
+}

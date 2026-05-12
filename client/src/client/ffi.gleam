@@ -58,3 +58,23 @@ pub fn on_arrow_key(
 /// reader today. The listener persists for the lifetime of the page.
 @external(javascript, "./ffi.ffi.mjs", "on_undo_key")
 pub fn on_undo_key(callback: fn() -> Nil) -> Nil
+
+/// Install a `keydown` listener on `window` for the vim-style
+/// reader keys. Each callback corresponds to one unmodified key
+/// press: `h`/`l` move the cursor between sentences, `j`/`k` move
+/// between paragraphs, `Space` erases the focused sentence, and
+/// `u` invokes undo. Modifier chords (`Cmd`/`Ctrl`/`Alt`) are
+/// ignored so the listener never collides with the existing
+/// `Cmd+Z` undo handler or with browser shortcuts; keys pressed
+/// while focus is in an `<input>` or `<textarea>` are also
+/// ignored so the cursor doesn't hijack typing. The listener
+/// persists for the lifetime of the page.
+@external(javascript, "./ffi.ffi.mjs", "on_vim_keys")
+pub fn on_vim_keys(
+  focus_previous_callback focus_previous_callback: fn() -> Nil,
+  focus_paragraph_down_callback focus_paragraph_down_callback: fn() -> Nil,
+  focus_paragraph_up_callback focus_paragraph_up_callback: fn() -> Nil,
+  focus_next_callback focus_next_callback: fn() -> Nil,
+  erase_focused_callback erase_focused_callback: fn() -> Nil,
+  undo_callback undo_callback: fn() -> Nil,
+) -> Nil
