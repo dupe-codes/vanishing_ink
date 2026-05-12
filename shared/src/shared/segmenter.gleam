@@ -546,10 +546,7 @@ fn build_sentence(
       #(idx + 1, word_global + 1, [word, ..words_acc])
     })
   let words = list.reverse(words_rev)
-  #(
-    next_word,
-    Sentence(index: index, global_index: global_index, words: words),
-  )
+  #(next_word, Sentence(index: index, global_index: global_index, words: words))
 }
 
 fn join_lines(lines: List(String)) -> String {

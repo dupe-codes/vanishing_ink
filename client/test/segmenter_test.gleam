@@ -69,8 +69,6 @@ pub fn segmenter_round_trip_on_js_target_test() {
   assert c1.title == Some("Chapter 2")
   let assert [p0] = c0.paragraphs
   let s_texts =
-    list.flat_map(p0.sentences, fn(s) {
-      list.map(s.words, fn(w) { w.text })
-    })
+    list.flat_map(p0.sentences, fn(s) { list.map(s.words, fn(w) { w.text }) })
   assert s_texts == ["Dr.", "Smith", "went", "home.", "He", "was", "tired."]
 }
