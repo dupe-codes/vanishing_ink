@@ -16,8 +16,9 @@ default:
 # Lustre dev server has built-in hot reload. The BEAM server restarts
 # on file changes via watchexec (install: cargo install watchexec-cli).
 dev:
-    watchexec -r -w server/src -w shared/src -- gleam run --target erlang -m server &
-    cd client && gleam run -m lustre/dev start &
+    trap 'kill $(jobs -p) 2>/dev/null' EXIT; \
+    watchexec -r -w server/src -w shared/src -- just server-dev & \
+    (cd client && gleam run -m lustre/dev start) & \
     wait
 
 # Start only the BEAM server (no hot reload).

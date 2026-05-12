@@ -5,3 +5,8 @@ dist/
 .lustre/
 erl_crash.dump
 
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+
