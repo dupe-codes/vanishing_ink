@@ -434,9 +434,10 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
   // the title onto an empty preceding page. The previous-chapter
   // paragraphs carry `chapter_title: None`; only the first
   // paragraph of the next titled chapter carries the heading
-  // element. Asserting the rendered substring pins the `<h2
-  // class="chapter-title">` adjacent to the first paragraph of
-  // chapter 1 (the "Two" chapter).
+  // element. The pinned substrings hit both the `<h2
+  // class="chapter-title">` heading and the wrapping
+  // `.page-paragraph` that now carries `data-chapter-index` for
+  // every paragraph (so untitled chapters stay inspectable too).
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -450,10 +451,8 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
 
   let rendered = client.view(model) |> element.to_string
 
-  assert string.contains(
-    rendered,
-    "<h2 class=\"chapter-title\" data-chapter-index=\"1\">Two</h2>",
-  )
+  assert string.contains(rendered, "<h2 class=\"chapter-title\">Two</h2>")
+  assert string.contains(rendered, "data-chapter-index=\"1\"")
 }
 
 // ---------------------------------------------------------------------------

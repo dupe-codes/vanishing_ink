@@ -133,9 +133,15 @@ body {
 
 .page-paragraph {
   /* A page-paragraph groups the optional chapter title with the
-   * paragraph it precedes so they always page together. Margin is
-   * zero — the inner `.paragraph` and `.chapter-title` carry their
-   * own vertical rhythm. */
+   * paragraph it precedes so they always page together. `flow-root`
+   * establishes a block formatting context so the inner
+   * `.chapter-title` and `.paragraph` margins are contained inside
+   * the wrapper rather than escaping through. That makes the
+   * wrapper's `getBoundingClientRect().height` equal to the actual
+   * vertical space the page occupies for this paragraph — including
+   * the 1.2rem trailing gap below the paragraph — which is what the
+   * pagination engine reads via `data-paragraph-global-index`. */
+  display: flow-root;
   margin: 0;
 }
 

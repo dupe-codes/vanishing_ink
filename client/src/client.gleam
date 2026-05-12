@@ -327,28 +327,42 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
 }
 
 fn view_page_paragraph(page_paragraph: PageParagraph) -> Element(Msg) {
+  // `data-paragraph-global-index` lives on the `.page-paragraph`
+  // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
+  // `getBoundingClientRect().height`. The wrapper establishes a
+  // block formatting context (`display: flow-root` in `styles.css`)
+  // so the inner `.chapter-title`/`.paragraph` vertical margins are
+  // contained — the measured height equals the page space the
+  // wrapper actually occupies. Measuring the inner `<p>` instead
+  // would silently drop the 1.2rem paragraph margin (and any
+  // chapter-title chrome), and the reader would lose lines at every
+  // page bottom.
+  //
+  // `data-chapter-index` rides on the wrapper too — unconditionally,
+  // so untitled chapters are still inspectable in the DOM.
   let title_element = case page_paragraph.chapter_title {
     Some(title) ->
-      html.h2(
-        [
-          attribute.class("chapter-title"),
-          attribute.attribute(
-            "data-chapter-index",
-            int.to_string(page_paragraph.chapter_index),
-          ),
-        ],
-        [html.text(title)],
-      )
+      html.h2([attribute.class("chapter-title")], [html.text(title)])
     None -> element.none()
   }
 
-  html.div([attribute.class("page-paragraph")], [
-    title_element,
-    view_paragraph(page_paragraph.paragraph, page_paragraph.global_index),
-  ])
+  html.div(
+    [
+      attribute.class("page-paragraph"),
+      attribute.attribute(
+        "data-paragraph-global-index",
+        int.to_string(page_paragraph.global_index),
+      ),
+      attribute.attribute(
+        "data-chapter-index",
+        int.to_string(page_paragraph.chapter_index),
+      ),
+    ],
+    [title_element, view_paragraph(page_paragraph.paragraph)],
+  )
 }
 
-fn view_paragraph(paragraph: Paragraph, global_index: Int) -> Element(Msg) {
+fn view_paragraph(paragraph: Paragraph) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
@@ -356,16 +370,7 @@ fn view_paragraph(paragraph: Paragraph, global_index: Int) -> Element(Msg) {
     |> list.map(view_sentence)
     |> list.intersperse(html.text(" "))
 
-  html.p(
-    [
-      attribute.class("paragraph"),
-      attribute.attribute(
-        "data-paragraph-global-index",
-        int.to_string(global_index),
-      ),
-    ],
-    sentence_elements,
-  )
+  html.p([attribute.class("paragraph")], sentence_elements)
 }
 
 fn view_sentence(sentence: Sentence) -> Element(Msg) {
