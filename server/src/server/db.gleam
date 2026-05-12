@@ -201,26 +201,70 @@ pub fn get_book(
   }
 }
 
-/// Stamp `books.last_read_at` for the given book. Called whenever the
-/// reading-state for a book is upserted so the library list can sort
-/// or filter by recency. Returns `Ok(Nil)` whether the row was touched
-/// or not — the caller has already verified the book exists.
+/// Stamp `books.last_read_at` for the given book with last-write-wins
+/// semantics that mirror the `reading_state.updated_at` guard. A write
+/// older than the value already on disk is a no-op — without this
+/// gate, a stale `update_reading_state` (which the SQL guard correctly
+/// rejects) would still cause `books.last_read_at` to regress, leaving
+/// the two persisted views of "when the user last touched this book"
+/// silently disagreeing. Returns `Ok(Nil)` whether the row was touched
+/// or not; the caller has already verified the book exists.
 pub fn set_book_last_read_at(
   connection: sqlight.Connection,
   id id: shared.BookId,
   last_read_at last_read_at: String,
 ) -> Result(Nil, sqlight.Error) {
-  let sql = "UPDATE books SET last_read_at = ? WHERE id = ?;"
+  // Lexicographic comparison is faithful because `last_read_at` is
+  // only ever written via the same canonicalised ISO 8601 path that
+  // `reading_state.updated_at` uses.
+  let sql =
+    "UPDATE books
+        SET last_read_at = ?
+      WHERE id = ?
+        AND (last_read_at IS NULL OR last_read_at <= ?);"
   case
     sqlight.query(
       sql,
       on: connection,
-      with: [sqlight.text(last_read_at), sqlight.text(id)],
+      with: [
+        sqlight.text(last_read_at),
+        sqlight.text(id),
+        sqlight.text(last_read_at),
+      ],
       expecting: decode.dynamic,
     )
   {
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(error)
+  }
+}
+
+/// Run a closure inside a SQLite transaction. On `Ok` the transaction
+/// commits; on `Error` (or a panic that escapes the closure) it rolls
+/// back. `BEGIN IMMEDIATE` acquires the write lock up front so a slow
+/// commit can't be wedged behind a concurrent reader-turned-writer.
+///
+/// Used to tie the two reading-state writes together: the
+/// `reading_state` upsert and the `books.last_read_at` stamp must
+/// either both apply or both abort, so disk pressure on the second
+/// statement can never leave the row pair in a half-written state.
+pub fn transaction(
+  connection: sqlight.Connection,
+  body: fn() -> Result(a, sqlight.Error),
+) -> Result(a, sqlight.Error) {
+  use _ <- result.try(sqlight.exec("BEGIN IMMEDIATE;", connection))
+  case body() {
+    Ok(value) -> {
+      use _ <- result.try(sqlight.exec("COMMIT;", connection))
+      Ok(value)
+    }
+    Error(error) -> {
+      // Best-effort rollback. If the rollback itself fails we still
+      // surface the original error — the transaction is doomed either
+      // way, and the original cause is more useful for diagnosis.
+      let _ = sqlight.exec("ROLLBACK;", connection)
+      Error(error)
+    }
   }
 }
 

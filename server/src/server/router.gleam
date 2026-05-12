@@ -305,50 +305,53 @@ fn persist_reading_state(
   case db.get_book(ctx.db, id) {
     Error(error) -> db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
-    Ok(Some(_)) ->
-      case
-        db.update_reading_state(
-          ctx.db,
-          book_id: id,
-          mode: mode,
-          sentence_bitset: sentence_bitset,
-          word_bitset: word_bitset,
-          current_page: current_page,
-          updated_at: updated_at,
-        )
-      {
-        Error(error) -> db_error_response("db.update_reading_state", error)
+    Ok(Some(_)) -> {
+      // Tie the `reading_state` upsert and the `books.last_read_at`
+      // stamp together: both writes either land or both abort.
+      // Without the transaction, a failed second write would leave a
+      // freshly-upserted reading_state row alongside a stale
+      // `books.last_read_at`. The LWW guard in
+      // `db.set_book_last_read_at` additionally protects against the
+      // stale-write case — when the `reading_state` upsert is rejected
+      // for being older than the on-disk row, the books stamp is also
+      // rejected, so the two views can never disagree.
+      let write_result =
+        db.transaction(ctx.db, fn() {
+          use _ <- result.try(db.update_reading_state(
+            ctx.db,
+            book_id: id,
+            mode: mode,
+            sentence_bitset: sentence_bitset,
+            word_bitset: word_bitset,
+            current_page: current_page,
+            updated_at: updated_at,
+          ))
+          db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
+        })
+      case write_result {
+        Error(error) -> db_error_response("db.persist_reading_state", error)
         Ok(Nil) ->
-          // Stamp `books.last_read_at` with the same timestamp so the
-          // library list can sort/filter by recency. The book's
-          // existence is already verified above, so this is a pure
-          // update — a failure is genuinely a DB-level problem.
-          case
-            db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
-          {
-            Error(error) -> db_error_response("db.set_book_last_read_at", error)
-            Ok(Nil) ->
-              // Re-read so the client sees the authoritative state — if
-              // the last-write-wins guard rejected the write, the
-              // response still reflects whatever's on disk.
-              case db.get_reading_state(ctx.db, id) {
-                Error(error) -> db_error_response("db.get_reading_state", error)
-                Ok(None) -> {
-                  wisp.log_error(
-                    "reading_state vanished immediately after upsert for book "
-                    <> id,
-                  )
-                  wisp.internal_server_error()
-                }
-                Ok(Some(state)) -> {
-                  let body =
-                    types.reading_state_to_json(state)
-                    |> json.to_string
-                  wisp.json_response(body, 200)
-                }
-              }
+          // Re-read so the client sees the authoritative state — if
+          // the last-write-wins guard rejected the write, the
+          // response still reflects whatever's on disk.
+          case db.get_reading_state(ctx.db, id) {
+            Error(error) -> db_error_response("db.get_reading_state", error)
+            Ok(None) -> {
+              wisp.log_error(
+                "reading_state vanished immediately after upsert for book "
+                <> id,
+              )
+              wisp.internal_server_error()
+            }
+            Ok(Some(state)) -> {
+              let body =
+                types.reading_state_to_json(state)
+                |> json.to_string
+              wisp.json_response(body, 200)
+            }
           }
       }
+    }
   }
 }
 
