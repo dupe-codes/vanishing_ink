@@ -20,7 +20,6 @@
 //// page rather than splitting across pages.
 
 import gleam/dict.{type Dict}
-import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -166,16 +165,4 @@ pub fn nth(pages: List(Page), index: Int) -> Option(Page) {
         [] -> None
       }
   }
-}
-
-// ---------------------------------------------------------------------------
-// Available-height math
-// ---------------------------------------------------------------------------
-
-/// Compute the available page height from the viewport height and
-/// the chrome (page indicator + vertical reading padding) consumed
-/// above and below the page content. Floored at `0.0` so an
-/// undersized viewport never produces a negative budget.
-pub fn available_height(viewport_height: Float, chrome_height: Float) -> Float {
-  float.max(viewport_height -. chrome_height, 0.0)
 }

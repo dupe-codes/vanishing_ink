@@ -283,18 +283,3 @@ pub fn nth_returns_none_when_index_out_of_bounds_test() {
   assert pagination.nth(pages, 5) == None
   assert pagination.nth(pages, -1) == None
 }
-
-// ---------------------------------------------------------------------------
-// available_height
-// ---------------------------------------------------------------------------
-
-pub fn available_height_subtracts_chrome_from_viewport_test() {
-  assert pagination.available_height(800.0, 80.0) == 720.0
-}
-
-pub fn available_height_floors_at_zero_for_undersized_viewport_test() {
-  // A short viewport (or a tall page indicator) must not produce
-  // negative available height — the pagination algorithm would
-  // pack zero paragraphs per page forever.
-  assert pagination.available_height(60.0, 100.0) == 0.0
-}
