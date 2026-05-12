@@ -40,6 +40,7 @@ import lustre/event
 
 import client/ffi
 import client/gestures
+import client/navigation
 import client/pagination.{type Page, type PageParagraph}
 import client/sample
 import shared/segmenter.{
@@ -104,6 +105,14 @@ const measurement_id: String = "vi-measurement"
 /// * `touch_start` — `(clientX, clientY)` of the in-flight touch
 ///   between `touchstart` and `touchend`. `None` when there is no
 ///   active gesture. Cleared on every `TouchEnd`.
+/// * `focused_sentence` — `Some(global_index)` of the sentence the
+///   keyboard cursor sits on, `None` before the reader has ever
+///   pressed a vim navigation key. The cursor is a desktop-only
+///   affordance: touch input (clicks, swipes, taps) never sets
+///   focus, so the field stays `None` on a tablet/phone session
+///   even as the reader erases sentences. A focused sentence
+///   renders with the `sentence-focused` class so the reader can
+///   see where the cursor is.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -113,6 +122,7 @@ pub type Model {
     erased: Set(Int),
     undo_stack: List(Int),
     touch_start: Option(#(Float, Float)),
+    focused_sentence: Option(Int),
   )
 }
 
@@ -175,6 +185,45 @@ pub type Msg {
   /// legitimate `touchend` doesn't classify against the cancelled
   /// gesture's coordinates and emit a phantom swipe.
   TouchCancel
+
+  /// Reader pressed `h` — move the keyboard cursor to the previous
+  /// non-erased sentence. Crosses page boundaries: when the cursor
+  /// sits on the first non-erased sentence of the current page,
+  /// `FocusPrevious` navigates to the previous page and lands the
+  /// cursor on its last non-erased sentence. A no-op at the start
+  /// of the document. When `focused_sentence` is `None`, the cursor
+  /// initialises to the first non-erased sentence on the current
+  /// page rather than moving — the first press wakes the cursor up.
+  FocusPrevious
+
+  /// Reader pressed `l` — move the keyboard cursor to the next
+  /// non-erased sentence. Crosses page boundaries forward, mirror
+  /// of `FocusPrevious`. A no-op at the end of the document.
+  /// Initialises focus on first press.
+  FocusNext
+
+  /// Reader pressed `k` — move the keyboard cursor to the first
+  /// non-erased sentence of the previous paragraph. Fully-erased
+  /// paragraphs between the cursor's current paragraph and the
+  /// target are skipped so the cursor cannot stall on a paragraph
+  /// with no visible text. Crosses page boundaries. A no-op at the
+  /// start of the document. Initialises focus on first press.
+  FocusParagraphUp
+
+  /// Reader pressed `j` — move the keyboard cursor to the first
+  /// non-erased sentence of the next paragraph. Mirror of
+  /// `FocusParagraphUp`. A no-op at the end of the document.
+  /// Initialises focus on first press.
+  FocusParagraphDown
+
+  /// Reader pressed `Space` — erase the currently focused sentence
+  /// (same effect as a click/tap on that sentence) and advance the
+  /// cursor to the next non-erased sentence. Crosses page
+  /// boundaries when no non-erased sentence remains after the
+  /// erased one on the current page. A no-op when
+  /// `focused_sentence` is `None` — there is no cursor target to
+  /// act on.
+  EraseFocused
 }
 
 // ---------------------------------------------------------------------------
@@ -212,13 +261,15 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
-  // Four independent boot effects: dispatch the sample text through
+  // Five independent boot effects: dispatch the sample text through
   // the update loop, install the debounced resize listener, the
-  // arrow-key navigation listener, and the platform-undo key
-  // listener. The listeners persist for the lifetime of the page —
-  // they only need to fire once at boot.
+  // arrow-key navigation listener, the platform-undo key listener,
+  // and the vim-keys listener (h/j/k/l/Space/u). The listeners
+  // persist for the lifetime of the page — they only need to fire
+  // once at boot.
   let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
   let resize_listener =
     effect.from(fn(dispatch) {
@@ -233,8 +284,28 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
     })
   let undo_listener =
     effect.from(fn(dispatch) { ffi.on_undo_key(fn() { dispatch(Undo) }) })
+  let vim_listener =
+    effect.from(fn(dispatch) {
+      ffi.on_vim_keys(
+        focus_previous_callback: fn() { dispatch(FocusPrevious) },
+        focus_paragraph_down_callback: fn() { dispatch(FocusParagraphDown) },
+        focus_paragraph_up_callback: fn() { dispatch(FocusParagraphUp) },
+        focus_next_callback: fn() { dispatch(FocusNext) },
+        erase_focused_callback: fn() { dispatch(EraseFocused) },
+        undo_callback: fn() { dispatch(Undo) },
+      )
+    })
 
-  #(model, effect.batch([load, resize_listener, arrow_listener, undo_listener]))
+  #(
+    model,
+    effect.batch([
+      load,
+      resize_listener,
+      arrow_listener,
+      undo_listener,
+      vim_listener,
+    ]),
+  )
 }
 
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
@@ -248,6 +319,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         erased: set.new(),
         undo_stack: [],
         touch_start: None,
+        focused_sentence: None,
       ),
       measure_after_paint(),
     )
@@ -273,22 +345,34 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     ViewportResized -> #(model, measure_after_paint())
 
-    EraseSentence(global_index) -> {
-      case set.contains(model.erased, global_index) {
-        True -> #(model, effect.none())
-        False -> {
-          let next_erased = set.insert(model.erased, global_index)
-          let next_undo =
-            [global_index, ..model.undo_stack] |> list.take(undo_stack_depth)
-          #(
-            Model(..model, erased: next_erased, undo_stack: next_undo),
-            effect.none(),
-          )
-        }
-      }
-    }
+    EraseSentence(global_index) -> #(
+      apply_erase(model, global_index),
+      effect.none(),
+    )
 
     Undo -> #(apply_undo(model), effect.none())
+
+    FocusPrevious -> #(
+      focus_sentence_step(model, navigation.Backward),
+      effect.none(),
+    )
+
+    FocusNext -> #(
+      focus_sentence_step(model, navigation.Forward),
+      effect.none(),
+    )
+
+    FocusParagraphUp -> #(
+      focus_paragraph_step(model, navigation.Backward),
+      effect.none(),
+    )
+
+    FocusParagraphDown -> #(
+      focus_paragraph_step(model, navigation.Forward),
+      effect.none(),
+    )
+
+    EraseFocused -> #(apply_erase_focused(model), effect.none())
 
     TouchStart(x, y) -> #(
       Model(..model, touch_start: Some(#(x, y))),
@@ -337,6 +421,130 @@ fn apply_undo(model: Model) -> Model {
   }
 }
 
+/// Insert `global_index` into `erased` and push it onto the
+/// `undo_stack`, capped to `undo_stack_depth` entries. A repeat
+/// erase on an already-erased sentence is a no-op so the undo
+/// stack never carries duplicate entries — without that guard, an
+/// `EraseFocused` press on a sentence the reader had earlier
+/// clicked would push a second copy and force two undo presses to
+/// restore one sentence. Shared between `EraseSentence` (from
+/// click/tap) and `EraseFocused` (from the keyboard cursor).
+fn apply_erase(model: Model, global_index: Int) -> Model {
+  case set.contains(model.erased, global_index) {
+    True -> model
+    False ->
+      Model(
+        ..model,
+        erased: set.insert(model.erased, global_index),
+        undo_stack: [global_index, ..model.undo_stack]
+          |> list.take(undo_stack_depth),
+      )
+  }
+}
+
+/// Step the keyboard cursor by one sentence in `direction`,
+/// crossing page boundaries when the next visible sentence lives
+/// on a different page. When the cursor is dormant
+/// (`focused_sentence: None`), the first press initialises focus
+/// to the first non-erased sentence on the current page rather
+/// than moving — the press wakes the cursor up.
+fn focus_sentence_step(model: Model, direction: navigation.Direction) -> Model {
+  let locations = navigation.locate_sentences(model.pages)
+  case model.focused_sentence {
+    None -> initialise_focus(model, locations)
+    Some(current) ->
+      case
+        navigation.next_sentence(locations, current, model.erased, direction)
+      {
+        None -> model
+        Some(target) -> move_focus(model, target)
+      }
+  }
+}
+
+/// Step the keyboard cursor by one paragraph in `direction`. The
+/// landing rule is "first non-erased sentence of the
+/// previous/next paragraph that still has visible text",
+/// implemented in `navigation.next_paragraph_sentence`. Initialises
+/// focus on first press, same rule as `focus_sentence_step`.
+fn focus_paragraph_step(
+  model: Model,
+  direction: navigation.Direction,
+) -> Model {
+  let locations = navigation.locate_sentences(model.pages)
+  case model.focused_sentence {
+    None -> initialise_focus(model, locations)
+    Some(current) ->
+      case navigation.locate(locations, current) {
+        None -> model
+        Some(current_location) ->
+          case
+            navigation.next_paragraph_sentence(
+              locations,
+              current_location.paragraph_global_index,
+              model.erased,
+              direction,
+            )
+          {
+            None -> model
+            Some(target) -> move_focus(model, target)
+          }
+      }
+  }
+}
+
+/// Erase the focused sentence and advance the cursor to the next
+/// non-erased sentence (Forward), crossing page boundaries when the
+/// erased sentence was the last visible one on its page. When the
+/// erase happened to land on the document's final visible sentence
+/// the cursor goes dormant (`focused_sentence: None`); the reader
+/// then has to press a vim key again to re-initialise.
+fn apply_erase_focused(model: Model) -> Model {
+  case model.focused_sentence {
+    None -> model
+    Some(idx) -> {
+      let erased_model = apply_erase(model, idx)
+      let locations = navigation.locate_sentences(erased_model.pages)
+      case
+        navigation.next_sentence(
+          locations,
+          idx,
+          erased_model.erased,
+          navigation.Forward,
+        )
+      {
+        None -> Model(..erased_model, focused_sentence: None)
+        Some(target) -> move_focus(erased_model, target)
+      }
+    }
+  }
+}
+
+/// Set the cursor to `target`, changing the current page first
+/// when the target lives on a different page. Used by every vim
+/// navigation message — the navigation module returns the target
+/// page alongside the target sentence so this helper can commit
+/// both in one place.
+fn move_focus(model: Model, target: navigation.SentenceLocation) -> Model {
+  let with_page = change_page(model, target.page_index)
+  Model(..with_page, focused_sentence: Some(target.sentence_global_index))
+}
+
+/// Initialise the cursor to the first non-erased sentence on the
+/// current page. The result is `None` when every sentence on the
+/// current page is erased — a legitimate state during a re-read
+/// where the reader has erased an entire page and the next vim key
+/// would normally advance them off it.
+fn initialise_focus(
+  model: Model,
+  locations: List(navigation.SentenceLocation),
+) -> Model {
+  let focused =
+    navigation.first_on_page(locations, model.current_page, model.erased)
+    |> option.map(fn(loc) { loc.sentence_global_index })
+  Model(..model, focused_sentence: focused)
+}
+
 /// Move the reader to `candidate` after clamping to the current
 /// `pages` range. Clears `undo_stack` only when `clamped` differs
 /// from `current_page` — a real page change commits every erase
@@ -344,14 +552,49 @@ fn apply_undo(model: Model) -> Model {
 /// the last page, ArrowLeft on the first) must leave the undo stack
 /// intact so a reader's stray reflex tap does not silently destroy
 /// erases that were undoable a moment earlier.
+///
+/// Used by `NextPage`/`PreviousPage`/swipes — input modes where
+/// the reader is paging through the book on their own. When
+/// `focused_sentence` is `Some(_)` (i.e. the reader is in vim
+/// mode) and the page actually changes, the cursor resets to the
+/// first non-erased sentence on the new page so the reader has
+/// somewhere to start on the fresh page. Vim-key navigation
+/// bypasses this helper through `change_page`/`move_focus`
+/// because the navigation module decides exactly where the cursor
+/// should land.
 fn go_to_page(model: Model, candidate: Int) -> Model {
+  let after = change_page(model, candidate)
+  let focused = case after.current_page == model.current_page {
+    True -> model.focused_sentence
+    False ->
+      case model.focused_sentence {
+        None -> None
+        Some(_) ->
+          navigation.first_on_page(
+            navigation.locate_sentences(after.pages),
+            after.current_page,
+            after.erased,
+          )
+          |> option.map(fn(loc) { loc.sentence_global_index })
+      }
+  }
+  Model(..after, focused_sentence: focused)
+}
+
+/// Lower-level page change: clamps `candidate` into the valid
+/// page range and clears the undo stack only when the page
+/// actually changes. Shared between `go_to_page` (the
+/// touch/arrow-key path) and `move_focus` (the vim path) — both
+/// need the same "no page change, no undo-stack clear" invariant
+/// and pulling the logic into one helper stops the two callers
+/// from drifting apart.
+fn change_page(model: Model, candidate: Int) -> Model {
   let total = list.length(model.pages)
   let clamped = pagination.clamp_page_index(candidate, total)
-  let undo_stack = case clamped == model.current_page {
-    True -> model.undo_stack
-    False -> []
+  case clamped == model.current_page {
+    True -> model
+    False -> Model(..model, current_page: clamped, undo_stack: [])
   }
-  Model(..model, current_page: clamped, undo_stack: undo_stack)
 }
 
 /// Schedule an `after_paint` effect that reads paragraph heights and
@@ -386,6 +629,7 @@ pub fn view(model: Model) -> Element(Msg) {
         model.pages,
         model.current_page,
         model.erased,
+        model.focused_sentence,
       )
   }
 
@@ -401,10 +645,11 @@ fn view_paginated(
   pages: List(Page),
   current_page: Int,
   erased: Set(Int),
+  focused: Option(Int),
 ) -> Element(Msg) {
   let total = list.length(pages)
   let visible = case pagination.nth(pages, current_page) {
-    Some(page) -> view_page(page, erased, True)
+    Some(page) -> view_page(page, erased, focused, True)
     None -> view_preparing()
   }
 
@@ -443,14 +688,19 @@ fn view_preparing() -> Element(Msg) {
   ])
 }
 
-fn view_page(page: Page, erased: Set(Int), interactive: Bool) -> Element(Msg) {
+fn view_page(
+  page: Page,
+  erased: Set(Int),
+  focused: Option(Int),
+  interactive: Bool,
+) -> Element(Msg) {
   html.div(
     [
       attribute.class("page"),
       attribute.attribute("data-page-index", int.to_string(page.index)),
     ],
     list.map(page.paragraphs, fn(p) {
-      view_page_paragraph(p, erased, interactive)
+      view_page_paragraph(p, erased, focused, interactive)
     }),
   )
 }
@@ -500,13 +750,16 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
       attribute.class("reader-measurement"),
       attribute.attribute("aria-hidden", "true"),
     ],
-    list.map(paragraphs, fn(p) { view_page_paragraph(p, set.new(), False) }),
+    list.map(paragraphs, fn(p) {
+      view_page_paragraph(p, set.new(), None, False)
+    }),
   )
 }
 
 fn view_page_paragraph(
   page_paragraph: PageParagraph,
   erased: Set(Int),
+  focused: Option(Int),
   interactive: Bool,
 ) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
@@ -542,7 +795,7 @@ fn view_page_paragraph(
     ],
     [
       title_element,
-      view_paragraph(page_paragraph.paragraph, erased, interactive),
+      view_paragraph(page_paragraph.paragraph, erased, focused, interactive),
     ],
   )
 }
@@ -550,13 +803,14 @@ fn view_page_paragraph(
 fn view_paragraph(
   paragraph: Paragraph,
   erased: Set(Int),
+  focused: Option(Int),
   interactive: Bool,
 ) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
     paragraph.sentences
-    |> list.map(fn(s) { view_sentence(s, erased, interactive) })
+    |> list.map(fn(s) { view_sentence(s, erased, focused, interactive) })
     |> list.intersperse(html.text(" "))
 
   html.p([attribute.class("paragraph")], sentence_elements)
@@ -573,6 +827,14 @@ fn view_paragraph(
 /// (~10–15px), which is well under `gestures.swipe_threshold`, so a
 /// real swipe never lands an accidental erase.
 ///
+/// `focused` carries the global index of the keyboard cursor's
+/// current sentence, or `None` when the cursor is dormant. The
+/// matching sentence picks up the `sentence-focused` class so the
+/// reader can see where the cursor is. The class is rendered on
+/// both interactive and non-interactive sentences — the
+/// measurement mirror is passed `None` anyway, so this branch
+/// only fires on the visible page.
+///
 /// Exposed for tests that need to assert the click handler stays
 /// wired to visible sentences — Lustre's HTML serialiser strips
 /// event attributes, so the only way to pin the contract is to
@@ -580,6 +842,7 @@ fn view_paragraph(
 pub fn view_sentence(
   sentence: Sentence,
   erased: Set(Int),
+  focused: Option(Int),
   interactive: Bool,
 ) -> Element(Msg) {
   let word_count = list.length(sentence.words)
@@ -594,6 +857,14 @@ pub fn view_sentence(
     })
 
   let is_erased = set.contains(erased, sentence.global_index)
+  let is_focused = case focused {
+    None -> False
+    Some(idx) -> idx == sentence.global_index
+  }
+  let class_value = case is_focused {
+    True -> "sentence sentence-focused"
+    False -> "sentence"
+  }
   // Both conditional attributes collapse into a single trailing list
   // so the surrounding `html.span` call constructs the attribute
   // sequence in one literal expression rather than appending two
@@ -610,7 +881,7 @@ pub fn view_sentence(
 
   html.span(
     [
-      attribute.class("sentence"),
+      attribute.class(class_value),
       attribute.attribute(
         "data-sentence-index",
         int.to_string(sentence.global_index),

@@ -82,6 +82,7 @@ fn empty_model() -> Model {
     erased: set.new(),
     undo_stack: [],
     touch_start: None,
+    focused_sentence: None,
   )
 }
 
@@ -148,6 +149,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 }
 
@@ -174,6 +176,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -187,6 +190,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 }
 
@@ -439,6 +443,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -480,6 +485,7 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -523,6 +529,7 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -915,6 +922,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       erased: set.from_list([1]),
       undo_stack: [1],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -940,7 +948,7 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), True) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, True) |> click_event_names
 
   assert click_events == ["click"]
 }
@@ -957,7 +965,7 @@ pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), False) |> click_event_names
+    client.view_sentence(sentence, set.new(), None, False) |> click_event_names
 
   assert click_events == []
 }
@@ -1004,6 +1012,7 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let assert Ok(reading_area) =
@@ -1087,6 +1096,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       erased: set.new(),
       undo_stack: [],
       touch_start: None,
+      focused_sentence: None,
     )
 
   let rendered = client.view(model) |> element.to_string
