@@ -83,7 +83,10 @@ fn book_meta_wire_decoder() -> decode.Decoder(BookMetaWire) {
   use word_count <- decode.field("word_count", decode.int)
   use sentence_count <- decode.field("sentence_count", decode.int)
   use uploaded_at <- decode.field("uploaded_at", decode.string)
-  use last_read_at <- decode.field("last_read_at", decode.optional(decode.string))
+  use last_read_at <- decode.field(
+    "last_read_at",
+    decode.optional(decode.string),
+  )
   decode.success(BookMetaWire(
     id: id,
     title: title,
@@ -109,7 +112,10 @@ fn book_full_decoder() -> decode.Decoder(BookFullWire) {
   use word_count <- decode.field("word_count", decode.int)
   use sentence_count <- decode.field("sentence_count", decode.int)
   use uploaded_at <- decode.field("uploaded_at", decode.string)
-  use last_read_at <- decode.field("last_read_at", decode.optional(decode.string))
+  use last_read_at <- decode.field(
+    "last_read_at",
+    decode.optional(decode.string),
+  )
   use segments <- decode.field("segments", segmenter.decoder())
   decode.success(BookFullWire(
     id: id,
@@ -131,10 +137,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
     "sentence_bitset",
     decode.optional(decode.string),
   )
-  use word_bitset <- decode.field(
-    "word_bitset",
-    decode.optional(decode.string),
-  )
+  use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   // Bitsets in `ReadingState` are `BitArray`, but the wire form is
@@ -183,10 +186,7 @@ fn user_settings_wire_decoder() -> decode.Decoder(UserSettings) {
   ))
 }
 
-fn decode_body(
-  response: wisp.Response,
-  decoder: decode.Decoder(a),
-) -> a {
+fn decode_body(response: wisp.Response, decoder: decode.Decoder(a)) -> a {
   let assert Ok(decoded) = json.parse(simulate.read_body(response), decoder)
   decoded
 }
@@ -278,7 +278,8 @@ pub fn create_book_returns_full_payload_and_persists_test() {
   let listing_response =
     router.handle_request(simulate.browser_request(http.Get, "/api/books"), ctx)
   assert listing_response.status == 200
-  let listing = decode_body(listing_response, decode.list(book_meta_wire_decoder()))
+  let listing =
+    decode_body(listing_response, decode.list(book_meta_wire_decoder()))
   assert listing == [decoded.book]
 }
 
@@ -656,8 +657,7 @@ pub fn settings_put_endpoint_round_trips_test() {
       simulate.browser_request(http.Get, "/api/settings"),
       ctx,
     )
-  assert decode_body(get_response, user_settings_wire_decoder())
-    == new_settings
+  assert decode_body(get_response, user_settings_wire_decoder()) == new_settings
 }
 
 // ---------------------------------------------------------------------------
@@ -734,4 +734,3 @@ fn user_settings_to_json(settings: UserSettings) -> json.Json {
     #("default_page_delay_ms", json.int(settings.default_page_delay_ms)),
   ])
 }
-

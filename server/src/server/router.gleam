@@ -279,9 +279,7 @@ fn validate_mode(mode: String) -> Result(String, String) {
   case list.contains(reading_state_modes, mode) {
     True -> Ok(mode)
     False ->
-      Error(
-        "mode must be one of: " <> string.join(reading_state_modes, ", "),
-      )
+      Error("mode must be one of: " <> string.join(reading_state_modes, ", "))
   }
 }
 
@@ -326,21 +324,15 @@ fn persist_reading_state(
           // existence is already verified above, so this is a pure
           // update — a failure is genuinely a DB-level problem.
           case
-            db.set_book_last_read_at(
-              ctx.db,
-              id: id,
-              last_read_at: updated_at,
-            )
+            db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
           {
-            Error(error) ->
-              db_error_response("db.set_book_last_read_at", error)
+            Error(error) -> db_error_response("db.set_book_last_read_at", error)
             Ok(Nil) ->
               // Re-read so the client sees the authoritative state — if
               // the last-write-wins guard rejected the write, the
               // response still reflects whatever's on disk.
               case db.get_reading_state(ctx.db, id) {
-                Error(error) ->
-                  db_error_response("db.get_reading_state", error)
+                Error(error) -> db_error_response("db.get_reading_state", error)
                 Ok(None) -> {
                   wisp.log_error(
                     "reading_state vanished immediately after upsert for book "
