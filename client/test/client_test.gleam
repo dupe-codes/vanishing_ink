@@ -20,6 +20,8 @@
 //// attribute structure and inter-element text content in one
 //// assertion.
 
+import gleam/float
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -38,8 +40,9 @@ import shared/segmenter.{
 import client.{
   type Model, EraseFocused, EraseSentence, FocusNext, FocusParagraphDown,
   FocusParagraphUp, FocusPrevious, Model, NextPage, ParagraphsMeasured,
-  PreviousPage, TextLoaded, TouchCancel, TouchEnd, TouchStart, Undo,
-  ViewportResized,
+  PreviousPage, SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{type Page, Page}
@@ -1605,4 +1608,370 @@ pub fn view_omits_focused_class_when_cursor_dormant_test() {
   let rendered = client.view(prior) |> element.to_string
 
   assert !string.contains(rendered, "sentence-focused")
+}
+
+// ---------------------------------------------------------------------------
+// update — settings panel toggle
+// ---------------------------------------------------------------------------
+
+pub fn update_toggle_settings_opens_then_closes_panel_test() {
+  // `ToggleSettings` is a pure model flip — no FFI side effect, no
+  // re-pagination. Asserting the whole model both ways pins the
+  // invariant that *only* `settings_open` changes; every other field
+  // must round-trip unchanged so a future "remember last setting"
+  // refactor cannot accidentally reset font size on every gear tap.
+  let initial = empty_model()
+
+  let #(opened, _e1) = client.update(initial, ToggleSettings)
+  assert opened == Model(..initial, settings_open: True)
+
+  let #(closed, _e2) = client.update(opened, ToggleSettings)
+  assert closed == initial
+}
+
+// ---------------------------------------------------------------------------
+// update — dark / light theme
+// ---------------------------------------------------------------------------
+
+pub fn update_toggle_dark_mode_flips_dark_field_test() {
+  // Starting from the dark default, one toggle moves us to light.
+  // The body-class FFI side effect is observable in production but
+  // not in this test environment; the reducer's job is to surface
+  // the new model field, which is what we pin.
+  let initial = empty_model()
+
+  let #(light, _) = client.update(initial, ToggleDarkMode)
+  assert light == Model(..initial, dark_mode: False)
+
+  let #(dark_again, _) = client.update(light, ToggleDarkMode)
+  assert dark_again == initial
+}
+
+// ---------------------------------------------------------------------------
+// update — font size slider
+// ---------------------------------------------------------------------------
+
+pub fn update_set_font_size_clamps_below_min_test() {
+  // The reducer clamps regardless of slider attributes — a programmatic
+  // call (or a malformed event) bypassing the `min=14` HTML attribute
+  // must not poison the model. Clamps at the lo rail.
+  let #(updated, _) = client.update(empty_model(), SetFontSize(8))
+  assert updated == Model(..empty_model(), font_size: client.min_font_size)
+}
+
+pub fn update_set_font_size_clamps_above_max_test() {
+  // Same clamp invariant at the hi rail.
+  let #(updated, _) = client.update(empty_model(), SetFontSize(48))
+  assert updated == Model(..empty_model(), font_size: client.max_font_size)
+}
+
+pub fn update_set_font_size_stores_in_range_value_test() {
+  // A mid-range value is written verbatim — the clamp is a guard,
+  // not a quantiser.
+  let #(updated, _) = client.update(empty_model(), SetFontSize(22))
+  assert updated == Model(..empty_model(), font_size: 22)
+}
+
+// ---------------------------------------------------------------------------
+// update — line spacing slider
+// ---------------------------------------------------------------------------
+
+pub fn update_set_line_spacing_clamps_below_min_test() {
+  let #(updated, _) = client.update(empty_model(), SetLineSpacing(0.5))
+  assert updated
+    == Model(..empty_model(), line_spacing: client.min_line_spacing)
+}
+
+pub fn update_set_line_spacing_clamps_above_max_test() {
+  let #(updated, _) = client.update(empty_model(), SetLineSpacing(3.5))
+  assert updated
+    == Model(..empty_model(), line_spacing: client.max_line_spacing)
+}
+
+pub fn update_set_line_spacing_stores_in_range_value_test() {
+  let #(updated, _) = client.update(empty_model(), SetLineSpacing(1.8))
+  assert updated == Model(..empty_model(), line_spacing: 1.8)
+}
+
+// ---------------------------------------------------------------------------
+// update — ghost mode and ghost opacity
+// ---------------------------------------------------------------------------
+
+pub fn update_toggle_ghost_mode_flips_field_test() {
+  let initial = empty_model()
+
+  let #(on, _) = client.update(initial, ToggleGhostMode)
+  assert on == Model(..initial, ghost_mode: True)
+
+  let #(off, _) = client.update(on, ToggleGhostMode)
+  assert off == initial
+}
+
+pub fn update_set_ghost_opacity_clamps_below_min_test() {
+  // `min_ghost_opacity` is 0.0, but a negative slider value is still
+  // clamped — the lo-rail guard is the same shape as the int case.
+  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(-0.1))
+  assert updated
+    == Model(..empty_model(), ghost_opacity: client.min_ghost_opacity)
+}
+
+pub fn update_set_ghost_opacity_clamps_above_max_test() {
+  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.9))
+  assert updated
+    == Model(..empty_model(), ghost_opacity: client.max_ghost_opacity)
+}
+
+pub fn update_set_ghost_opacity_stores_in_range_value_test() {
+  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.12))
+  assert updated == Model(..empty_model(), ghost_opacity: 0.12)
+}
+
+// ---------------------------------------------------------------------------
+// update — dyslexia-friendly font
+// ---------------------------------------------------------------------------
+
+pub fn update_toggle_dyslexia_font_flips_field_test() {
+  let initial = empty_model()
+
+  let #(on, _) = client.update(initial, ToggleDyslexiaFont)
+  assert on == Model(..initial, dyslexia_font: True)
+
+  let #(off, _) = client.update(on, ToggleDyslexiaFont)
+  assert off == initial
+}
+
+// ---------------------------------------------------------------------------
+// clamp helpers
+// ---------------------------------------------------------------------------
+//
+// `clamp_int` and `clamp_float` are exposed for testing because every
+// settings-slider reducer arm delegates to them; pinning the boundary
+// behaviour here means a future refactor that swaps the comparison
+// operators (e.g. inclusive vs. exclusive bounds) will fail at this
+// unit level rather than producing surprising slider behaviour at the
+// rails.
+
+pub fn clamp_int_below_lo_returns_lo_test() {
+  assert client.clamp_int(-5, 0, 10) == 0
+}
+
+pub fn clamp_int_above_hi_returns_hi_test() {
+  assert client.clamp_int(99, 0, 10) == 10
+}
+
+pub fn clamp_int_in_range_returns_value_test() {
+  assert client.clamp_int(7, 0, 10) == 7
+}
+
+pub fn clamp_int_at_lo_returns_lo_test() {
+  // Boundary inclusivity: `value < lo` not `value <= lo`, so the lo
+  // rail itself is "in range" and passes through.
+  assert client.clamp_int(0, 0, 10) == 0
+}
+
+pub fn clamp_int_at_hi_returns_hi_test() {
+  // Mirror inclusivity check at the hi rail.
+  assert client.clamp_int(10, 0, 10) == 10
+}
+
+pub fn clamp_float_below_lo_returns_lo_test() {
+  assert client.clamp_float(-1.5, 0.0, 1.0) == 0.0
+}
+
+pub fn clamp_float_above_hi_returns_hi_test() {
+  assert client.clamp_float(2.5, 0.0, 1.0) == 1.0
+}
+
+pub fn clamp_float_in_range_returns_value_test() {
+  assert client.clamp_float(0.42, 0.0, 1.0) == 0.42
+}
+
+pub fn clamp_float_at_lo_returns_lo_test() {
+  assert client.clamp_float(0.0, 0.0, 1.0) == 0.0
+}
+
+pub fn clamp_float_at_hi_returns_hi_test() {
+  assert client.clamp_float(1.0, 0.0, 1.0) == 1.0
+}
+
+// ---------------------------------------------------------------------------
+// erased_opacity_value
+// ---------------------------------------------------------------------------
+
+pub fn erased_opacity_value_false_branch_returns_zero_test() {
+  // Ghost-mode off — every existing rendering test indirectly pins
+  // this branch via `style="opacity:0"` substrings, but having a
+  // direct assertion here makes the contract explicit.
+  let model = Model(..empty_model(), ghost_mode: False, ghost_opacity: 0.25)
+  assert client.erased_opacity_value(model) == "0"
+}
+
+pub fn erased_opacity_value_true_branch_returns_ghost_opacity_test() {
+  // Ghost-mode on — the value is the configured `ghost_opacity`
+  // float, formatted through `float.to_string`. Previously this
+  // branch was never exercised in tests, so a refactor that
+  // replaced `float.to_string(model.ghost_opacity)` with the literal
+  // `"0"` would have passed CI; this assertion catches that.
+  let model = Model(..empty_model(), ghost_mode: True, ghost_opacity: 0.18)
+  assert client.erased_opacity_value(model) == "0.18"
+}
+
+pub fn erased_opacity_value_true_branch_at_default_test() {
+  // Default `ghost_opacity` rounds-trips through `float.to_string`
+  // — pin the exact string form so a future locale change in the
+  // stdlib (e.g. comma decimal separator) is caught.
+  let model = Model(..empty_model(), ghost_mode: True)
+  assert client.erased_opacity_value(model) == "0.06"
+}
+
+// ---------------------------------------------------------------------------
+// view — settings panel
+// ---------------------------------------------------------------------------
+//
+// The settings overlay is the only view branch conditional on
+// `settings_open`. Closed: no settings markup at all. Open: an
+// accessible dialog with three sliders and three toggles. The tests
+// below pin the structural contract — aria attributes, slider
+// min/max/step values from the public constants, close-button wiring
+// — so a refactor of the panel layout cannot silently drop
+// accessibility or detune a slider's range.
+
+pub fn view_omits_settings_panel_when_closed_test() {
+  let rendered = client.view(empty_model()) |> element.to_string
+  assert !string.contains(rendered, "settings-overlay")
+  assert !string.contains(rendered, "settings-panel")
+}
+
+pub fn view_renders_settings_overlay_when_open_test() {
+  // The scrim carries `role="dialog"`, `aria-modal="true"`, and the
+  // panel title — all three are required for screen-reader
+  // semantics, and dropping any one of them is the kind of change a
+  // refactor might make without realising.
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Reader settings\"")
+  assert string.contains(rendered, "aria-modal=\"true\"")
+  assert string.contains(rendered, "role=\"dialog\"")
+  assert string.contains(rendered, "class=\"settings-overlay\"")
+  assert string.contains(rendered, "class=\"settings-panel\"")
+  assert string.contains(rendered, "Reader settings")
+}
+
+pub fn view_settings_close_button_has_accessible_label_test() {
+  // The `✕` glyph is visual-only; sighted readers can hit it on
+  // shape alone, but a screen-reader needs the aria-label to
+  // announce its purpose. The label string is pinned here so the
+  // L10n quest that eventually replaces it has one place to update.
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Close settings\"")
+}
+
+pub fn view_settings_font_size_slider_carries_bounds_from_constants_test() {
+  // The slider's `min` / `max` / `step` attributes come from the
+  // public constants on the `client` module. Pinning them here
+  // means a future change that raises the cap also has to update
+  // the test, which is the right shape — the test enforces the
+  // single source of truth.
+  let model = Model(..empty_model(), settings_open: True, font_size: 22)
+
+  let rendered = client.view(model) |> element.to_string
+
+  // The aria-label uniquely identifies this slider; from there we
+  // can pin every attribute on the same element.
+  assert string.contains(rendered, "aria-label=\"Font size in pixels\"")
+  assert string.contains(
+    rendered,
+    "max=\"" <> int.to_string(client.max_font_size) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> int.to_string(client.min_font_size) <> "\"",
+  )
+  assert string.contains(rendered, "step=\"1\"")
+  assert string.contains(rendered, "value=\"22\"")
+  // The label readout uses the same field, but with a "px" suffix
+  // so the reader sees real units rather than a bare integer.
+  assert string.contains(rendered, "22px")
+}
+
+pub fn view_settings_line_spacing_slider_carries_bounds_test() {
+  let model = Model(..empty_model(), settings_open: True, line_spacing: 1.8)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Line spacing multiplier\"")
+  assert string.contains(
+    rendered,
+    "max=\"" <> float.to_string(client.max_line_spacing) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> float.to_string(client.min_line_spacing) <> "\"",
+  )
+  assert string.contains(rendered, "step=\"0.1\"")
+  assert string.contains(rendered, "value=\"1.8\"")
+}
+
+pub fn view_settings_ghost_opacity_slider_carries_bounds_test() {
+  let model = Model(..empty_model(), settings_open: True, ghost_opacity: 0.12)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Ghost mode opacity\"")
+  assert string.contains(
+    rendered,
+    "max=\"" <> float.to_string(client.max_ghost_opacity) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> float.to_string(client.min_ghost_opacity) <> "\"",
+  )
+  assert string.contains(rendered, "step=\"0.01\"")
+  assert string.contains(rendered, "value=\"0.12\"")
+}
+
+pub fn view_settings_toggles_reflect_model_state_test() {
+  // All three toggles read from the model. Pinning the labels
+  // confirms each toggle is rendered; pinning the `checked`-attribute
+  // count under known model state confirms each toggle's `checked`
+  // attribute is wired to the matching model field. Lustre serialises
+  // `checked=True` as the bare attribute ` checked` (see
+  // `vattr.to_string_tree` — `value: ""` collapses to ` <name>`),
+  // so we split on that exact substring.
+  let all_on =
+    Model(
+      ..empty_model(),
+      settings_open: True,
+      ghost_mode: True,
+      dyslexia_font: True,
+    )
+
+  let rendered = client.view(all_on) |> element.to_string
+
+  // All three toggle labels are present, in any order.
+  assert string.contains(rendered, "Dark mode")
+  assert string.contains(rendered, "Ghost mode")
+  assert string.contains(rendered, "Dyslexia-friendly font")
+
+  // Three `checked` checkbox renders ⇒ four `split` chunks.
+  let checked_chunks = rendered |> string.split(" checked") |> list.length
+  assert checked_chunks == 4
+}
+
+pub fn view_settings_dyslexia_toggle_unchecked_when_field_false_test() {
+  // Asymmetric coverage of the previous test: with only `dark_mode`
+  // on, exactly one `checked` substring should appear in the
+  // settings panel. This catches a regression where the ghost / dyslexia
+  // checkboxes default to checked regardless of model state.
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  let checked_chunks = rendered |> string.split(" checked") |> list.length
+  assert checked_chunks == 2
 }
