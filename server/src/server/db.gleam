@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS user_settings (
 -- gain `ON DELETE CASCADE` (or the delete handler must purge the
 -- dependent rows first) or the delete will fail with a FK violation
 -- under `PRAGMA foreign_keys = ON`.
+--
+-- SCAFFOLDING: `book_settings` is declared up front but has no Gleam
+-- reader or writer yet. It exists to back a not-yet-implemented
+-- per-book override feature (custom WPM, paragraph/page delays, and
+-- ghost opacity for a single book, overriding `user_settings`). Adding
+-- the schema now keeps the eventual migration to a populated table
+-- additive — handler additions only — rather than mixing a schema
+-- change into the feature work.
 CREATE TABLE IF NOT EXISTS book_settings (
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   wpm INTEGER,
