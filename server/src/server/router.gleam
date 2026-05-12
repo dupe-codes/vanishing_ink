@@ -261,18 +261,27 @@ fn put_reading_state_handler(
 }
 
 /// Refuse inputs that the SQL layer would otherwise accept silently:
-/// `mode` must come from the closed vocabulary, and `updated_at` must
-/// be a parseable ISO 8601 timestamp. The returned record carries the
-/// CANONICALISED `updated_at` (`YYYY-MM-DDTHH:MM:SSZ`) so the SQL-side
-/// lexicographic comparison in `update_reading_state` matches
-/// chronological order regardless of how the client formatted the
-/// input — and so a malformed value like `"ZZZZ"` cannot wedge the row.
+/// `mode` must come from the closed vocabulary, `updated_at` must be
+/// a parseable ISO 8601 timestamp, and `current_page` must be a
+/// non-negative integer. The returned record carries the CANONICALISED
+/// `updated_at` (`YYYY-MM-DDTHH:MM:SSZ`) so the SQL-side lexicographic
+/// comparison in `update_reading_state` matches chronological order
+/// regardless of how the client formatted the input — and so a
+/// malformed value like `"ZZZZ"` cannot wedge the row.
 fn validate_reading_state_input(
   input: ReadingStateInput,
 ) -> Result(ReadingStateInput, String) {
   use mode <- result.try(validate_mode(input.mode))
   use updated_at <- result.try(validate_updated_at(input.updated_at))
-  Ok(ReadingStateInput(..input, mode: mode, updated_at: updated_at))
+  use current_page <- result.try(validate_current_page(input.current_page))
+  Ok(
+    ReadingStateInput(
+      ..input,
+      mode: mode,
+      updated_at: updated_at,
+      current_page: current_page,
+    ),
+  )
 }
 
 fn validate_mode(mode: String) -> Result(String, String) {
@@ -287,6 +296,13 @@ fn validate_updated_at(updated_at: String) -> Result(String, String) {
   case clock.parse_iso8601(updated_at) {
     Ok(canonical) -> Ok(canonical)
     Error(_) -> Error("updated_at must be an ISO 8601 timestamp")
+  }
+}
+
+fn validate_current_page(current_page: Int) -> Result(Int, String) {
+  case current_page >= 0 {
+    True -> Ok(current_page)
+    False -> Error("current_page must be a non-negative integer")
   }
 }
 
