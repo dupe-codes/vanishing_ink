@@ -121,12 +121,12 @@ pub fn calculate_pages(
     })
 
   let #(_, last_page_rev, pages_rev) = folded
-  let pages_rev = case last_page_rev {
+  let all_pages_rev = case last_page_rev {
     [] -> pages_rev
     _ -> [list.reverse(last_page_rev), ..pages_rev]
   }
 
-  pages_rev
+  all_pages_rev
   |> list.reverse
   |> list.index_map(fn(page_paragraphs, index) {
     Page(index: index, paragraphs: page_paragraphs)
