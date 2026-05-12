@@ -29,12 +29,15 @@ export function measure_paragraphs(container_selector) {
     return toList([]);
   }
 
+  // The only producer of `data-paragraph-global-index` is
+  // `int.to_string(global_index)` inside the Gleam view, so every
+  // attribute value here is guaranteed to be a base-10 integer
+  // string. No defensive `Number.isFinite` branch needed — Gleam's
+  // static guarantees already exclude the failure mode.
   const nodes = container.querySelectorAll(`[${PARAGRAPH_INDEX_ATTRIBUTE}]`);
   const pairs = [];
   for (const node of nodes) {
-    const raw = node.getAttribute(PARAGRAPH_INDEX_ATTRIBUTE);
-    const index = Number.parseInt(raw, 10);
-    if (!Number.isFinite(index)) continue;
+    const index = Number.parseInt(node.getAttribute(PARAGRAPH_INDEX_ATTRIBUTE), 10);
     pairs.push([index, node.getBoundingClientRect().height]);
   }
   return toList(pairs);
