@@ -1,13 +1,12 @@
 import gleeunit
+import shared
 
 pub fn main() -> Nil {
   gleeunit.main()
 }
 
-// gleeunit test functions end in `_test`
-pub fn hello_world_test() {
-  let name = "Joe"
-  let greeting = "Hello, " <> name <> "!"
+pub fn shared_book_id_constructor_test() {
+  let id = shared.book_id("the-iliad")
 
-  assert greeting == "Hello, Joe!"
+  assert id == "the-iliad"
 }
