@@ -11,23 +11,86 @@
  *     .reader-page#vi-reading-area            (flex-grows to fill)
  *       .reader-page-content#vi-page-content  (FFI measurement target
  *                                              for available height)
- *     .reader-page-indicator#vi-page-indicator
+ *     .reader-control-bar                     (thumb-friendly bottom row:
+ *                                              page indicator + gear)
  *     .reader-measurement#vi-measurement      (absolute, hidden;
  *                                              same width as content
  *                                              for height-accurate
  *                                              paragraph wrapping)
+ *
+ * Theme & settings toggles ride on `<body>` classes, not on the Lustre
+ * view tree — the rendered HTML is identical regardless of which
+ * toggles are active, and the CSS reads body classes to flip rules.
+ * The toggles are pushed onto the body by the FFI helpers in
+ * `client/ffi.gleam` when the corresponding model field changes.
+ *
+ * Body classes:
+ *   vi-light-mode      — flip --vi-bg / --vi-fg to the light palette
+ *   vi-dyslexia-font   — switch font-family to OpenDyslexic (the font
+ *                        face itself is loaded via a `<link>` declared
+ *                        in `gleam.toml`, not an `@import` here — see
+ *                        the comment near `.vi-dyslexia-font` below)
+ *   vi-ghost-mode      — gate the `.sentence-erased` opacity variable
+ *                        from --vi-ghost-opacity instead of `0`
+ *   vi-reduced-motion  — strip the fade transition from `.sentence`
  */
 
 :root {
   --vi-bg: #000000;
   --vi-fg: #e8e8e8;
   --vi-fg-muted: #888888;
+  --vi-surface: rgba(20, 20, 20, 0.92);
+  --vi-surface-border: rgba(255, 255, 255, 0.1);
+  --vi-focus-ring: rgba(255, 255, 255, 0.18);
   --vi-base-font-size: 18px;
   --vi-line-height: 1.6;
   --vi-reading-max-width: 720px;
   --vi-reading-padding-x: 20px;
   --vi-reading-padding-y: 24px;
+  /* Ghost mode opacity. Sentence rendering inlines `opacity:0` when
+   * `ghost_mode` is off; when it's on, the inline opacity is the
+   * `model.ghost_opacity` float. The custom property is a hook for
+   * future style rules (e.g. a gradient overlay) that need to see the
+   * same value. */
+  --vi-ghost-opacity: 0;
+  /* Sentence fade duration. Set to `0s` when reduced motion is on so
+   * the `.sentence` transition becomes a snap rather than a fade. */
+  --vi-transition-duration: 0.3s;
+  /* Minimum thumb-friendly tap target. Apple HIG says 44pt, which
+   * matches 44 CSS pixels on a standard-density display. */
+  --vi-tap-target: 44px;
 }
+
+body.vi-light-mode {
+  /* Light reading surface override. Off-white background and near-
+   * black text — slightly off the extremes for paper-like contrast
+   * rather than the harsher pure-white-on-pure-black inverse. */
+  --vi-bg: #fafafa;
+  --vi-fg: #1a1a1a;
+  --vi-fg-muted: #666666;
+  --vi-surface: rgba(245, 245, 245, 0.96);
+  --vi-surface-border: rgba(0, 0, 0, 0.12);
+  --vi-focus-ring: rgba(0, 0, 0, 0.18);
+}
+
+body.vi-reduced-motion {
+  /* Folds the duration into a snap on every rule that reads
+   * `--vi-transition-duration`. `prefers-reduced-motion` is queried
+   * once at boot via FFI and surfaced through this class so the
+   * settings panel can also flip it without going back to the media
+   * list. */
+  --vi-transition-duration: 0s;
+}
+
+/* OpenDyslexic is loaded via a `<link rel="stylesheet">` declared in
+ * `gleam.toml` under `[[tools.lustre.html.stylesheets]]`, not an
+ * `@import` here. Per the CSS Cascading and Inheritance specification,
+ * `@import` must precede every other at-rule and style rule; an
+ * `@import` placed after `:root` / `body.vi-light-mode` /
+ * `body.vi-reduced-motion` is silently invalidated by the browser,
+ * which is what shipped in the previous revision and left the
+ * `.vi-dyslexia-font` toggle non-functional. The body opts in via
+ * `.vi-dyslexia-font`; default body retains the system stack. */
 
 * {
   box-sizing: border-box;
@@ -46,15 +109,32 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   height: 100%;
+  /* Prevent the iOS rubber-band scroll from revealing the page
+   * underneath the reading surface — the reader is a single-screen
+   * paginated app, not a scrolling document. */
+  overscroll-behavior: none;
+}
+
+body.vi-dyslexia-font,
+body.vi-dyslexia-font .reader-text,
+body.vi-dyslexia-font .settings-panel {
+  font-family:
+    "OpenDyslexic", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 #app {
+  /* `100dvh` (dynamic viewport height) keeps the reader sized to the
+   * *visible* viewport on iOS Safari — the URL bar collapses and the
+   * height adjusts, where `100vh` would leave a strip of the page
+   * under the bar. `100vh` is the fallback for older browsers. */
   height: 100vh;
+  height: 100dvh;
   width: 100%;
 }
 
 #vi-shell {
   height: 100vh;
+  height: 100dvh;
   width: 100%;
 }
 
@@ -68,24 +148,36 @@ body {
    * the visible page content and the off-screen measurement
    * container share an identical content-area width — paragraph
    * line wrapping (and therefore measured heights) are then
-   * accurate. */
+   * accurate.
+   *
+   * Safe-area insets keep the reading surface clear of the iOS
+   * notch / Dynamic Island at the top and the home indicator at the
+   * bottom. `env(safe-area-inset-*)` returns `0` on non-notched
+   * devices, so desktop layout is unaffected. */
   position: relative;
   max-width: var(--vi-reading-max-width);
   margin: 0 auto;
-  padding: 0 var(--vi-reading-padding-x);
+  padding:
+    env(safe-area-inset-top) calc(var(--vi-reading-padding-x) + env(safe-area-inset-right, 0))
+    env(safe-area-inset-bottom) calc(var(--vi-reading-padding-x) + env(safe-area-inset-left, 0));
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
 
 .reader-page {
   /* The reading area takes the remaining vertical space after the
-   * page indicator. Padding-y gives the page breathing room without
+   * control bar. Padding-y gives the page breathing room without
    * affecting the measurement-target's content-box height. */
   flex: 1 1 auto;
   min-height: 0;
   padding: var(--vi-reading-padding-y) 0;
   overflow: hidden;
+  /* `touch-action: pan-y` keeps vertical scrolls native (no purpose
+   * today but ensures the browser doesn't intercept horizontal
+   * swipes for back/forward navigation). */
+  touch-action: pan-y;
 }
 
 .reader-page-content {
@@ -104,17 +196,63 @@ body {
   color: var(--vi-fg-muted);
 }
 
-.reader-page-indicator {
+.reader-control-bar {
   /* Pinned to the bottom of `.reader-text` with `flex: 0 0 auto`.
-   * Hidden by `view_page_indicator` (returns `element.none()`) until
-   * pagination produces at least one page, so it never shows "Page 0
-   * of 0" during the measuring phase. */
+   * Houses the page indicator on the left and a settings gear on the
+   * right. The bar replaces the older `.reader-page-indicator`
+   * placement; touch handlers live on `.reader-page`, not here, so
+   * tapping the gear cannot register as a swipe. */
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0.5rem 0 1rem 0;
+  min-height: var(--vi-tap-target);
   color: var(--vi-fg-muted);
-  text-align: center;
   font-size: 0.85rem;
   letter-spacing: 0.04em;
+}
+
+.reader-page-indicator {
+  /* Flex child of `.reader-control-bar`. Centred horizontally inside
+   * its half of the bar so the visual centre matches the older
+   * indicator-only layout — the gear sits to the right and the
+   * indicator carries the left/centre weight. */
+  flex: 1 1 auto;
+  text-align: center;
+  color: var(--vi-fg-muted);
+}
+
+.reader-settings-button {
+  /* The gear-icon toggle. ≥ 44 × 44 CSS pixels per Apple HIG so a
+   * thumb can hit it cleanly. The visual icon is a unicode glyph —
+   * good enough for one shot; a later quest can swap it for an
+   * inline SVG if iconography becomes a theme concern. */
+  flex: 0 0 auto;
+  min-width: var(--vi-tap-target);
+  min-height: var(--vi-tap-target);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--vi-fg);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  /* Snap rather than a delayed visual feedback. The button is a tap
+   * toggle, not a hover surface. */
+  transition: background-color var(--vi-transition-duration) ease,
+              border-color var(--vi-transition-duration) ease;
+}
+
+.reader-settings-button:hover,
+.reader-settings-button:focus-visible {
+  background-color: var(--vi-focus-ring);
+  outline: none;
 }
 
 .reader-measurement {
@@ -170,13 +308,13 @@ body {
 .sentence {
   display: inline;
   /* Opacity is driven by the reducer's `erased` map: an erased
-   * sentence renders with `style="opacity:0;"`, an un-erased one
-   * has no inline opacity at all. The transition fades both
-   * directions — erase fades out, undo fades back in — so the
+   * sentence renders with an inline `style="opacity:..."`, an
+   * un-erased one has no inline opacity at all. The transition fades
+   * both directions — erase fades out, undo fades back in — so the
    * exposure step reads visibly rather than snapping. The duration
-   * is on the short side of "manual erase therapy" interactions so
-   * the page does not feel sluggish between rapid taps. */
-  transition: opacity 0.3s ease;
+   * comes from `--vi-transition-duration` so the reduced-motion body
+   * class can collapse it to 0s without rewriting the rule. */
+  transition: opacity var(--vi-transition-duration) ease;
 }
 
 .sentence-focused {
@@ -188,7 +326,7 @@ body {
    * one rectangle across the full inline run, so the cursor reads
    * as "this sentence" rather than "this rectangle of empty space
    * between the first and last words". */
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--vi-focus-ring);
   border-radius: 2px;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -197,4 +335,206 @@ body {
 .word {
   /* Inline span so the reading flow wraps naturally. */
   display: inline;
+}
+
+/* ---------------------------------------------------------------------
+ * Settings panel
+ * --------------------------------------------------------------------- */
+
+.settings-overlay {
+  /* Full-viewport scrim behind the settings panel. Tapping it closes
+   * the panel without committing any settings change beyond what's
+   * already happened (settings are applied live as the reader drags
+   * sliders, so there's no "save" button to miss). */
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.settings-panel {
+  /* Bottom sheet — anchored to the bottom on mobile so the reader's
+   * thumb can reach the controls without stretching to the top of
+   * the screen. On wider viewports the max-width caps the sheet so
+   * it doesn't span the whole window. */
+  width: 100%;
+  max-width: 520px;
+  background: var(--vi-surface);
+  color: var(--vi-fg);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 16px 16px 0 0;
+  padding: 20px;
+  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  /* Backdrop blur so reader can still feel the page underneath the
+   * panel — purely decorative. Falls back gracefully on browsers
+   * without `backdrop-filter` support. */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 80vh;
+  max-height: 80dvh;
+  overflow-y: auto;
+}
+
+.settings-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-panel-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.settings-panel-close {
+  /* Tap target ≥ 44px. Glyph button — same idea as the gear. */
+  min-width: var(--vi-tap-target);
+  min-height: var(--vi-tap-target);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--vi-fg);
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.settings-row {
+  /* One setting per row. Labels stack above the control so the
+   * control gets the full row width — critical for sliders that need
+   * a meaningful drag distance on a narrow phone screen. */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.9rem;
+  color: var(--vi-fg);
+}
+
+.settings-row-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--vi-fg-muted);
+}
+
+.settings-slider {
+  /* Native range input. Min/max thumb size is implicit in the user
+   * agent stylesheet, but we force a tall track so the tap target
+   * around the thumb reaches the 44px guidance. */
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--vi-tap-target);
+  background: transparent;
+  cursor: pointer;
+  margin: 0;
+}
+
+.settings-slider:focus-visible {
+  outline: 2px solid var(--vi-focus-ring);
+  outline-offset: 4px;
+}
+
+.settings-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--vi-surface-border);
+  border-radius: 2px;
+}
+
+.settings-slider::-moz-range-track {
+  height: 4px;
+  background: var(--vi-surface-border);
+  border-radius: 2px;
+}
+
+.settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--vi-fg);
+  margin-top: -9px;
+  border: none;
+}
+
+.settings-slider::-moz-range-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--vi-fg);
+  border: none;
+}
+
+.settings-toggle {
+  /* Toggle row with the switch on the right of the label. Targets
+   * the same 44px tap area. */
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: var(--vi-tap-target);
+}
+
+.settings-toggle-label {
+  font-size: 0.95rem;
+  color: var(--vi-fg);
+}
+
+.settings-toggle-input {
+  /* Native checkbox styled as a 44 × 26 pill switch. Using the input
+   * directly (rather than a label-wrapping pattern) keeps keyboard
+   * focus and screen-reader semantics native. */
+  -webkit-appearance: none;
+  appearance: none;
+  width: 44px;
+  height: 26px;
+  border-radius: 13px;
+  background: var(--vi-surface-border);
+  position: relative;
+  cursor: pointer;
+  transition: background-color var(--vi-transition-duration) ease;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.settings-toggle-input::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--vi-fg);
+  transition: transform var(--vi-transition-duration) ease;
+}
+
+.settings-toggle-input:checked {
+  background-color: var(--vi-focus-ring);
+}
+
+.settings-toggle-input:checked::after {
+  transform: translateX(18px);
+}
+
+.settings-toggle-input:focus-visible {
+  outline: 2px solid var(--vi-focus-ring);
+  outline-offset: 2px;
 }

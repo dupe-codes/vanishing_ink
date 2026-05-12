@@ -1,8 +1,8 @@
 //// JavaScript FFI boundary for the Lustre reader. Wraps a small
 //// surface of browser APIs — viewport size, DOM element measurement,
-//// resize events, keyboard navigation — behind typed Gleam
-//// signatures so the pagination engine and the reader's update loop
-//// stay JS-free.
+//// resize events, keyboard navigation, system preferences, and CSS
+//// custom property mutation — behind typed Gleam signatures so the
+//// pagination engine and the reader's update loop stay JS-free.
 ////
 //// The companion `ffi.ffi.mjs` colocated next to this module returns
 //// runtime-shaped Gleam values (`Ok`/`Error`, `List`, plain
@@ -78,3 +78,49 @@ pub fn on_vim_keys(
   erase_focused_callback erase_focused_callback: fn() -> Nil,
   undo_callback undo_callback: fn() -> Nil,
 ) -> Nil
+
+/// Returns `True` when the browser reports `prefers-color-scheme: dark`,
+/// `False` otherwise. Used at boot to seed the reader's theme from the
+/// reader's OS preference before any explicit override is applied. The
+/// reader can flip the in-memory setting at runtime through the settings
+/// panel; we do not re-query the media list on every settings change
+/// because the user override takes precedence.
+@external(javascript, "./ffi.ffi.mjs", "get_prefers_color_scheme_dark")
+pub fn get_prefers_color_scheme_dark() -> Bool
+
+/// Returns `True` when the browser reports `prefers-reduced-motion:
+/// reduce`. The reader uses this to gate the sentence fade animation:
+/// when the user has asked the OS to reduce motion, the `transition`
+/// is stripped from `.sentence` so erases snap rather than fade.
+@external(javascript, "./ffi.ffi.mjs", "get_prefers_reduced_motion")
+pub fn get_prefers_reduced_motion() -> Bool
+
+/// Set a CSS custom property on `document.documentElement` (i.e. the
+/// `:root` selector). Used to push live font-size / line-height /
+/// ghost-opacity values into the cascade without re-rendering the
+/// whole view tree. The change cascades into every rule that references
+/// the property.
+@external(javascript, "./ffi.ffi.mjs", "set_css_property")
+pub fn set_css_property(name: String, value: String) -> Nil
+
+/// Set or remove a class on `document.body`. When `enabled` is `True`
+/// the class is added; when `False` it is removed. Used for theme
+/// (`vi-light-mode`), dyslexia font (`vi-dyslexia-font`), ghost mode
+/// (`vi-ghost-mode`), and reduced motion (`vi-reduced-motion`) toggles —
+/// the CSS reads each class to flip the relevant rules. Keeping the
+/// switches on `body` rather than the shell `<div>` so the existing
+/// view-render tests stay stable: the rendered Lustre tree is unchanged
+/// by setting toggles.
+@external(javascript, "./ffi.ffi.mjs", "set_body_class")
+pub fn set_body_class(class_name: String, enabled: Bool) -> Nil
+
+/// Patch the document's `<meta name="viewport">` element to include
+/// `viewport-fit=cover` so the iOS notch / Dynamic Island and home
+/// indicator regions report non-zero `env(safe-area-inset-*)` values.
+/// `lustre_dev_tools` ships a stock viewport meta without the cover
+/// flag; the FFI rewrites the `content` attribute in place rather than
+/// inserting a duplicate tag (which would let the older one win
+/// depending on parser order). Safe to call repeatedly — only the
+/// attribute value is touched.
+@external(javascript, "./ffi.ffi.mjs", "ensure_viewport_fit_cover")
+pub fn ensure_viewport_fit_cover() -> Nil

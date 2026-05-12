@@ -24,7 +24,19 @@
 //// Keyboard navigation (`ArrowLeft`/`ArrowRight`) and `resize` are
 //// both wired through `client/ffi.gleam`. `resize` is debounced in
 //// the FFI so a continuous drag does not flood the update loop.
+////
+//// **Reader settings** are kept in-memory on the `Model` (no
+//// persistence today). The view tree stays free of theme/setting
+//// markup — settings are pushed into the CSS cascade via FFI
+//// (`set_css_property` for sliders, `set_body_class` for binary
+//// toggles), and the CSS reads custom properties and body classes to
+//// flip the relevant rules. The settings panel itself is the only
+//// part of the view conditional on the settings model, so the
+//// existing rendered-HTML tests stay stable through every settings
+//// change.
 
+import gleam/dynamic/decode
+import gleam/float
 import gleam/int
 import gleam/io
 import gleam/list
@@ -54,6 +66,48 @@ import shared/segmenter.{
 pub const undo_stack_depth: Int = 5
 
 // ---------------------------------------------------------------------------
+// Reader settings — defaults and bounds
+// ---------------------------------------------------------------------------
+//
+// All values below are clamped at the reducer boundary so a future
+// slider that fires an out-of-range value does not poison the model.
+// The bounds are also surfaced to the view so the `<input type=range>`
+// elements declare the same min/max — the reducer clamp is the
+// authority and the slider attributes just keep the UI honest.
+
+/// Default `font_size`. Picked to match the bundled stylesheet's
+/// `--vi-base-font-size` (`18px`) so the initial render does not
+/// invalidate the first paragraph measurement pass.
+pub const default_font_size: Int = 18
+
+/// Lower bound on `font_size`. Anything below 14px starts to lose
+/// legibility on a phone screen at typical reading distance.
+pub const min_font_size: Int = 14
+
+/// Upper bound on `font_size`. 28px is large enough for
+/// vision-impaired reading without breaking the bundled prose's
+/// paragraph rhythm.
+pub const max_font_size: Int = 28
+
+/// Default `line_spacing`. Matches the bundled stylesheet's
+/// `--vi-line-height`.
+pub const default_line_spacing: Float = 1.6
+
+pub const min_line_spacing: Float = 1.2
+
+pub const max_line_spacing: Float = 2.0
+
+/// Default `ghost_opacity` — applied only when `ghost_mode` is on.
+/// The value is a deliberately gentle starting point: most readers
+/// graduating from fully-invisible erases want a faint reminder that
+/// something is there, not a half-visible second copy of the prose.
+pub const default_ghost_opacity: Float = 0.06
+
+pub const min_ghost_opacity: Float = 0.0
+
+pub const max_ghost_opacity: Float = 0.3
+
+// ---------------------------------------------------------------------------
 // DOM ids
 // ---------------------------------------------------------------------------
 //
@@ -68,9 +122,31 @@ const reading_area_id: String = "vi-reading-area"
 
 const page_content_id: String = "vi-page-content"
 
-const page_indicator_id: String = "vi-page-indicator"
-
 const measurement_id: String = "vi-measurement"
+
+// ---------------------------------------------------------------------------
+// CSS custom property and body-class names
+// ---------------------------------------------------------------------------
+//
+// Mirrors the names declared in `assets/styles.css`. Defining them as
+// constants on the Gleam side keeps the FFI calls in `update` and the
+// CSS rules from drifting apart: a rename in the stylesheet means a
+// rename here, and the failure mode is a Gleam compile error rather
+// than a silently broken setting.
+
+const css_var_font_size: String = "--vi-base-font-size"
+
+const css_var_line_height: String = "--vi-line-height"
+
+const css_var_ghost_opacity: String = "--vi-ghost-opacity"
+
+const body_class_light_mode: String = "vi-light-mode"
+
+const body_class_ghost_mode: String = "vi-ghost-mode"
+
+const body_class_dyslexia_font: String = "vi-dyslexia-font"
+
+const body_class_reduced_motion: String = "vi-reduced-motion"
 
 // ---------------------------------------------------------------------------
 // Application state
@@ -113,6 +189,33 @@ const measurement_id: String = "vi-measurement"
 ///   even as the reader erases sentences. A focused sentence
 ///   renders with the `sentence-focused` class so the reader can
 ///   see where the cursor is.
+/// * `dark_mode` — `True` for the OLED dark surface (default),
+///   `False` for the light reading palette. Seeded from
+///   `prefers-color-scheme` at boot and overridable through the
+///   settings panel.
+/// * `font_size` — base font size in CSS pixels. Pushed into the
+///   `--vi-base-font-size` custom property on change so the cascade
+///   updates without re-rendering the view tree. Re-pagination is
+///   triggered after the change because paragraph heights depend on
+///   font size.
+/// * `line_spacing` — `line-height` multiplier. Pushed into
+///   `--vi-line-height` and triggers re-pagination on change.
+/// * `ghost_mode` — when `True`, erased sentences render at
+///   `ghost_opacity` instead of `0`. Useful for graded ERP exposure
+///   work where the reader wants a faint reminder that prose has
+///   been erased.
+/// * `ghost_opacity` — opacity applied to erased sentences when
+///   `ghost_mode` is on. Ignored when `ghost_mode` is off (the
+///   inline `opacity:0` rules instead).
+/// * `dyslexia_font` — when `True`, swap the body font to
+///   OpenDyslexic. Triggers re-pagination because the new font
+///   metrics change paragraph wrap heights.
+/// * `reduced_motion` — when `True`, the body carries
+///   `vi-reduced-motion` and the sentence-fade transition collapses
+///   to a snap. Seeded from `prefers-reduced-motion` at boot.
+/// * `settings_open` — when `True`, the settings panel renders as a
+///   bottom-sheet overlay above the reading surface. The gear icon
+///   on the control bar toggles it.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -123,6 +226,14 @@ pub type Model {
     undo_stack: List(Int),
     touch_start: Option(#(Float, Float)),
     focused_sentence: Option(Int),
+    dark_mode: Bool,
+    font_size: Int,
+    line_spacing: Float,
+    ghost_mode: Bool,
+    ghost_opacity: Float,
+    dyslexia_font: Bool,
+    reduced_motion: Bool,
+    settings_open: Bool,
   )
 }
 
@@ -224,6 +335,47 @@ pub type Msg {
   /// `focused_sentence` is `None` — there is no cursor target to
   /// act on.
   EraseFocused
+
+  /// Settings panel gear icon (or close button) toggled. Flips
+  /// `settings_open`; no DOM side effect.
+  ToggleSettings
+
+  /// Reader toggled the dark / light theme switch in the settings
+  /// panel. Flips `dark_mode` and pushes `vi-light-mode` onto the
+  /// body class list to override the dark palette in CSS.
+  ToggleDarkMode
+
+  /// Reader dragged the font-size slider. The reducer clamps the
+  /// value into `[min_font_size, max_font_size]`, writes it to the
+  /// model, pushes the new value into `--vi-base-font-size`, and
+  /// dispatches `ViewportResized` so paragraph heights re-measure
+  /// at the new font size before pagination recalculates.
+  SetFontSize(Int)
+
+  /// Reader dragged the line-spacing slider. Same flow as
+  /// `SetFontSize` but for `--vi-line-height` and the `line_spacing`
+  /// model field.
+  SetLineSpacing(Float)
+
+  /// Reader toggled ghost mode in the settings panel. Flips
+  /// `ghost_mode` and adds/removes `vi-ghost-mode` on the body.
+  /// When the toggle goes on, erased sentences fade up to
+  /// `ghost_opacity` instead of fully disappearing; when it goes
+  /// off, the inline opacity reverts to `0`.
+  ToggleGhostMode
+
+  /// Reader dragged the ghost-opacity slider. Clamped into
+  /// `[min_ghost_opacity, max_ghost_opacity]`, written to the model,
+  /// and pushed into `--vi-ghost-opacity` for completeness — the
+  /// view computes the inline opacity directly from the model field,
+  /// the custom property is a hook for future CSS rules.
+  SetGhostOpacity(Float)
+
+  /// Reader toggled the dyslexia-friendly font switch. Flips
+  /// `dyslexia_font` and adds/removes `vi-dyslexia-font` on the
+  /// body. The font swap changes paragraph heights, so this also
+  /// dispatches `ViewportResized` to trigger re-pagination.
+  ToggleDyslexiaFont
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +404,17 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
+  // Read the OS preferences synchronously so the model's `dark_mode`
+  // and `reduced_motion` fields carry the right values *before* the
+  // first render. The previous revision dispatched a
+  // `SystemPreferencesDetected` from an effect, which ran after the
+  // first paint — a reader on a light-mode (or reduced-motion) OS
+  // saw a frame of the dark theme before the body classes flipped.
+  // The FFI calls below are pure media-query reads (no DOM mutation)
+  // so calling them from `init` is safe and idempotent.
+  let dark_mode = ffi.get_prefers_color_scheme_dark()
+  let reduced_motion = ffi.get_prefers_reduced_motion()
+
   let model =
     Model(
       text: None,
@@ -262,14 +425,40 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       undo_stack: [],
       touch_start: None,
       focused_sentence: None,
+      dark_mode: dark_mode,
+      font_size: default_font_size,
+      line_spacing: default_line_spacing,
+      ghost_mode: False,
+      ghost_opacity: default_ghost_opacity,
+      dyslexia_font: False,
+      reduced_motion: reduced_motion,
+      settings_open: False,
     )
 
-  // Five independent boot effects: dispatch the sample text through
-  // the update loop, install the debounced resize listener, the
-  // arrow-key navigation listener, the platform-undo key listener,
-  // and the vim-keys listener (h/j/k/l/Space/u). The listeners
-  // persist for the lifetime of the page — they only need to fire
-  // once at boot.
+  // Boot effects:
+  //
+  // - `viewport_meta` patches the `<meta name="viewport">` tag injected
+  //   by `lustre_dev_tools` to include `viewport-fit=cover` so the
+  //   `env(safe-area-inset-*)` rules in the stylesheet actually report
+  //   non-zero values on iOS notched devices.
+  // - `body_classes` mirrors the OS-preference reads from above onto
+  //   `<body>` so the CSS cascade reflects them on first paint.
+  //   Synchronous effects run before Lustre's first `#render()` call
+  //   (see `runtime.ffi.mjs`), so the body classes are present before
+  //   the first DOM update and the browser never sees a frame with the
+  //   wrong theme. `vi-light-mode` is applied when `dark_mode` is
+  //   *False* — the dark palette is the default, so the class only
+  //   fires the light override.
+  // - `load` injects the sample text through the update loop.
+  // - The four listener effects (`resize`, `arrow`, `undo`, `vim`)
+  //   wire keyboard navigation and the debounced resize handler.
+  let viewport_meta =
+    effect.from(fn(_dispatch) { ffi.ensure_viewport_fit_cover() })
+  let body_classes =
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_light_mode, !dark_mode)
+      ffi.set_body_class(body_class_reduced_motion, reduced_motion)
+    })
   let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
   let resize_listener =
     effect.from(fn(dispatch) {
@@ -299,6 +488,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   #(
     model,
     effect.batch([
+      viewport_meta,
+      body_classes,
       load,
       resize_listener,
       arrow_listener,
@@ -328,6 +519,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     TextLoaded(text) -> #(
       Model(
+        ..model,
         text: Some(text),
         flat_paragraphs: pagination.flatten(text),
         pages: [],
@@ -397,36 +589,181 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     TouchCancel -> #(Model(..model, touch_start: None), effect.none())
 
-    TouchEnd(x, y) -> {
-      let cleared = Model(..model, touch_start: None)
-      case model.touch_start {
-        None -> #(cleared, effect.none())
-        Some(#(start_x, start_y)) ->
-          case gestures.classify(start_x, start_y, x, y) {
-            gestures.Tap -> #(cleared, effect.none())
-            gestures.SwipeLeft -> #(
-              go_to_page(cleared, cleared.current_page + 1),
-              effect.none(),
-            )
-            gestures.SwipeRight ->
-              case cleared.undo_stack {
-                [] -> #(
-                  go_to_page(cleared, cleared.current_page - 1),
-                  effect.none(),
-                )
-                _ -> #(apply_undo(cleared), effect.none())
-              }
+    TouchEnd(x, y) -> #(apply_touch_end(model, x, y), effect.none())
+
+    ToggleSettings -> #(
+      Model(..model, settings_open: !model.settings_open),
+      effect.none(),
+    )
+
+    ToggleDarkMode -> apply_toggle_dark_mode(model)
+
+    SetFontSize(size) -> apply_set_font_size(model, size)
+
+    SetLineSpacing(spacing) -> apply_set_line_spacing(model, spacing)
+
+    ToggleGhostMode -> apply_toggle_ghost_mode(model)
+
+    SetGhostOpacity(opacity) -> apply_set_ghost_opacity(model, opacity)
+
+    ToggleDyslexiaFont -> apply_toggle_dyslexia_font(model)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// update — settings-arm helpers
+// ---------------------------------------------------------------------------
+//
+// Each helper owns one settings transition: clamps the incoming value
+// (where applicable), writes the new field onto the model, and emits
+// the FFI side-effects that mirror the model into the CSS cascade.
+// Splitting them out keeps the top-level `update` case statement scannable
+// and lets each transition be unit-tested without inspecting the others.
+
+fn apply_toggle_dark_mode(model: Model) -> #(Model, Effect(Msg)) {
+  let new_dark = !model.dark_mode
+  #(
+    Model(..model, dark_mode: new_dark),
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_light_mode, !new_dark)
+    }),
+  )
+}
+
+fn apply_set_font_size(model: Model, size: Int) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_int(size, min_font_size, max_font_size)
+  #(
+    Model(..model, font_size: clamped),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(css_var_font_size, int.to_string(clamped) <> "px")
+      }),
+      // Paragraph wrap heights depend on font size — kick the measurement
+      // loop so pagination recalculates at the new metrics.
+      // `ViewportResized` is the existing entry point; dispatching it
+      // keeps the resize path and the settings-change path identical from
+      // `measure_after_paint` onward.
+      repaginate_after_paint(),
+    ]),
+  )
+}
+
+fn apply_set_line_spacing(
+  model: Model,
+  spacing: Float,
+) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_float(spacing, min_line_spacing, max_line_spacing)
+  #(
+    Model(..model, line_spacing: clamped),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(css_var_line_height, float.to_string(clamped))
+      }),
+      repaginate_after_paint(),
+    ]),
+  )
+}
+
+fn apply_toggle_ghost_mode(model: Model) -> #(Model, Effect(Msg)) {
+  let new_ghost = !model.ghost_mode
+  #(
+    Model(..model, ghost_mode: new_ghost),
+    // Only the body class is toggled here. The `--vi-ghost-opacity`
+    // custom property is owned by `apply_set_ghost_opacity`, which
+    // writes it on every change to `model.ghost_opacity`; pushing it
+    // again from this arm would be a dead write — the variable is
+    // already up to date when ghost mode flips on or off.
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_ghost_mode, new_ghost)
+    }),
+  )
+}
+
+fn apply_set_ghost_opacity(
+  model: Model,
+  opacity: Float,
+) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
+  #(
+    Model(..model, ghost_opacity: clamped),
+    effect.from(fn(_dispatch) {
+      ffi.set_css_property(css_var_ghost_opacity, float.to_string(clamped))
+    }),
+  )
+}
+
+fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
+  let new_font = !model.dyslexia_font
+  #(
+    Model(..model, dyslexia_font: new_font),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_body_class(body_class_dyslexia_font, new_font)
+      }),
+      // OpenDyslexic has wider glyph metrics than the system stack, so
+      // paragraph wrap heights shift on the toggle. Re-measure for the
+      // same reason `apply_set_font_size` does.
+      repaginate_after_paint(),
+    ]),
+  )
+}
+
+/// Clamp `value` into `[lo, hi]`. Defensive helper for slider /
+/// stepper inputs; the inputs themselves carry `min` and `max`
+/// attributes, but a future programmatic call (or a malformed event)
+/// could bypass them, so the reducer is the authority.
+///
+/// Exposed for tests that pin the boundary behaviour at the lo and
+/// hi rails — the slider arms in `update` delegate to this helper, so
+/// asserting it directly is the smallest unit that proves the
+/// out-of-range guard works.
+pub fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
+  case value < lo, value > hi {
+    True, _ -> lo
+    _, True -> hi
+    _, _ -> value
+  }
+}
+
+/// Float counterpart to `clamp_int`. Exposed for the same reason —
+/// the line-spacing and ghost-opacity sliders both delegate to this
+/// helper.
+pub fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
+  case value <. lo, value >. hi {
+    True, _ -> lo
+    _, True -> hi
+    _, _ -> value
+  }
+}
+
+/// Resolve a `TouchEnd` into the next model state. Clears
+/// `touch_start` unconditionally, then classifies the gesture
+/// (`Tap` / `SwipeLeft` / `SwipeRight`) and routes the swipe to a
+/// page navigation or an undo. Extracted from the top-level `update`
+/// case statement so the reducer dispatch stays scannable and so the
+/// nested-case gesture pipeline reads as one named procedure.
+fn apply_touch_end(model: Model, x: Float, y: Float) -> Model {
+  let cleared = Model(..model, touch_start: None)
+  case model.touch_start {
+    None -> cleared
+    Some(#(start_x, start_y)) ->
+      case gestures.classify(start_x, start_y, x, y) {
+        gestures.Tap -> cleared
+        gestures.SwipeLeft -> go_to_page(cleared, cleared.current_page + 1)
+        gestures.SwipeRight ->
+          case cleared.undo_stack {
+            [] -> go_to_page(cleared, cleared.current_page - 1)
+            _ -> apply_undo(cleared)
           }
       }
-    }
   }
 }
 
 /// Pop the most recent erase off `undo_stack` and remove its index
 /// from `erased`. Returns the model unchanged when the stack is
 /// empty. Shared between the `Undo` reducer arm and the SwipeRight
-/// branch of `TouchEnd` — both consume the head of the stack in
-/// identical ways, and a copy-and-paste here would let the two
+/// branch of `apply_touch_end` — both consume the head of the stack
+/// in identical ways, and a copy-and-paste here would let the two
 /// branches drift apart on a future refactor (e.g. one of them
 /// growing a "max-undo-count" cap that the other forgot).
 fn apply_undo(model: Model) -> Model {
@@ -632,34 +969,51 @@ fn measure_after_paint() -> Effect(Msg) {
   })
 }
 
+/// Re-trigger pagination by dispatching `ViewportResized`. Used after
+/// settings changes that alter paragraph wrap heights (font size,
+/// line spacing, dyslexia font). Going through the existing message
+/// keeps one re-measure path instead of two — `ViewportResized` is
+/// already the single producer of the measurement effect for window
+/// resizes, and threading settings changes through the same arm means
+/// every future measurement-side concern (e.g. a debounce, or a
+/// progress indicator) only has to land in one place.
+fn repaginate_after_paint() -> Effect(Msg) {
+  effect.from(fn(dispatch) { dispatch(ViewportResized) })
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
 
 /// Top-level view. Renders a loading placeholder until `TextLoaded`
-/// delivers text, then delegates to `view_paginated`.
+/// delivers text, then delegates to `view_paginated`. The settings
+/// panel rides as a sibling overlay rendered conditionally on
+/// `model.settings_open` — it is only ever in the DOM when the panel
+/// is open, so the empty/loading rendering is unaffected by settings
+/// state.
 pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
-    Some(_) ->
-      view_paginated(
-        model.flat_paragraphs,
-        model.pages,
-        model.current_page,
-        model.erased,
-        model.focused_sentence,
-      )
+    Some(_) -> view_paginated(model)
   }
 
-  html.div([attribute.id("vi-shell"), attribute.class("reader")], [body])
+  let overlay = case model.settings_open {
+    True -> view_settings_panel(model)
+    False -> element.none()
+  }
+
+  html.div([attribute.id("vi-shell"), attribute.class("reader")], [
+    body,
+    overlay,
+  ])
 }
 
 fn view_placeholder() -> Element(Msg) {
   html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
 }
 
-/// Build the full reading surface: visible page, page indicator, and
-/// off-screen measurement container.
+/// Build the full reading surface: visible page, control bar (page
+/// indicator + settings gear), and off-screen measurement container.
 ///
 /// The `#vi-measurement` container receives all paragraphs from the
 /// whole book — not just the current page. This lets `measure_after_paint`
@@ -667,28 +1021,26 @@ fn view_placeholder() -> Element(Msg) {
 /// `ViewportResized`, rather than re-measuring on every page turn.
 ///
 /// Touch handlers are placed on `.reader-page` rather than the outer
-/// `.reader-text` so the page-indicator area is outside the gesture
-/// hit-target. The measurement container is `pointer-events: none`
+/// `.reader-text` so neither the control bar (with its tappable gear
+/// icon) nor the off-screen measurement container can intercept page
+/// swipes. The measurement container is `pointer-events: none`
 /// (see `.reader-measurement` in `styles.css`) so its descendants
-/// cannot intercept any touch or click events.
-fn view_paginated(
-  flat_paragraphs: List(PageParagraph),
-  pages: List(Page),
-  current_page: Int,
-  erased: Set(Int),
-  focused: Option(Int),
-) -> Element(Msg) {
-  let total = list.length(pages)
-  let visible = case pagination.nth(pages, current_page) {
-    Some(page) -> view_page(page, erased, focused, True)
+/// cannot receive any touch or click events.
+fn view_paginated(model: Model) -> Element(Msg) {
+  let total = list.length(model.pages)
+  let erased_opacity = erased_opacity_value(model)
+  let visible = case pagination.nth(model.pages, model.current_page) {
+    Some(page) ->
+      view_page(
+        page,
+        model.erased,
+        model.focused_sentence,
+        True,
+        erased_opacity,
+      )
     None -> view_preparing()
   }
 
-  // Touch gesture handlers live on `.reader-page` rather than on the
-  // outer `.reader-text` so the page-indicator's own taps don't
-  // accidentally register as page swipes. The measurement container
-  // is `pointer-events: none`, so its descendants never receive
-  // touch events even though it's a child of `.reader-text`.
   html.div([attribute.class("reader-text")], [
     html.div(
       [
@@ -708,9 +1060,29 @@ fn view_paginated(
         ),
       ],
     ),
-    view_page_indicator(total, current_page),
-    view_measurement_container(flat_paragraphs),
+    view_control_bar(total, model.current_page),
+    view_measurement_container(model.flat_paragraphs, erased_opacity),
   ])
+}
+
+/// Resolve the opacity string applied to erased sentences. Returns
+/// `"0"` when ghost mode is off so the bundled rendered-HTML tests
+/// (which pin `opacity:0;`) stay stable; otherwise the configured
+/// ghost-opacity float. The string is threaded through every
+/// rendering function rather than read from a CSS custom property
+/// because the rendered HTML — not the cascade — drives the
+/// transition's start/end values; the cascade alone wouldn't change
+/// the inline style, and the fade wouldn't fire.
+///
+/// Exposed so the ghost-mode tests can assert both branches without
+/// reaching through the view layer — the `False` branch is implicitly
+/// covered by every existing rendering test, but the `True` branch
+/// has no view-level pin yet.
+pub fn erased_opacity_value(model: Model) -> String {
+  case model.ghost_mode {
+    False -> "0"
+    True -> float.to_string(model.ghost_opacity)
+  }
 }
 
 fn view_preparing() -> Element(Msg) {
@@ -724,6 +1096,7 @@ fn view_page(
   erased: Set(Int),
   focused: Option(Int),
   interactive: Bool,
+  erased_opacity: String,
 ) -> Element(Msg) {
   html.div(
     [
@@ -731,33 +1104,46 @@ fn view_page(
       attribute.attribute("data-page-index", int.to_string(page.index)),
     ],
     list.map(page.paragraphs, fn(p) {
-      view_page_paragraph(p, erased, focused, interactive)
+      view_page_paragraph(p, erased, focused, interactive, erased_opacity)
     }),
   )
 }
 
-fn view_page_indicator(total: Int, current: Int) -> Element(Msg) {
-  case total {
-    0 -> element.none()
-    _ ->
-      html.div(
-        [
-          attribute.id(page_indicator_id),
-          attribute.class("reader-page-indicator"),
-        ],
-        [
-          html.text(
-            "Page "
-            <> int.to_string(current + 1)
-            <> " of "
-            <> int.to_string(total),
-          ),
-        ],
-      )
+/// Bottom control bar. Holds the page indicator (centred) and the
+/// settings gear button (right-aligned, ≥ 44 × 44 CSS pixels). The
+/// page indicator renders an empty string when no pages are
+/// available yet; the bar's `min-height: var(--vi-tap-target)` rule
+/// (see `.reader-control-bar` in `styles.css`) keeps the row at the
+/// thumb-friendly tap target so the gear is reachable from the first
+/// paint, before pagination has produced its first result.
+fn view_control_bar(total: Int, current: Int) -> Element(Msg) {
+  let indicator_text = case total {
+    0 -> ""
+    _ -> "Page " <> int.to_string(current + 1) <> " of " <> int.to_string(total)
   }
+  html.div([attribute.class("reader-control-bar")], [
+    html.div([attribute.class("reader-page-indicator")], [
+      html.text(indicator_text),
+    ]),
+    html.button(
+      [
+        attribute.class("reader-settings-button"),
+        attribute.attribute("aria-label", "Open settings"),
+        attribute.type_("button"),
+        event.on_click(ToggleSettings),
+      ],
+      // Unicode gear glyph keeps the asset surface zero. A later
+      // quest can swap this for an inline SVG if iconography becomes
+      // a theme concern.
+      [html.text("⚙")],
+    ),
+  ])
 }
 
-fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
+fn view_measurement_container(
+  paragraphs: List(PageParagraph),
+  erased_opacity: String,
+) -> Element(Msg) {
   // Off-screen mirror of the visible reading area. Carries the same
   // class hierarchy (`reader-text` → paragraph spans) so paragraph
   // line-wrap heights match what the visible page will render. CSS
@@ -767,7 +1153,7 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
   // values to the FFI.
   //
   // The mirror passes an empty erase set *and* `interactive: False`:
-  // opacity-0 attributes don't affect `getBoundingClientRect().height`
+  // opacity-driven attributes don't affect `getBoundingClientRect().height`
   // so the erase styling is omitted regardless, and the same
   // reasoning rules out the per-sentence `on_click` — the mirror is
   // `pointer-events: none`, so any click handler attached there is
@@ -782,7 +1168,7 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
       attribute.attribute("aria-hidden", "true"),
     ],
     list.map(paragraphs, fn(p) {
-      view_page_paragraph(p, set.new(), None, False)
+      view_page_paragraph(p, set.new(), None, False, erased_opacity)
     }),
   )
 }
@@ -792,6 +1178,7 @@ fn view_page_paragraph(
   erased: Set(Int),
   focused: Option(Int),
   interactive: Bool,
+  erased_opacity: String,
 ) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
   // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
@@ -826,7 +1213,13 @@ fn view_page_paragraph(
     ],
     [
       title_element,
-      view_paragraph(page_paragraph.paragraph, erased, focused, interactive),
+      view_paragraph(
+        page_paragraph.paragraph,
+        erased,
+        focused,
+        interactive,
+        erased_opacity,
+      ),
     ],
   )
 }
@@ -836,12 +1229,15 @@ fn view_paragraph(
   erased: Set(Int),
   focused: Option(Int),
   interactive: Bool,
+  erased_opacity: String,
 ) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
     paragraph.sentences
-    |> list.map(fn(s) { view_sentence(s, erased, focused, interactive) })
+    |> list.map(fn(s) {
+      view_sentence(s, erased, focused, interactive, erased_opacity)
+    })
     |> list.intersperse(html.text(" "))
 
   html.p([attribute.class("paragraph")], sentence_elements)
@@ -866,6 +1262,13 @@ fn view_paragraph(
 /// measurement mirror is passed `None` anyway, so this branch
 /// only fires on the visible page.
 ///
+/// `erased_opacity` is the opacity string applied to erased
+/// sentences. The caller computes it from `model.ghost_mode` /
+/// `model.ghost_opacity` (see `erased_opacity_value`) — when ghost
+/// mode is off the value is the literal string `"0"`, preserving
+/// the rendered-HTML contract that the existing reader tests pin
+/// against.
+///
 /// Exposed for tests that need to assert the click handler stays
 /// wired to visible sentences — Lustre's HTML serialiser strips
 /// event attributes, so the only way to pin the contract is to
@@ -875,6 +1278,7 @@ pub fn view_sentence(
   erased: Set(Int),
   focused: Option(Int),
   interactive: Bool,
+  erased_opacity: String,
 ) -> Element(Msg) {
   let word_count = list.length(sentence.words)
   let words =
@@ -903,10 +1307,10 @@ pub fn view_sentence(
   let trailing_attrs = case interactive, is_erased {
     True, True -> [
       event.on_click(EraseSentence(sentence.global_index)),
-      attribute.style("opacity", "0"),
+      attribute.style("opacity", erased_opacity),
     ]
     True, False -> [event.on_click(EraseSentence(sentence.global_index))]
-    False, True -> [attribute.style("opacity", "0")]
+    False, True -> [attribute.style("opacity", erased_opacity)]
     False, False -> []
   }
 
@@ -936,4 +1340,213 @@ fn view_word(word: Word, with_trailing_space: Bool) -> Element(Msg) {
     ],
     [html.text(text_content)],
   )
+}
+
+// ---------------------------------------------------------------------------
+// View — settings panel
+// ---------------------------------------------------------------------------
+
+/// Settings overlay rendered as a fixed-position scrim wrapping a
+/// bottom-sheet panel. The scrim itself catches taps that fall
+/// outside the panel and closes the overlay — same as the close
+/// button — so the reader can dismiss without aiming for a small
+/// target. Inside, every row maps to one setting on the model.
+fn view_settings_panel(model: Model) -> Element(Msg) {
+  html.div(
+    [
+      attribute.class("settings-overlay"),
+      attribute.attribute("role", "dialog"),
+      attribute.attribute("aria-modal", "true"),
+      attribute.attribute("aria-label", "Reader settings"),
+      // A click on the scrim — not the panel — closes the overlay.
+      // The panel itself stops propagation via the inner click guard
+      // below, so taps inside the panel never reach this listener.
+      event.on_click(ToggleSettings),
+    ],
+    [view_settings_sheet(model)],
+  )
+}
+
+/// Inner sheet for the settings panel. The sheet swallows click
+/// events so taps inside it don't bubble up to the scrim's close
+/// handler — without this guard, every slider drag and toggle press
+/// would also close the panel. The propagation guard is encapsulated
+/// in `stop_click_propagation` so the `Msg` ADT doesn't carry a
+/// `NoOp` variant just to satisfy Lustre's "handler required" rule.
+fn view_settings_sheet(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-panel"), stop_click_propagation()], [
+    view_settings_header(),
+    view_theme_toggle(model),
+    view_font_size_slider(model),
+    view_line_spacing_slider(model),
+    view_ghost_mode_toggle(model),
+    view_ghost_opacity_slider(model),
+    view_dyslexia_font_toggle(model),
+  ])
+}
+
+/// Attach a click listener that stops propagation but never dispatches
+/// a message. Used by the settings sheet to keep slider drags and
+/// toggle presses from bubbling up to the scrim's close handler.
+///
+/// Implementation note: Lustre's `event.stop_propagation` is an
+/// attribute modifier that operates on an `Event` attribute, not a
+/// standalone attribute — so the propagation guard needs a paired
+/// event handler to attach to. `event.on` takes a `Decoder(Msg)`;
+/// `decode.failure(...)` always fails, which means the runtime
+/// silently drops the event (see `reconciler.ffi.mjs#handleEvent` —
+/// `stopPropagation` runs unconditionally when the attribute carries
+/// `vattr.always`, but the model dispatch only fires on a successful
+/// decode). The placeholder `Msg` value is never returned and never
+/// dispatched.
+fn stop_click_propagation() -> attribute.Attribute(Msg) {
+  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
+  |> event.stop_propagation
+}
+
+fn view_settings_header() -> Element(Msg) {
+  html.div([attribute.class("settings-panel-header")], [
+    html.h2([attribute.class("settings-panel-title")], [
+      html.text("Reader settings"),
+    ]),
+    html.button(
+      [
+        attribute.class("settings-panel-close"),
+        attribute.attribute("aria-label", "Close settings"),
+        attribute.type_("button"),
+        event.on_click(ToggleSettings),
+      ],
+      [html.text("✕")],
+    ),
+  ])
+}
+
+fn view_theme_toggle(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.label([attribute.class("settings-toggle")], [
+      html.span([attribute.class("settings-toggle-label")], [
+        html.text("Dark mode"),
+      ]),
+      html.input([
+        attribute.class("settings-toggle-input"),
+        attribute.type_("checkbox"),
+        attribute.checked(model.dark_mode),
+        event.on_check(fn(_checked) { ToggleDarkMode }),
+      ]),
+    ]),
+  ])
+}
+
+fn view_ghost_mode_toggle(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.label([attribute.class("settings-toggle")], [
+      html.span([attribute.class("settings-toggle-label")], [
+        html.text("Ghost mode"),
+      ]),
+      html.input([
+        attribute.class("settings-toggle-input"),
+        attribute.type_("checkbox"),
+        attribute.checked(model.ghost_mode),
+        event.on_check(fn(_checked) { ToggleGhostMode }),
+      ]),
+    ]),
+  ])
+}
+
+fn view_dyslexia_font_toggle(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.label([attribute.class("settings-toggle")], [
+      html.span([attribute.class("settings-toggle-label")], [
+        html.text("Dyslexia-friendly font"),
+      ]),
+      html.input([
+        attribute.class("settings-toggle-input"),
+        attribute.type_("checkbox"),
+        attribute.checked(model.dyslexia_font),
+        event.on_check(fn(_checked) { ToggleDyslexiaFont }),
+      ]),
+    ]),
+  ])
+}
+
+fn view_font_size_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Font size")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(int.to_string(model.font_size) <> "px"),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(int.to_string(min_font_size)),
+      attribute.max(int.to_string(max_font_size)),
+      attribute.step("1"),
+      attribute.value(int.to_string(model.font_size)),
+      attribute.attribute("aria-label", "Font size in pixels"),
+      event.on_input(fn(value) {
+        // `parse` returns `Result(Int, Nil)` — a slider always emits a
+        // valid integer string, but on the off chance the browser
+        // sends something garbled, fall back to the current model
+        // value via the clamp in the reducer.
+        case int.parse(value) {
+          Ok(parsed) -> SetFontSize(parsed)
+          Error(_) -> SetFontSize(model.font_size)
+        }
+      }),
+    ]),
+  ])
+}
+
+fn view_line_spacing_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Line spacing")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(float.to_string(model.line_spacing)),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(float.to_string(min_line_spacing)),
+      attribute.max(float.to_string(max_line_spacing)),
+      attribute.step("0.1"),
+      attribute.value(float.to_string(model.line_spacing)),
+      attribute.attribute("aria-label", "Line spacing multiplier"),
+      event.on_input(fn(value) {
+        case float.parse(value) {
+          Ok(parsed) -> SetLineSpacing(parsed)
+          Error(_) -> SetLineSpacing(model.line_spacing)
+        }
+      }),
+    ]),
+  ])
+}
+
+fn view_ghost_opacity_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Ghost opacity")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(float.to_string(model.ghost_opacity)),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(float.to_string(min_ghost_opacity)),
+      attribute.max(float.to_string(max_ghost_opacity)),
+      attribute.step("0.01"),
+      attribute.value(float.to_string(model.ghost_opacity)),
+      attribute.attribute("aria-label", "Ghost mode opacity"),
+      event.on_input(fn(value) {
+        case float.parse(value) {
+          Ok(parsed) -> SetGhostOpacity(parsed)
+          Error(_) -> SetGhostOpacity(model.ghost_opacity)
+        }
+      }),
+    ]),
+  ])
 }

@@ -34,6 +34,17 @@ title = "Vanishing Ink"
 [[tools.lustre.html.stylesheets]]
 href = "/styles.css"
 
+# OpenDyslexic loaded as a `<link rel="stylesheet">` rather than an
+# `@import` inside `styles.css`. Per the CSS Cascading and Inheritance
+# specification, `@import` rules must precede every other at-rule and
+# style rule; an `@import` placed after the existing `:root` /
+# `body.vi-light-mode` / `body.vi-reduced-motion` blocks is silently
+# invalidated by the browser. A second stylesheet `<link>` has no
+# ordering constraint, so the font loads reliably and the
+# `.vi-dyslexia-font` body-class toggle actually swaps the font family.
+[[tools.lustre.html.stylesheets]]
+href = "https://fonts.googleapis.com/css2?family=OpenDyslexic:wght@400;700&display=swap"
+
 # Dev-server network config. `0.0.0.0` allows connections from other
 # devices on the LAN — needed for iPhone testing via the machine's
 # local IP. Switch back to `"localhost"` to restrict to local-only.
