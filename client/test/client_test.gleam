@@ -986,6 +986,99 @@ fn click_event_names(rendered: element.Element(msg)) -> List(String) {
   }
 }
 
+pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
+  // The three touch listeners on `#vi-reading-area`
+  // (`gestures.on_touch_start`, `on_touch_end`, `on_touch_cancel`)
+  // are the *only* path from the browser's touch event stream into
+  // the reducer — every `TouchStart` / `TouchEnd` / `TouchCancel`
+  // reducer test bypasses the view entirely. A refactor that
+  // accidentally drops one of those listeners (or moves them off
+  // the reading-area div) would not register on the reducer suite;
+  // mobile gesture handling would silently break. Pinning the
+  // contract here, with the same `vnode/vattr` introspection used
+  // by `click_event_names`, closes that gap.
+  //
+  // `element.to_string` strips event attributes, so we walk the
+  // rendered tree, locate the element with `id="vi-reading-area"`,
+  // and inspect its Event attribute names directly.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 0,
+      erased: set.new(),
+      undo_stack: [],
+      touch_start: None,
+    )
+
+  let assert Ok(reading_area) =
+    client.view(model) |> find_element_by_id("vi-reading-area")
+  // Lustre's `attribute.prepare` sorts attributes by name on insert,
+  // so the rendered tree carries the three Event attributes in
+  // alphabetical order. Asserting the whole sorted list catches both
+  // accidental drops *and* accidental additions (a future fourth
+  // touch listener would show up here, not silently).
+  let touch_events = reading_area |> touch_event_names
+
+  assert touch_events == ["touchcancel", "touchend", "touchstart"]
+}
+
+fn find_element_by_id(
+  rendered: element.Element(msg),
+  target_id: String,
+) -> Result(element.Element(msg), Nil) {
+  case rendered {
+    vnode.Element(attributes:, children:, ..) -> {
+      let has_id =
+        list.any(attributes, fn(attr) {
+          case attr {
+            vattr.Attribute(name: "id", value:, ..) -> value == target_id
+            _ -> False
+          }
+        })
+      case has_id {
+        True -> Ok(rendered)
+        False -> find_in_children(children, target_id)
+      }
+    }
+    vnode.Fragment(children:, ..) -> find_in_children(children, target_id)
+    _ -> Error(Nil)
+  }
+}
+
+fn find_in_children(
+  children: List(element.Element(msg)),
+  target_id: String,
+) -> Result(element.Element(msg), Nil) {
+  case children {
+    [] -> Error(Nil)
+    [head, ..rest] ->
+      case find_element_by_id(head, target_id) {
+        Ok(found) -> Ok(found)
+        Error(_) -> find_in_children(rest, target_id)
+      }
+  }
+}
+
+fn touch_event_names(rendered: element.Element(msg)) -> List(String) {
+  case rendered {
+    vnode.Element(attributes:, ..) ->
+      attributes
+      |> list.filter_map(fn(attr) {
+        case attr {
+          vattr.Event(name:, ..) -> Ok(name)
+          _ -> Error(Nil)
+        }
+      })
+      |> list.filter(fn(name) { string.starts_with(name, "touch") })
+    _ -> []
+  }
+}
+
 pub fn view_omits_opacity_when_no_sentences_erased_test() {
   // The inverse: a model with an empty `erased` map renders no
   // inline opacity at all — neither on the visible page nor in
