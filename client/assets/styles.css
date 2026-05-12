@@ -1,0 +1,85 @@
+/* Vanishing Ink reader styles.
+ *
+ * Served at `/styles.css` by lustre_dev_tools at dev time and copied
+ * into the dist bundle on `gleam run -m lustre/dev build`. Sets the
+ * dark-mode reading surface and the word/sentence span primitives the
+ * reader-feature quests will animate.
+ */
+
+:root {
+  --vi-bg: #000000;
+  --vi-fg: #e8e8e8;
+  --vi-fg-muted: #888888;
+  --vi-base-font-size: 18px;
+  --vi-line-height: 1.6;
+  --vi-reading-max-width: 720px;
+  --vi-reading-padding-x: 20px;
+  --vi-reading-padding-y: 24px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--vi-bg);
+  color: var(--vi-fg);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: var(--vi-base-font-size);
+  line-height: var(--vi-line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#app {
+  min-height: 100vh;
+  width: 100%;
+}
+
+#vi-shell {
+  min-height: 100vh;
+  width: 100%;
+}
+
+.reader-placeholder {
+  padding: var(--vi-reading-padding-y) var(--vi-reading-padding-x);
+  color: var(--vi-fg-muted);
+}
+
+.reader-text {
+  max-width: var(--vi-reading-max-width);
+  margin: 0 auto;
+  padding: var(--vi-reading-padding-y) var(--vi-reading-padding-x);
+}
+
+.chapter {
+  margin-bottom: 1.5rem;
+}
+
+.chapter-title {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin: 1.5rem 0 1rem 0;
+  color: var(--vi-fg);
+}
+
+.paragraph {
+  margin: 0 0 1.2rem 0;
+}
+
+.sentence {
+  display: inline;
+}
+
+.word {
+  /* Inline span so the reading flow wraps naturally. The opacity
+   * transition is staged ahead of the erase feature — toggling
+   * `opacity: 0` on a `.word` will fade it out smoothly when the
+   * erase interaction lands. */
+  display: inline;
+  transition: opacity 0.3s ease;
+}
