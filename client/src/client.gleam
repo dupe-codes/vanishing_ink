@@ -35,6 +35,7 @@
 //// existing rendered-HTML tests stay stable through every settings
 //// change.
 
+import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/io
@@ -339,12 +340,6 @@ pub type Msg {
   /// `settings_open`; no DOM side effect.
   ToggleSettings
 
-  /// Boot-time read of the OS preferences. Seeds `dark_mode` and
-  /// `reduced_motion` on the model from `prefers-color-scheme` and
-  /// `prefers-reduced-motion` so the first paint matches the
-  /// reader's system settings without flashing the default theme.
-  SystemPreferencesDetected(dark_mode: Bool, reduced_motion: Bool)
-
   /// Reader toggled the dark / light theme switch in the settings
   /// panel. Flips `dark_mode` and pushes `vi-light-mode` onto the
   /// body class list to override the dark palette in CSS.
@@ -381,14 +376,6 @@ pub type Msg {
   /// body. The font swap changes paragraph heights, so this also
   /// dispatches `ViewportResized` to trigger re-pagination.
   ToggleDyslexiaFont
-
-  /// No-op message. Dispatched by the settings-panel inner sheet's
-  /// click handler so the bundled `event.stop_propagation` modifier
-  /// has an attribute to attach to. Without the stop-propagation
-  /// guard, clicks on form controls inside the panel would bubble
-  /// up to the scrim and dismiss the overlay — every slider drag
-  /// would close the settings.
-  NoOp
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +404,17 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
+  // Read the OS preferences synchronously so the model's `dark_mode`
+  // and `reduced_motion` fields carry the right values *before* the
+  // first render. The previous revision dispatched a
+  // `SystemPreferencesDetected` from an effect, which ran after the
+  // first paint — a reader on a light-mode (or reduced-motion) OS
+  // saw a frame of the dark theme before the body classes flipped.
+  // The FFI calls below are pure media-query reads (no DOM mutation)
+  // so calling them from `init` is safe and idempotent.
+  let dark_mode = ffi.get_prefers_color_scheme_dark()
+  let reduced_motion = ffi.get_prefers_reduced_motion()
+
   let model =
     Model(
       text: None,
@@ -427,13 +425,13 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       undo_stack: [],
       touch_start: None,
       focused_sentence: None,
-      dark_mode: True,
+      dark_mode: dark_mode,
       font_size: default_font_size,
       line_spacing: default_line_spacing,
       ghost_mode: False,
       ghost_opacity: default_ghost_opacity,
       dyslexia_font: False,
-      reduced_motion: False,
+      reduced_motion: reduced_motion,
       settings_open: False,
     )
 
@@ -443,22 +441,23 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   //   by `lustre_dev_tools` to include `viewport-fit=cover` so the
   //   `env(safe-area-inset-*)` rules in the stylesheet actually report
   //   non-zero values on iOS notched devices.
-  // - `system_preferences` reads `prefers-color-scheme` and
-  //   `prefers-reduced-motion` from the user agent and dispatches a
-  //   `SystemPreferencesDetected` so the very first paint matches the
-  //   reader's OS preferences (no flash of the default dark theme on a
-  //   light-mode user).
+  // - `body_classes` mirrors the OS-preference reads from above onto
+  //   `<body>` so the CSS cascade reflects them on first paint.
+  //   Synchronous effects run before Lustre's first `#render()` call
+  //   (see `runtime.ffi.mjs`), so the body classes are present before
+  //   the first DOM update and the browser never sees a frame with the
+  //   wrong theme. `vi-light-mode` is applied when `dark_mode` is
+  //   *False* — the dark palette is the default, so the class only
+  //   fires the light override.
   // - `load` injects the sample text through the update loop.
   // - The four listener effects (`resize`, `arrow`, `undo`, `vim`)
   //   wire keyboard navigation and the debounced resize handler.
   let viewport_meta =
     effect.from(fn(_dispatch) { ffi.ensure_viewport_fit_cover() })
-  let system_preferences =
-    effect.from(fn(dispatch) {
-      dispatch(SystemPreferencesDetected(
-        dark_mode: ffi.get_prefers_color_scheme_dark(),
-        reduced_motion: ffi.get_prefers_reduced_motion(),
-      ))
+  let body_classes =
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_light_mode, !dark_mode)
+      ffi.set_body_class(body_class_reduced_motion, reduced_motion)
     })
   let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
   let resize_listener =
@@ -490,7 +489,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
     model,
     effect.batch([
       viewport_meta,
-      system_preferences,
+      body_classes,
       load,
       resize_listener,
       arrow_listener,
@@ -618,117 +617,128 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
-    SystemPreferencesDetected(dark_mode, reduced_motion) -> #(
-      Model(..model, dark_mode: dark_mode, reduced_motion: reduced_motion),
-      // The reducer's source-of-truth model is updated, and an effect
-      // pushes the matching body classes into the DOM so the cascade
-      // reflects the new values on the next paint. `vi-light-mode` is
-      // applied when `dark_mode` is *False* — the dark palette is the
-      // default, so the class only fires the light override.
-      effect.from(fn(_dispatch) {
-        ffi.set_body_class(body_class_light_mode, !dark_mode)
-        ffi.set_body_class(body_class_reduced_motion, reduced_motion)
-      }),
-    )
+    ToggleDarkMode -> apply_toggle_dark_mode(model)
 
-    ToggleDarkMode -> {
-      let new_dark = !model.dark_mode
-      #(
-        Model(..model, dark_mode: new_dark),
-        effect.from(fn(_dispatch) {
-          ffi.set_body_class(body_class_light_mode, !new_dark)
-        }),
-      )
-    }
+    SetFontSize(size) -> apply_set_font_size(model, size)
 
-    SetFontSize(size) -> {
-      let clamped = clamp_int(size, min_font_size, max_font_size)
-      #(
-        Model(..model, font_size: clamped),
-        effect.batch([
-          effect.from(fn(_dispatch) {
-            ffi.set_css_property(
-              css_var_font_size,
-              int.to_string(clamped) <> "px",
-            )
-          }),
-          // Paragraph wrap heights depend on font size — kick the
-          // measurement loop so pagination recalculates at the new
-          // metrics. `ViewportResized` is the existing entry point;
-          // dispatching it keeps the resize path and the
-          // settings-change path identical from `measure_after_paint`
-          // onward.
-          repaginate_after_paint(),
-        ]),
-      )
-    }
+    SetLineSpacing(spacing) -> apply_set_line_spacing(model, spacing)
 
-    SetLineSpacing(spacing) -> {
-      let clamped = clamp_float(spacing, min_line_spacing, max_line_spacing)
-      #(
-        Model(..model, line_spacing: clamped),
-        effect.batch([
-          effect.from(fn(_dispatch) {
-            ffi.set_css_property(css_var_line_height, float.to_string(clamped))
-          }),
-          repaginate_after_paint(),
-        ]),
-      )
-    }
+    ToggleGhostMode -> apply_toggle_ghost_mode(model)
 
-    ToggleGhostMode -> {
-      let new_ghost = !model.ghost_mode
-      #(
-        Model(..model, ghost_mode: new_ghost),
-        effect.from(fn(_dispatch) {
-          ffi.set_body_class(body_class_ghost_mode, new_ghost)
-          // The view computes inline opacity from `model.ghost_opacity`
-          // directly, so the CSS variable update is not strictly
-          // required; it stays in place as a hook for future style
-          // rules (e.g. a gradient overlay) that need the same value.
-          ffi.set_css_property(
-            css_var_ghost_opacity,
-            float.to_string(model.ghost_opacity),
-          )
-        }),
-      )
-    }
+    SetGhostOpacity(opacity) -> apply_set_ghost_opacity(model, opacity)
 
-    SetGhostOpacity(opacity) -> {
-      let clamped = clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
-      #(
-        Model(..model, ghost_opacity: clamped),
-        effect.from(fn(_dispatch) {
-          ffi.set_css_property(css_var_ghost_opacity, float.to_string(clamped))
-        }),
-      )
-    }
-
-    ToggleDyslexiaFont -> {
-      let new_font = !model.dyslexia_font
-      #(
-        Model(..model, dyslexia_font: new_font),
-        effect.batch([
-          effect.from(fn(_dispatch) {
-            ffi.set_body_class(body_class_dyslexia_font, new_font)
-          }),
-          // OpenDyslexic has wider glyph metrics than the system stack,
-          // so paragraph wrap heights shift on the toggle. Re-measure
-          // for the same reason `SetFontSize` does.
-          repaginate_after_paint(),
-        ]),
-      )
-    }
-
-    NoOp -> #(model, effect.none())
+    ToggleDyslexiaFont -> apply_toggle_dyslexia_font(model)
   }
+}
+
+// ---------------------------------------------------------------------------
+// update — settings-arm helpers
+// ---------------------------------------------------------------------------
+//
+// Each helper owns one settings transition: clamps the incoming value
+// (where applicable), writes the new field onto the model, and emits
+// the FFI side-effects that mirror the model into the CSS cascade.
+// Splitting them out keeps the top-level `update` case statement scannable
+// and lets each transition be unit-tested without inspecting the others.
+
+fn apply_toggle_dark_mode(model: Model) -> #(Model, Effect(Msg)) {
+  let new_dark = !model.dark_mode
+  #(
+    Model(..model, dark_mode: new_dark),
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_light_mode, !new_dark)
+    }),
+  )
+}
+
+fn apply_set_font_size(model: Model, size: Int) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_int(size, min_font_size, max_font_size)
+  #(
+    Model(..model, font_size: clamped),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(css_var_font_size, int.to_string(clamped) <> "px")
+      }),
+      // Paragraph wrap heights depend on font size — kick the measurement
+      // loop so pagination recalculates at the new metrics.
+      // `ViewportResized` is the existing entry point; dispatching it
+      // keeps the resize path and the settings-change path identical from
+      // `measure_after_paint` onward.
+      repaginate_after_paint(),
+    ]),
+  )
+}
+
+fn apply_set_line_spacing(
+  model: Model,
+  spacing: Float,
+) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_float(spacing, min_line_spacing, max_line_spacing)
+  #(
+    Model(..model, line_spacing: clamped),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(css_var_line_height, float.to_string(clamped))
+      }),
+      repaginate_after_paint(),
+    ]),
+  )
+}
+
+fn apply_toggle_ghost_mode(model: Model) -> #(Model, Effect(Msg)) {
+  let new_ghost = !model.ghost_mode
+  #(
+    Model(..model, ghost_mode: new_ghost),
+    // Only the body class is toggled here. The `--vi-ghost-opacity`
+    // custom property is owned by `apply_set_ghost_opacity`, which
+    // writes it on every change to `model.ghost_opacity`; pushing it
+    // again from this arm would be a dead write — the variable is
+    // already up to date when ghost mode flips on or off.
+    effect.from(fn(_dispatch) {
+      ffi.set_body_class(body_class_ghost_mode, new_ghost)
+    }),
+  )
+}
+
+fn apply_set_ghost_opacity(
+  model: Model,
+  opacity: Float,
+) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
+  #(
+    Model(..model, ghost_opacity: clamped),
+    effect.from(fn(_dispatch) {
+      ffi.set_css_property(css_var_ghost_opacity, float.to_string(clamped))
+    }),
+  )
+}
+
+fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
+  let new_font = !model.dyslexia_font
+  #(
+    Model(..model, dyslexia_font: new_font),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_body_class(body_class_dyslexia_font, new_font)
+      }),
+      // OpenDyslexic has wider glyph metrics than the system stack, so
+      // paragraph wrap heights shift on the toggle. Re-measure for the
+      // same reason `apply_set_font_size` does.
+      repaginate_after_paint(),
+    ]),
+  )
 }
 
 /// Clamp `value` into `[lo, hi]`. Defensive helper for slider /
 /// stepper inputs; the inputs themselves carry `min` and `max`
 /// attributes, but a future programmatic call (or a malformed event)
 /// could bypass them, so the reducer is the authority.
-fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
+///
+/// Exposed for tests that pin the boundary behaviour at the lo and
+/// hi rails — the slider arms in `update` delegate to this helper, so
+/// asserting it directly is the smallest unit that proves the
+/// out-of-range guard works.
+pub fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
   case value < lo, value > hi {
     True, _ -> lo
     _, True -> hi
@@ -736,7 +746,10 @@ fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
   }
 }
 
-fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
+/// Float counterpart to `clamp_int`. Exposed for the same reason —
+/// the line-spacing and ghost-opacity sliders both delegate to this
+/// helper.
+pub fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
   case value <. lo, value >. hi {
     True, _ -> lo
     _, True -> hi
@@ -1058,7 +1071,12 @@ fn view_paginated(model: Model) -> Element(Msg) {
 /// because the rendered HTML — not the cascade — drives the
 /// transition's start/end values; the cascade alone wouldn't change
 /// the inline style, and the fade wouldn't fire.
-fn erased_opacity_value(model: Model) -> String {
+///
+/// Exposed so the ghost-mode tests can assert both branches without
+/// reaching through the view layer — the `False` branch is implicitly
+/// covered by every existing rendering test, but the `True` branch
+/// has no view-level pin yet.
+pub fn erased_opacity_value(model: Model) -> String {
   case model.ghost_mode {
     False -> "0"
     True -> float.to_string(model.ghost_opacity)
@@ -1091,10 +1109,11 @@ fn view_page(
 
 /// Bottom control bar. Holds the page indicator (centred) and the
 /// settings gear button (right-aligned, ≥ 44 × 44 CSS pixels). The
-/// page indicator falls back to a single space when no pages are
-/// available yet so the bar maintains a consistent height — the
-/// gear is reachable from the first paint, before pagination has
-/// produced its first result.
+/// page indicator renders an empty string when no pages are
+/// available yet; the bar's `min-height: var(--vi-tap-target)` rule
+/// (see `.reader-control-bar` in `styles.css`) keeps the row at the
+/// thumb-friendly tap target so the gear is reachable from the first
+/// paint, before pagination has produced its first result.
 fn view_control_bar(total: Int, current: Int) -> Element(Msg) {
   let indicator_text = case total {
     0 -> ""
@@ -1349,25 +1368,38 @@ fn view_settings_panel(model: Model) -> Element(Msg) {
 /// Inner sheet for the settings panel. The sheet swallows click
 /// events so taps inside it don't bubble up to the scrim's close
 /// handler — without this guard, every slider drag and toggle press
-/// would also close the panel. The handler dispatches `NoOp` purely
-/// to give `event.stop_propagation` an event attribute to wrap; the
-/// reducer ignores the message.
+/// would also close the panel. The propagation guard is encapsulated
+/// in `stop_click_propagation` so the `Msg` ADT doesn't carry a
+/// `NoOp` variant just to satisfy Lustre's "handler required" rule.
 fn view_settings_sheet(model: Model) -> Element(Msg) {
-  html.div(
-    [
-      attribute.class("settings-panel"),
-      event.on_click(NoOp) |> event.stop_propagation,
-    ],
-    [
-      view_settings_header(),
-      view_theme_toggle(model),
-      view_font_size_slider(model),
-      view_line_spacing_slider(model),
-      view_ghost_mode_toggle(model),
-      view_ghost_opacity_slider(model),
-      view_dyslexia_font_toggle(model),
-    ],
-  )
+  html.div([attribute.class("settings-panel"), stop_click_propagation()], [
+    view_settings_header(),
+    view_theme_toggle(model),
+    view_font_size_slider(model),
+    view_line_spacing_slider(model),
+    view_ghost_mode_toggle(model),
+    view_ghost_opacity_slider(model),
+    view_dyslexia_font_toggle(model),
+  ])
+}
+
+/// Attach a click listener that stops propagation but never dispatches
+/// a message. Used by the settings sheet to keep slider drags and
+/// toggle presses from bubbling up to the scrim's close handler.
+///
+/// Implementation note: Lustre's `event.stop_propagation` is an
+/// attribute modifier that operates on an `Event` attribute, not a
+/// standalone attribute — so the propagation guard needs a paired
+/// event handler to attach to. `event.on` takes a `Decoder(Msg)`;
+/// `decode.failure(...)` always fails, which means the runtime
+/// silently drops the event (see `reconciler.ffi.mjs#handleEvent` —
+/// `stopPropagation` runs unconditionally when the attribute carries
+/// `vattr.always`, but the model dispatch only fires on a successful
+/// decode). The placeholder `Msg` value is never returned and never
+/// dispatched.
+fn stop_click_propagation() -> attribute.Attribute(Msg) {
+  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
+  |> event.stop_propagation
 }
 
 fn view_settings_header() -> Element(Msg) {
