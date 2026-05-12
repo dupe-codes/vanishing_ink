@@ -67,3 +67,20 @@ export function on_arrow_key(previous_callback, next_callback) {
     }
   });
 }
+
+export function on_undo_key(callback) {
+  window.addEventListener("keydown", (event) => {
+    // The undo chord is Cmd+Z on macOS and Ctrl+Z everywhere else.
+    // Skip Shift+Z so the redo chord stays available for a future
+    // redo handler. `event.key` is the post-modifier resolution, so
+    // it reads "z" for an unshifted press and "Z" for shifted — we
+    // accept both because some keyboard layouts report uppercase
+    // even without shift held.
+    const is_undo_key = event.key === "z" || event.key === "Z";
+    const has_meta = event.metaKey || event.ctrlKey;
+    if (is_undo_key && has_meta && !event.shiftKey) {
+      event.preventDefault();
+      callback();
+    }
+  });
+}

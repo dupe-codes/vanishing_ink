@@ -20,6 +20,7 @@
 //// attribute structure and inter-element text content in one
 //// assertion.
 
+import gleam/dict
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -32,9 +33,10 @@ import shared/segmenter.{
 }
 
 import client.{
-  type Model, Model, NextPage, ParagraphsMeasured, PreviousPage, TextLoaded,
-  ViewportResized,
+  type Model, EraseSentence, Model, NextPage, ParagraphsMeasured, PreviousPage,
+  TextLoaded, TouchEnd, TouchStart, Undo, ViewportResized,
 }
+import client/gestures
 import client/pagination.{Page}
 import client/sample
 
@@ -70,7 +72,15 @@ pub fn book_id_decoder_rejects_non_string_on_js_target_test() {
 // ---------------------------------------------------------------------------
 
 fn empty_model() -> Model {
-  Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
+  Model(
+    text: None,
+    flat_paragraphs: [],
+    pages: [],
+    current_page: 0,
+    erased: dict.new(),
+    undo_stack: [],
+    touch_start: None,
+  )
 }
 
 fn two_chapter_text() -> SegmentedText {
@@ -133,6 +143,9 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       flat_paragraphs: pagination.flatten(payload),
       pages: [],
       current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 }
 
@@ -156,6 +169,9 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -166,6 +182,9 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       flat_paragraphs: pagination.flatten(second),
       pages: [],
       current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 }
 
@@ -333,6 +352,9 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
       flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 
   let #(updated, _effect) = client.update(prior, ViewportResized)
@@ -415,6 +437,9 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -453,6 +478,9 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -493,6 +521,9 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -508,6 +539,325 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
 // ---------------------------------------------------------------------------
 // sample fixture
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// update — EraseSentence
+// ---------------------------------------------------------------------------
+
+pub fn update_erase_sentence_marks_sentence_and_pushes_undo_test() {
+  // Tapping a fresh sentence must (a) flip the `erased` map at the
+  // sentence's `global_index` to `True` and (b) push that index
+  // onto the front of `undo_stack`. Both halves are pinned together
+  // because erase without undo entry would orphan the undo handler,
+  // and undo entry without erase would make Undo a visible no-op.
+  let prior = empty_model()
+
+  let #(updated, _effect) = client.update(prior, EraseSentence(7))
+
+  assert dict.get(updated.erased, 7) == Ok(True)
+  assert updated.undo_stack == [7]
+}
+
+pub fn update_erase_sentence_is_idempotent_on_already_erased_test() {
+  // Re-tapping a sentence already in `erased` must be a no-op. The
+  // undo stack would otherwise grow with duplicate entries — undo
+  // would then have to be pressed N times to actually restore a
+  // sentence the reader meant to erase once.
+  let prior =
+    Model(..empty_model(), erased: dict.from_list([#(3, True)]), undo_stack: [3])
+
+  let #(updated, _effect) = client.update(prior, EraseSentence(3))
+
+  assert updated == prior
+}
+
+pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
+  // Rapidly erasing six sentences must leave only the most recent
+  // five in `undo_stack`; the earliest erase commits and becomes
+  // permanent for the duration of the current page. Pinning the
+  // exact stack contents catches both off-by-one truncation and
+  // accidental reversal of the recency order.
+  let after_5 =
+    list.fold([0, 1, 2, 3, 4], empty_model(), fn(model, index) {
+      let #(updated, _) = client.update(model, EraseSentence(index))
+      updated
+    })
+
+  let #(after_6, _) = client.update(after_5, EraseSentence(5))
+
+  assert after_6.undo_stack == [5, 4, 3, 2, 1]
+  // Every erased sentence — including the one that fell off the
+  // undo stack — stays erased on the model.
+  assert dict.get(after_6.erased, 0) == Ok(True)
+  assert dict.get(after_6.erased, 5) == Ok(True)
+}
+
+// ---------------------------------------------------------------------------
+// update — Undo
+// ---------------------------------------------------------------------------
+
+pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
+  // Undo with a non-empty stack must (a) remove the top index from
+  // `undo_stack` and (b) delete its `erased` entry — restoring the
+  // sentence to visible. Earlier entries on the stack stay intact.
+  let prior =
+    Model(
+      ..empty_model(),
+      erased: dict.from_list([#(2, True), #(7, True)]),
+      undo_stack: [7, 2],
+    )
+
+  let #(updated, _effect) = client.update(prior, Undo)
+
+  assert updated.undo_stack == [2]
+  assert dict.get(updated.erased, 7) == Error(Nil)
+  assert dict.get(updated.erased, 2) == Ok(True)
+}
+
+pub fn update_undo_is_noop_when_stack_empty_test() {
+  // The reader can press Cmd+Z (or swipe right with nothing to
+  // undo) before any erases have happened. The reducer must hold
+  // the model unchanged — in particular, it must not touch
+  // `erased` or accidentally introduce a phantom undo entry.
+  let prior = empty_model()
+
+  let #(updated, _effect) = client.update(prior, Undo)
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — page commitment
+// ---------------------------------------------------------------------------
+
+pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
+  // Navigating forward must clear `undo_stack` — erases on the
+  // page being left commit and are no longer undoable. The
+  // `erased` map keeps every prior entry so the sentences stay
+  // invisible when the reader pages back later.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 0,
+      erased: dict.from_list([#(0, True), #(1, True)]),
+      undo_stack: [1, 0],
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 1
+  assert updated.undo_stack == []
+  assert dict.get(updated.erased, 0) == Ok(True)
+  assert dict.get(updated.erased, 1) == Ok(True)
+}
+
+pub fn update_previous_page_also_clears_undo_stack_test() {
+  // Symmetry with `NextPage`: paging *backwards* also commits
+  // erases on the page being left, so the undo stack must clear in
+  // both directions. Without this, a reader who erased a sentence
+  // on page 2 and paged back to page 1 could undo a sentence from
+  // page 2 while reading page 1 — confusing at best, broken at
+  // worst.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      erased: dict.from_list([#(4, True)]),
+      undo_stack: [4],
+    )
+
+  let #(updated, _effect) = client.update(prior, PreviousPage)
+
+  assert updated.current_page == 0
+  assert updated.undo_stack == []
+  assert dict.get(updated.erased, 4) == Ok(True)
+}
+
+// ---------------------------------------------------------------------------
+// update — touch gestures
+// ---------------------------------------------------------------------------
+
+pub fn update_touch_start_records_start_coordinates_test() {
+  let prior = empty_model()
+
+  let #(updated, _effect) = client.update(prior, TouchStart(120.0, 240.0))
+
+  assert updated.touch_start == Some(#(120.0, 240.0))
+}
+
+pub fn update_touch_end_below_threshold_does_nothing_test() {
+  // A tap (no swipe) leaves erase state alone — the synthesized
+  // browser `click` event is what carries erase intent, so a Tap
+  // outcome from gestures.classify must NOT trigger any reducer
+  // mutation beyond clearing `touch_start`.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 0,
+      touch_start: Some(#(100.0, 200.0)),
+    )
+
+  let #(updated, _effect) = client.update(prior, TouchEnd(102.0, 199.0))
+
+  assert updated.current_page == 0
+  assert updated.touch_start == None
+}
+
+pub fn update_touch_end_swipe_left_advances_page_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 0,
+      touch_start: Some(#(300.0, 200.0)),
+    )
+
+  // -150px horizontal, +5px vertical → SwipeLeft → NextPage.
+  let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
+
+  assert updated.current_page == 1
+  assert updated.touch_start == None
+}
+
+pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
+  // A right swipe with a non-empty undo stack must call Undo, not
+  // PreviousPage. The reader has unfinished erase work on the
+  // current page — going back would commit it via the page
+  // boundary clear, which the user did not ask for.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      erased: dict.from_list([#(9, True)]),
+      undo_stack: [9],
+      touch_start: Some(#(100.0, 200.0)),
+    )
+
+  // +200px horizontal → SwipeRight.
+  let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
+
+  assert updated.current_page == 1
+  assert updated.undo_stack == []
+  assert dict.get(updated.erased, 9) == Error(Nil)
+  assert updated.touch_start == None
+}
+
+pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      touch_start: Some(#(100.0, 200.0)),
+    )
+
+  let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
+
+  assert updated.current_page == 0
+  assert updated.touch_start == None
+}
+
+pub fn update_touch_end_without_matching_start_is_safe_test() {
+  // Defensive: a `touchend` without a matching `touchstart` (e.g.
+  // a touch initiated during a modal or scroll the page never
+  // saw) must be ignored cleanly. Without the `None` guard, the
+  // gesture classifier would still fire with bogus coordinates.
+  let prior = empty_model()
+
+  let #(updated, _effect) = client.update(prior, TouchEnd(500.0, 100.0))
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// gestures.classify — pure classification
+// ---------------------------------------------------------------------------
+
+pub fn gestures_classify_tap_below_threshold_test() {
+  assert gestures.classify(100.0, 200.0, 110.0, 205.0) == gestures.Tap
+}
+
+pub fn gestures_classify_tap_when_vertical_dominates_test() {
+  // 60px horizontal looks like a swipe on the horizontal axis
+  // alone, but the vertical motion is even larger (80px) — the
+  // discrimination rule rejects diagonal motion as Tap so a
+  // reader's accidental drag-and-scroll doesn't flip pages.
+  assert gestures.classify(100.0, 200.0, 160.0, 280.0) == gestures.Tap
+}
+
+pub fn gestures_classify_swipe_left_test() {
+  assert gestures.classify(300.0, 200.0, 200.0, 210.0) == gestures.SwipeLeft
+}
+
+pub fn gestures_classify_swipe_right_test() {
+  assert gestures.classify(100.0, 200.0, 200.0, 210.0) == gestures.SwipeRight
+}
+
+pub fn gestures_classify_exactly_at_threshold_is_tap_test() {
+  // The threshold is a strict ">", not ">=" — a motion exactly at
+  // 50px stays a tap so the boundary is unambiguous in both
+  // directions.
+  assert gestures.classify(100.0, 200.0, 150.0, 200.0) == gestures.Tap
+}
+
+// ---------------------------------------------------------------------------
+// view — erase rendering
+// ---------------------------------------------------------------------------
+
+pub fn view_renders_opacity_zero_on_erased_sentence_test() {
+  // The visible page's sentence span carries an inline opacity
+  // style only when it's in `erased`. The off-screen measurement
+  // mirror is rendered with an empty erase map so an erased
+  // sentence appears exactly once with `opacity:0` in the full
+  // output (the measurement copy stays unstyled).
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 1,
+      erased: dict.from_list([#(1, True)]),
+      undo_stack: [1],
+      touch_start: None,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  let opacity_chunks = rendered |> string.split("opacity:0;") |> list.length
+  assert opacity_chunks == 2
+  assert string.contains(rendered, "data-sentence-index=\"1\"")
+}
+
+pub fn view_omits_opacity_when_no_sentences_erased_test() {
+  // The inverse: a model with an empty `erased` map renders no
+  // inline opacity at all — neither on the visible page nor in
+  // the measurement mirror. This catches accidental always-on
+  // opacity rendering, which would suppress the CSS transition.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 1,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "opacity")
+}
 
 pub fn sample_text_succeeds_through_the_shared_json_round_trip_test() {
   // `sample.text()` segments the bundled prose and then routes the

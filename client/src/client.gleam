@@ -25,23 +25,33 @@
 //// both wired through `client/ffi.gleam`. `resize` is debounced in
 //// the FFI so a continuous drag does not flood the update loop.
 
+import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/event
 
 import client/ffi
+import client/gestures
 import client/pagination.{type Page, type PageParagraph}
 import client/sample
 import shared/segmenter.{
   type Paragraph, type SegmentedText, type Sentence, type Word,
 }
+
+/// Cap on the depth of the per-page undo stack. The stack only holds
+/// erases on the current page (cleared on every page navigation), so
+/// five generations is plenty without giving the reader a free pass
+/// to undo a whole rapid-erase run by mistake.
+pub const undo_stack_depth: Int = 5
 
 // ---------------------------------------------------------------------------
 // DOM ids
@@ -83,12 +93,26 @@ const measurement_id: String = "vi-measurement"
 ///   resize while measurement is in flight.
 /// * `current_page` — zero-based index into `pages`. Always clamped
 ///   into `[0, list.length(pages))` after a measurement.
+/// * `erased` — sparse map of `sentence.global_index → True` for
+///   every sentence the reader has erased. Sentences not in the map
+///   are considered visible; an explicit `False` value is never
+///   stored, so absence and "not erased" coincide.
+/// * `undo_stack` — last erases on the *current* page, most recent
+///   first. Bounded to `undo_stack_depth` entries; cleared whenever
+///   the reader navigates between pages, so erases commit when the
+///   page turns.
+/// * `touch_start` — `(clientX, clientY)` of the in-flight touch
+///   between `touchstart` and `touchend`. `None` when there is no
+///   active gesture. Cleared on every `TouchEnd`.
 pub type Model {
   Model(
     text: Option(SegmentedText),
     flat_paragraphs: List(PageParagraph),
     pages: List(Page),
     current_page: Int,
+    erased: Dict(Int, Bool),
+    undo_stack: List(Int),
+    touch_start: Option(#(Float, Float)),
   )
 }
 
@@ -105,16 +129,44 @@ pub type Msg {
   /// into.
   ParagraphsMeasured(heights: List(#(Int, Float)), available_height: Float)
 
-  /// Reader requested the next page (button or `ArrowRight`).
+  /// Reader requested the next page (button, `ArrowRight`, or
+  /// swipe-left gesture). Clears the undo stack — erases on the
+  /// page being left commit.
   NextPage
 
-  /// Reader requested the previous page (button or `ArrowLeft`).
+  /// Reader requested the previous page (button, `ArrowLeft`, or a
+  /// swipe-right gesture with an empty undo stack). Clears the undo
+  /// stack so undo never crosses a page boundary backwards either.
   PreviousPage
 
   /// Debounced `window.resize` fired. The handler re-runs the
   /// measurement effect — paragraph heights change with viewport
   /// width because of line wrapping.
   ViewportResized
+
+  /// Reader tapped or clicked the sentence with this global index.
+  /// `update` writes it into `erased` and pushes it onto
+  /// `undo_stack`. A repeat erase of an already-erased sentence is
+  /// a no-op so the undo stack stays meaningful.
+  EraseSentence(global_index: Int)
+
+  /// Reader requested undo (swipe right with non-empty undo stack,
+  /// `Cmd+Z`/`Ctrl+Z`, or any other future undo binding). Pops the
+  /// most recent erase off `undo_stack` and clears its `erased`
+  /// entry. No-op when the stack is empty.
+  Undo
+
+  /// `touchstart` fired on the reader page. Carries the primary
+  /// touch's viewport coordinates; `update` stores them on the
+  /// model so `TouchEnd` can compute the gesture delta.
+  TouchStart(x: Float, y: Float)
+
+  /// `touchend` fired on the reader page. `update` reads the
+  /// matching `touch_start` off the model, classifies the gesture
+  /// via `gestures.classify`, and routes a swipe to either a page
+  /// navigation or `Undo`. A `Tap` outcome is a no-op — sentence
+  /// erasure flows through the synthesized `click` event.
+  TouchEnd(x: Float, y: Float)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,27 +195,38 @@ pub fn main() -> Nil {
 // ---------------------------------------------------------------------------
 
 fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
-  let model = Model(text: None, flat_paragraphs: [], pages: [], current_page: 0)
+  let model =
+    Model(
+      text: None,
+      flat_paragraphs: [],
+      pages: [],
+      current_page: 0,
+      erased: dict.new(),
+      undo_stack: [],
+      touch_start: None,
+    )
 
-  // Three independent boot effects: dispatch the sample text through
-  // the update loop, install the debounced resize listener, and
-  // install the arrow-key navigation listener. The listeners persist
-  // for the lifetime of the page — they only need to fire once at
-  // boot.
+  // Four independent boot effects: dispatch the sample text through
+  // the update loop, install the debounced resize listener, the
+  // arrow-key navigation listener, and the platform-undo key
+  // listener. The listeners persist for the lifetime of the page —
+  // they only need to fire once at boot.
   let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
   let resize_listener =
     effect.from(fn(dispatch) {
       ffi.on_resize(fn() { dispatch(ViewportResized) })
     })
-  let keyboard_listener =
+  let arrow_listener =
     effect.from(fn(dispatch) {
       ffi.on_arrow_key(
         previous_callback: fn() { dispatch(PreviousPage) },
         next_callback: fn() { dispatch(NextPage) },
       )
     })
+  let undo_listener =
+    effect.from(fn(dispatch) { ffi.on_undo_key(fn() { dispatch(Undo) }) })
 
-  #(model, effect.batch([load, resize_listener, keyboard_listener]))
+  #(model, effect.batch([load, resize_listener, arrow_listener, undo_listener]))
 }
 
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
@@ -174,6 +237,9 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         flat_paragraphs: pagination.flatten(text),
         pages: [],
         current_page: 0,
+        erased: dict.new(),
+        undo_stack: [],
+        touch_start: None,
       ),
       measure_after_paint(),
     )
@@ -193,20 +259,86 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(Model(..model, pages: pages, current_page: clamped), effect.none())
     }
 
-    NextPage -> {
-      let total = list.length(model.pages)
-      let next = pagination.clamp_page_index(model.current_page + 1, total)
-      #(Model(..model, current_page: next), effect.none())
-    }
+    NextPage -> #(go_to_page(model, model.current_page + 1), effect.none())
 
-    PreviousPage -> {
-      let total = list.length(model.pages)
-      let prev = pagination.clamp_page_index(model.current_page - 1, total)
-      #(Model(..model, current_page: prev), effect.none())
-    }
+    PreviousPage -> #(go_to_page(model, model.current_page - 1), effect.none())
 
     ViewportResized -> #(model, measure_after_paint())
+
+    EraseSentence(global_index) -> {
+      let already_erased =
+        model.erased |> dict.get(global_index) |> result.unwrap(False)
+      case already_erased {
+        True -> #(model, effect.none())
+        False -> {
+          let next_erased = dict.insert(model.erased, global_index, True)
+          let next_undo =
+            [global_index, ..model.undo_stack] |> list.take(undo_stack_depth)
+          #(
+            Model(..model, erased: next_erased, undo_stack: next_undo),
+            effect.none(),
+          )
+        }
+      }
+    }
+
+    Undo -> {
+      case model.undo_stack {
+        [] -> #(model, effect.none())
+        [last, ..rest] -> {
+          let next_erased = dict.delete(model.erased, last)
+          #(
+            Model(..model, erased: next_erased, undo_stack: rest),
+            effect.none(),
+          )
+        }
+      }
+    }
+
+    TouchStart(x, y) -> #(
+      Model(..model, touch_start: Some(#(x, y))),
+      effect.none(),
+    )
+
+    TouchEnd(x, y) -> {
+      let cleared = Model(..model, touch_start: None)
+      case model.touch_start {
+        None -> #(cleared, effect.none())
+        Some(#(start_x, start_y)) ->
+          case gestures.classify(start_x, start_y, x, y) {
+            gestures.Tap -> #(cleared, effect.none())
+            gestures.SwipeLeft -> #(
+              go_to_page(cleared, cleared.current_page + 1),
+              effect.none(),
+            )
+            gestures.SwipeRight ->
+              case cleared.undo_stack {
+                [] -> #(
+                  go_to_page(cleared, cleared.current_page - 1),
+                  effect.none(),
+                )
+                [last, ..rest] -> {
+                  let next_erased = dict.delete(cleared.erased, last)
+                  #(
+                    Model(..cleared, erased: next_erased, undo_stack: rest),
+                    effect.none(),
+                  )
+                }
+              }
+          }
+      }
+    }
   }
+}
+
+/// Move the reader to `candidate` after clamping to the current
+/// `pages` range. Always clears `undo_stack` so erases stay scoped
+/// to the page they were performed on — a navigation away commits
+/// every erase that has not yet been undone.
+fn go_to_page(model: Model, candidate: Int) -> Model {
+  let total = list.length(model.pages)
+  let clamped = pagination.clamp_page_index(candidate, total)
+  Model(..model, current_page: clamped, undo_stack: [])
 }
 
 /// Schedule an `after_paint` effect that reads paragraph heights and
@@ -236,7 +368,12 @@ pub fn view(model: Model) -> Element(Msg) {
   let body = case model.text {
     None -> view_placeholder()
     Some(_) ->
-      view_paginated(model.flat_paragraphs, model.pages, model.current_page)
+      view_paginated(
+        model.flat_paragraphs,
+        model.pages,
+        model.current_page,
+        model.erased,
+      )
   }
 
   html.div([attribute.id("vi-shell"), attribute.class("reader")], [body])
@@ -250,20 +387,37 @@ fn view_paginated(
   flat_paragraphs: List(PageParagraph),
   pages: List(Page),
   current_page: Int,
+  erased: Dict(Int, Bool),
 ) -> Element(Msg) {
   let total = list.length(pages)
   let visible = case pagination.nth(pages, current_page) {
-    Some(page) -> view_page(page)
+    Some(page) -> view_page(page, erased)
     None -> view_preparing()
   }
 
+  // Touch gesture handlers live on `.reader-page` rather than on the
+  // outer `.reader-text` so the page-indicator's own taps don't
+  // accidentally register as page swipes. The measurement container
+  // is `pointer-events: none`, so its descendants never receive
+  // touch events even though it's a child of `.reader-text`.
   html.div([attribute.class("reader-text")], [
-    html.div([attribute.id(reading_area_id), attribute.class("reader-page")], [
-      html.div(
-        [attribute.id(page_content_id), attribute.class("reader-page-content")],
-        [visible],
-      ),
-    ]),
+    html.div(
+      [
+        attribute.id(reading_area_id),
+        attribute.class("reader-page"),
+        gestures.on_touch_start(TouchStart),
+        gestures.on_touch_end(TouchEnd),
+      ],
+      [
+        html.div(
+          [
+            attribute.id(page_content_id),
+            attribute.class("reader-page-content"),
+          ],
+          [visible],
+        ),
+      ],
+    ),
     view_page_indicator(total, current_page),
     view_measurement_container(flat_paragraphs),
   ])
@@ -275,13 +429,13 @@ fn view_preparing() -> Element(Msg) {
   ])
 }
 
-fn view_page(page: Page) -> Element(Msg) {
+fn view_page(page: Page, erased: Dict(Int, Bool)) -> Element(Msg) {
   html.div(
     [
       attribute.class("page"),
       attribute.attribute("data-page-index", int.to_string(page.index)),
     ],
-    list.map(page.paragraphs, view_page_paragraph),
+    list.map(page.paragraphs, fn(p) { view_page_paragraph(p, erased) }),
   )
 }
 
@@ -314,17 +468,27 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
   // hidden`) without removing it from the DOM, so
   // `getBoundingClientRect().height` still reports valid pixel
   // values to the FFI.
+  //
+  // The measurement mirror is always rendered with an empty erase
+  // map: opacity 0 doesn't affect `getBoundingClientRect().height`,
+  // so the visual state never reaches the DOM here regardless, but
+  // emitting the erase styles into a `pointer-events: none` subtree
+  // would also confuse any DOM query that didn't scope to
+  // `#vi-page-content` (the briefing flags this footgun explicitly).
   html.div(
     [
       attribute.id(measurement_id),
       attribute.class("reader-measurement"),
       attribute.attribute("aria-hidden", "true"),
     ],
-    list.map(paragraphs, view_page_paragraph),
+    list.map(paragraphs, fn(p) { view_page_paragraph(p, dict.new()) }),
   )
 }
 
-fn view_page_paragraph(page_paragraph: PageParagraph) -> Element(Msg) {
+fn view_page_paragraph(
+  page_paragraph: PageParagraph,
+  erased: Dict(Int, Bool),
+) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
   // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
   // `getBoundingClientRect().height`. The wrapper establishes a
@@ -356,22 +520,25 @@ fn view_page_paragraph(page_paragraph: PageParagraph) -> Element(Msg) {
         int.to_string(page_paragraph.chapter_index),
       ),
     ],
-    [title_element, view_paragraph(page_paragraph.paragraph)],
+    [title_element, view_paragraph(page_paragraph.paragraph, erased)],
   )
 }
 
-fn view_paragraph(paragraph: Paragraph) -> Element(Msg) {
+fn view_paragraph(
+  paragraph: Paragraph,
+  erased: Dict(Int, Bool),
+) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
     paragraph.sentences
-    |> list.map(view_sentence)
+    |> list.map(fn(s) { view_sentence(s, erased) })
     |> list.intersperse(html.text(" "))
 
   html.p([attribute.class("paragraph")], sentence_elements)
 }
 
-fn view_sentence(sentence: Sentence) -> Element(Msg) {
+fn view_sentence(sentence: Sentence, erased: Dict(Int, Bool)) -> Element(Msg) {
   let word_count = list.length(sentence.words)
   let words =
     list.index_map(sentence.words, fn(word, index) {
@@ -383,16 +550,28 @@ fn view_sentence(sentence: Sentence) -> Element(Msg) {
       view_word(word, with_trailing_space)
     })
 
-  html.span(
-    [
-      attribute.class("sentence"),
-      attribute.attribute(
-        "data-sentence-index",
-        int.to_string(sentence.global_index),
-      ),
-    ],
-    words,
-  )
+  let is_erased =
+    erased |> dict.get(sentence.global_index) |> result.unwrap(False)
+  let erase_attrs = case is_erased {
+    True -> [attribute.style("opacity", "0")]
+    False -> []
+  }
+
+  // `on_click` covers both desktop clicks and mobile-synthesized
+  // taps. The synthesized click only fires when the touch movement
+  // stays below the browser's own click-cancellation threshold (~10
+  // –15px), which is well under `gestures.swipe_threshold`, so a
+  // real swipe never lands an accidental erase.
+  let base_attrs = [
+    attribute.class("sentence"),
+    attribute.attribute(
+      "data-sentence-index",
+      int.to_string(sentence.global_index),
+    ),
+    event.on_click(EraseSentence(sentence.global_index)),
+  ]
+
+  html.span(list.append(base_attrs, erase_attrs), words)
 }
 
 fn view_word(word: Word, with_trailing_space: Bool) -> Element(Msg) {
