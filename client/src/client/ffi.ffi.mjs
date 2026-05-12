@@ -187,3 +187,81 @@ export function on_vim_keys(
     }
   });
 }
+
+/**
+ * Reads `prefers-color-scheme: dark` off the user agent media list.
+ * Used once at boot to seed the reader's theme; subsequent toggles
+ * flow through the settings panel and bypass this query.
+ *
+ * `window.matchMedia` is universal on browser targets — no defensive
+ * branch needed.
+ *
+ * @returns {boolean} True when the OS reports a dark colour scheme.
+ */
+export function get_prefers_color_scheme_dark() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+/**
+ * Reads `prefers-reduced-motion: reduce` off the user agent media list.
+ * The reader honours the OS preference at boot; when set, the body
+ * carries `vi-reduced-motion` and the CSS strips transitions from the
+ * `.sentence` rule so erases snap rather than fade.
+ *
+ * @returns {boolean} True when the OS asks for reduced motion.
+ */
+export function get_prefers_reduced_motion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * Sets a CSS custom property on `:root` (`document.documentElement`).
+ * Every rule referencing the property re-resolves on the next paint.
+ *
+ * @param {string} name CSS custom property name including the leading `--`.
+ * @param {string} value The new value, as a CSS-syntax string.
+ */
+export function set_css_property(name, value) {
+  document.documentElement.style.setProperty(name, value);
+}
+
+/**
+ * Toggles a class on `document.body`. Centralising the body-class
+ * machinery lets the Lustre view stay free of theme/setting markup —
+ * the view renders identical HTML regardless of which toggles are
+ * active, and the CSS reads body classes to flip the relevant rules.
+ *
+ * @param {string} class_name Class to add or remove.
+ * @param {boolean} enabled When `true`, the class is added; otherwise removed.
+ */
+export function set_body_class(class_name, enabled) {
+  if (enabled) {
+    document.body.classList.add(class_name);
+  } else {
+    document.body.classList.remove(class_name);
+  }
+}
+
+/**
+ * Ensures the document's `<meta name="viewport">` carries
+ * `viewport-fit=cover`. iOS only exposes non-zero
+ * `env(safe-area-inset-*)` values when the viewport meta opts into
+ * cover mode; without this, content rendered behind the notch and home
+ * indicator clips into system UI. `lustre_dev_tools` injects a stock
+ * `width=device-width, initial-scale=1` viewport meta with no cover
+ * flag, so we patch the existing tag in place rather than inserting a
+ * duplicate (which would let the older one win depending on parser
+ * order). When no viewport meta is present we create one.
+ */
+export function ensure_viewport_fit_cover() {
+  const desired = "width=device-width, initial-scale=1, viewport-fit=cover";
+  let meta = document.querySelector('meta[name="viewport"]');
+  if (meta === null) {
+    meta = document.createElement("meta");
+    meta.setAttribute("name", "viewport");
+    document.head.appendChild(meta);
+  }
+  if (meta.getAttribute("content") !== desired) {
+    meta.setAttribute("content", desired);
+  }
+}
