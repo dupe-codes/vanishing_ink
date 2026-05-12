@@ -27,6 +27,8 @@ import gleam/set
 import gleam/string
 import gleeunit
 import lustre/element
+import lustre/vdom/vattr
+import lustre/vdom/vnode
 import shared
 import shared/segmenter.{
   type SegmentedText, Chapter, Paragraph, SegmentedText, Sentence, Word,
@@ -941,6 +943,59 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
   let opacity_chunks = rendered |> string.split("opacity:0;") |> list.length
   assert opacity_chunks == 2
   assert string.contains(rendered, "data-sentence-index=\"1\"")
+}
+
+pub fn view_sentence_attaches_click_handler_when_interactive_test() {
+  // Lustre's `to_string` strips `event.*` attributes from the
+  // rendered HTML, so a contract test that checks for the `on_click`
+  // wiring has to inspect the returned `Element` directly. The
+  // visible reading area passes `interactive: True` to
+  // `view_sentence`, and the click handler — the only path that
+  // produces `EraseSentence` — must come back as a `click` event on
+  // the span. A future refactor that drops or relocates the handler
+  // would not show up in the HTML-substring assertions; it would
+  // show up here.
+  let sentence =
+    Sentence(index: 0, global_index: 4, words: [
+      Word(index: 0, global_index: 0, text: "Hi."),
+    ])
+
+  let click_events =
+    client.view_sentence(sentence, set.new(), True) |> click_event_names
+
+  assert click_events == ["click"]
+}
+
+pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
+  // The measurement-mirror branch passes `interactive: False`, and
+  // the resulting span must carry no `click` event. Pinning the
+  // negative case alongside the positive one stops a future
+  // "always-on" refactor that ignores the flag from silently
+  // re-attaching N dead handlers across the whole book.
+  let sentence =
+    Sentence(index: 0, global_index: 4, words: [
+      Word(index: 0, global_index: 0, text: "Hi."),
+    ])
+
+  let click_events =
+    client.view_sentence(sentence, set.new(), False) |> click_event_names
+
+  assert click_events == []
+}
+
+fn click_event_names(rendered: element.Element(msg)) -> List(String) {
+  case rendered {
+    vnode.Element(attributes:, ..) ->
+      attributes
+      |> list.filter_map(fn(attr) {
+        case attr {
+          vattr.Event(name:, ..) -> Ok(name)
+          _ -> Error(Nil)
+        }
+      })
+      |> list.filter(fn(name) { name == "click" })
+    _ -> []
+  }
 }
 
 pub fn view_omits_opacity_when_no_sentences_erased_test() {

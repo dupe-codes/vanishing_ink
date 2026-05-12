@@ -406,7 +406,7 @@ fn view_paginated(
 ) -> Element(Msg) {
   let total = list.length(pages)
   let visible = case pagination.nth(pages, current_page) {
-    Some(page) -> view_page(page, erased)
+    Some(page) -> view_page(page, erased, True)
     None -> view_preparing()
   }
 
@@ -445,13 +445,19 @@ fn view_preparing() -> Element(Msg) {
   ])
 }
 
-fn view_page(page: Page, erased: Set(Int)) -> Element(Msg) {
+fn view_page(
+  page: Page,
+  erased: Set(Int),
+  interactive: Bool,
+) -> Element(Msg) {
   html.div(
     [
       attribute.class("page"),
       attribute.attribute("data-page-index", int.to_string(page.index)),
     ],
-    list.map(page.paragraphs, fn(p) { view_page_paragraph(p, erased) }),
+    list.map(page.paragraphs, fn(p) {
+      view_page_paragraph(p, erased, interactive)
+    }),
   )
 }
 
@@ -485,25 +491,29 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
   // `getBoundingClientRect().height` still reports valid pixel
   // values to the FFI.
   //
-  // The measurement mirror is always rendered with an empty erase
-  // map: opacity 0 doesn't affect `getBoundingClientRect().height`,
-  // so the visual state never reaches the DOM here regardless, but
-  // emitting the erase styles into a `pointer-events: none` subtree
-  // would also confuse any DOM query that didn't scope to
-  // `#vi-page-content` (the briefing flags this footgun explicitly).
+  // The mirror passes an empty erase set *and* `interactive: False`:
+  // opacity-0 attributes don't affect `getBoundingClientRect().height`
+  // so the erase styling is omitted regardless, and the same
+  // reasoning rules out the per-sentence `on_click` — the mirror is
+  // `pointer-events: none`, so any click handler attached there is
+  // unreachable. Skipping the handler keeps the virtual DOM smaller
+  // by N event attributes (one per sentence on the whole book), and
+  // a future DOM query that drifted from scoping to
+  // `#vi-page-content` would not accidentally fire phantom erases.
   html.div(
     [
       attribute.id(measurement_id),
       attribute.class("reader-measurement"),
       attribute.attribute("aria-hidden", "true"),
     ],
-    list.map(paragraphs, fn(p) { view_page_paragraph(p, set.new()) }),
+    list.map(paragraphs, fn(p) { view_page_paragraph(p, set.new(), False) }),
   )
 }
 
 fn view_page_paragraph(
   page_paragraph: PageParagraph,
   erased: Set(Int),
+  interactive: Bool,
 ) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
   // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
@@ -536,25 +546,45 @@ fn view_page_paragraph(
         int.to_string(page_paragraph.chapter_index),
       ),
     ],
-    [title_element, view_paragraph(page_paragraph.paragraph, erased)],
+    [title_element, view_paragraph(page_paragraph.paragraph, erased, interactive)],
   )
 }
 
 fn view_paragraph(
   paragraph: Paragraph,
   erased: Set(Int),
+  interactive: Bool,
 ) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
     paragraph.sentences
-    |> list.map(fn(s) { view_sentence(s, erased) })
+    |> list.map(fn(s) { view_sentence(s, erased, interactive) })
     |> list.intersperse(html.text(" "))
 
   html.p([attribute.class("paragraph")], sentence_elements)
 }
 
-fn view_sentence(sentence: Sentence, erased: Set(Int)) -> Element(Msg) {
+/// Render one sentence span. `interactive` gates the `on_click`
+/// handler — the visible reading area passes `True`, the off-screen
+/// measurement mirror passes `False` so its unreachable
+/// (`pointer-events: none`) sentences don't carry dead handlers.
+///
+/// `on_click` covers both desktop clicks and mobile-synthesized
+/// taps. The synthesized click only fires when the touch movement
+/// stays below the browser's own click-cancellation threshold
+/// (~10–15px), which is well under `gestures.swipe_threshold`, so a
+/// real swipe never lands an accidental erase.
+///
+/// Exposed for tests that need to assert the click handler stays
+/// wired to visible sentences — Lustre's HTML serialiser strips
+/// event attributes, so the only way to pin the contract is to
+/// inspect the returned `Element` directly.
+pub fn view_sentence(
+  sentence: Sentence,
+  erased: Set(Int),
+  interactive: Bool,
+) -> Element(Msg) {
   let word_count = list.length(sentence.words)
   let words =
     list.index_map(sentence.words, fn(word, index) {
@@ -567,26 +597,31 @@ fn view_sentence(sentence: Sentence, erased: Set(Int)) -> Element(Msg) {
     })
 
   let is_erased = set.contains(erased, sentence.global_index)
-  let erase_attrs = case is_erased {
-    True -> [attribute.style("opacity", "0")]
-    False -> []
+  // Both conditional attributes collapse into a single trailing list
+  // so the surrounding `html.span` call constructs the attribute
+  // sequence in one literal expression rather than appending two
+  // separately-built lists.
+  let trailing_attrs = case interactive, is_erased {
+    True, True -> [
+      event.on_click(EraseSentence(sentence.global_index)),
+      attribute.style("opacity", "0"),
+    ]
+    True, False -> [event.on_click(EraseSentence(sentence.global_index))]
+    False, True -> [attribute.style("opacity", "0")]
+    False, False -> []
   }
 
-  // `on_click` covers both desktop clicks and mobile-synthesized
-  // taps. The synthesized click only fires when the touch movement
-  // stays below the browser's own click-cancellation threshold (~10
-  // –15px), which is well under `gestures.swipe_threshold`, so a
-  // real swipe never lands an accidental erase.
-  let base_attrs = [
-    attribute.class("sentence"),
-    attribute.attribute(
-      "data-sentence-index",
-      int.to_string(sentence.global_index),
-    ),
-    event.on_click(EraseSentence(sentence.global_index)),
-  ]
-
-  html.span(list.append(base_attrs, erase_attrs), words)
+  html.span(
+    [
+      attribute.class("sentence"),
+      attribute.attribute(
+        "data-sentence-index",
+        int.to_string(sentence.global_index),
+      ),
+      ..trailing_attrs
+    ],
+    words,
+  )
 }
 
 fn view_word(word: Word, with_trailing_space: Bool) -> Element(Msg) {
