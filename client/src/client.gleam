@@ -25,12 +25,11 @@
 //// both wired through `client/ffi.gleam`. `resize` is debounced in
 //// the FFI so a continuous drag does not flood the update loop.
 
-import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
+import gleam/set.{type Set}
 import gleam/string
 import lustre
 import lustre/attribute
@@ -93,10 +92,11 @@ const measurement_id: String = "vi-measurement"
 ///   resize while measurement is in flight.
 /// * `current_page` — zero-based index into `pages`. Always clamped
 ///   into `[0, list.length(pages))` after a measurement.
-/// * `erased` — sparse map of `sentence.global_index → True` for
-///   every sentence the reader has erased. Sentences not in the map
-///   are considered visible; an explicit `False` value is never
-///   stored, so absence and "not erased" coincide.
+/// * `erased` — set of `sentence.global_index` for every sentence
+///   the reader has erased. Membership is the sole erasure signal;
+///   non-members render as visible. A `Set` rather than a
+///   `Dict(Int, Bool)` so the "no `False` value ever stored"
+///   invariant is type-encoded rather than enforced by convention.
 /// * `undo_stack` — last erases on the *current* page, most recent
 ///   first. Bounded to `undo_stack_depth` entries; cleared whenever
 ///   the reader navigates between pages, so erases commit when the
@@ -110,7 +110,7 @@ pub type Model {
     flat_paragraphs: List(PageParagraph),
     pages: List(Page),
     current_page: Int,
-    erased: Dict(Int, Bool),
+    erased: Set(Int),
     undo_stack: List(Int),
     touch_start: Option(#(Float, Float)),
   )
@@ -209,7 +209,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       flat_paragraphs: [],
       pages: [],
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -245,7 +245,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         flat_paragraphs: pagination.flatten(text),
         pages: [],
         current_page: 0,
-        erased: dict.new(),
+        erased: set.new(),
         undo_stack: [],
         touch_start: None,
       ),
@@ -274,12 +274,10 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     ViewportResized -> #(model, measure_after_paint())
 
     EraseSentence(global_index) -> {
-      let already_erased =
-        model.erased |> dict.get(global_index) |> result.unwrap(False)
-      case already_erased {
+      case set.contains(model.erased, global_index) {
         True -> #(model, effect.none())
         False -> {
-          let next_erased = dict.insert(model.erased, global_index, True)
+          let next_erased = set.insert(model.erased, global_index)
           let next_undo =
             [global_index, ..model.undo_stack] |> list.take(undo_stack_depth)
           #(
@@ -294,7 +292,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       case model.undo_stack {
         [] -> #(model, effect.none())
         [last, ..rest] -> {
-          let next_erased = dict.delete(model.erased, last)
+          let next_erased = set.delete(model.erased, last)
           #(
             Model(..model, erased: next_erased, undo_stack: rest),
             effect.none(),
@@ -328,7 +326,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
                   effect.none(),
                 )
                 [last, ..rest] -> {
-                  let next_erased = dict.delete(cleared.erased, last)
+                  let next_erased = set.delete(cleared.erased, last)
                   #(
                     Model(..cleared, erased: next_erased, undo_stack: rest),
                     effect.none(),
@@ -404,7 +402,7 @@ fn view_paginated(
   flat_paragraphs: List(PageParagraph),
   pages: List(Page),
   current_page: Int,
-  erased: Dict(Int, Bool),
+  erased: Set(Int),
 ) -> Element(Msg) {
   let total = list.length(pages)
   let visible = case pagination.nth(pages, current_page) {
@@ -447,7 +445,7 @@ fn view_preparing() -> Element(Msg) {
   ])
 }
 
-fn view_page(page: Page, erased: Dict(Int, Bool)) -> Element(Msg) {
+fn view_page(page: Page, erased: Set(Int)) -> Element(Msg) {
   html.div(
     [
       attribute.class("page"),
@@ -499,13 +497,13 @@ fn view_measurement_container(paragraphs: List(PageParagraph)) -> Element(Msg) {
       attribute.class("reader-measurement"),
       attribute.attribute("aria-hidden", "true"),
     ],
-    list.map(paragraphs, fn(p) { view_page_paragraph(p, dict.new()) }),
+    list.map(paragraphs, fn(p) { view_page_paragraph(p, set.new()) }),
   )
 }
 
 fn view_page_paragraph(
   page_paragraph: PageParagraph,
-  erased: Dict(Int, Bool),
+  erased: Set(Int),
 ) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
   // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
@@ -544,7 +542,7 @@ fn view_page_paragraph(
 
 fn view_paragraph(
   paragraph: Paragraph,
-  erased: Dict(Int, Bool),
+  erased: Set(Int),
 ) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
@@ -556,7 +554,7 @@ fn view_paragraph(
   html.p([attribute.class("paragraph")], sentence_elements)
 }
 
-fn view_sentence(sentence: Sentence, erased: Dict(Int, Bool)) -> Element(Msg) {
+fn view_sentence(sentence: Sentence, erased: Set(Int)) -> Element(Msg) {
   let word_count = list.length(sentence.words)
   let words =
     list.index_map(sentence.words, fn(word, index) {
@@ -568,8 +566,7 @@ fn view_sentence(sentence: Sentence, erased: Dict(Int, Bool)) -> Element(Msg) {
       view_word(word, with_trailing_space)
     })
 
-  let is_erased =
-    erased |> dict.get(sentence.global_index) |> result.unwrap(False)
+  let is_erased = set.contains(erased, sentence.global_index)
   let erase_attrs = case is_erased {
     True -> [attribute.style("opacity", "0")]
     False -> []

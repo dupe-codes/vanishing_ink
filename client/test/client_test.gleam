@@ -20,10 +20,10 @@
 //// attribute structure and inter-element text content in one
 //// assertion.
 
-import gleam/dict
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/set
 import gleam/string
 import gleeunit
 import lustre/element
@@ -77,7 +77,7 @@ fn empty_model() -> Model {
     flat_paragraphs: [],
     pages: [],
     current_page: 0,
-    erased: dict.new(),
+    erased: set.new(),
     undo_stack: [],
     touch_start: None,
   )
@@ -143,7 +143,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       flat_paragraphs: pagination.flatten(payload),
       pages: [],
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -169,7 +169,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -182,7 +182,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       flat_paragraphs: pagination.flatten(second),
       pages: [],
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -352,7 +352,7 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
       flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -437,7 +437,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -478,7 +478,7 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -521,7 +521,7 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 0,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
@@ -545,16 +545,16 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
 // ---------------------------------------------------------------------------
 
 pub fn update_erase_sentence_marks_sentence_and_pushes_undo_test() {
-  // Tapping a fresh sentence must (a) flip the `erased` map at the
-  // sentence's `global_index` to `True` and (b) push that index
-  // onto the front of `undo_stack`. Both halves are pinned together
-  // because erase without undo entry would orphan the undo handler,
-  // and undo entry without erase would make Undo a visible no-op.
+  // Tapping a fresh sentence must (a) insert the sentence's
+  // `global_index` into `erased` and (b) push that index onto the
+  // front of `undo_stack`. Both halves are pinned together because
+  // erase without undo entry would orphan the undo handler, and
+  // undo entry without erase would make Undo a visible no-op.
   let prior = empty_model()
 
   let #(updated, _effect) = client.update(prior, EraseSentence(7))
 
-  assert dict.get(updated.erased, 7) == Ok(True)
+  assert set.contains(updated.erased, 7)
   assert updated.undo_stack == [7]
 }
 
@@ -564,7 +564,7 @@ pub fn update_erase_sentence_is_idempotent_on_already_erased_test() {
   // would then have to be pressed N times to actually restore a
   // sentence the reader meant to erase once.
   let prior =
-    Model(..empty_model(), erased: dict.from_list([#(3, True)]), undo_stack: [3])
+    Model(..empty_model(), erased: set.from_list([3]), undo_stack: [3])
 
   let #(updated, _effect) = client.update(prior, EraseSentence(3))
 
@@ -588,8 +588,8 @@ pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
   assert after_6.undo_stack == [5, 4, 3, 2, 1]
   // Every erased sentence — including the one that fell off the
   // undo stack — stays erased on the model.
-  assert dict.get(after_6.erased, 0) == Ok(True)
-  assert dict.get(after_6.erased, 5) == Ok(True)
+  assert set.contains(after_6.erased, 0)
+  assert set.contains(after_6.erased, 5)
 }
 
 // ---------------------------------------------------------------------------
@@ -603,15 +603,15 @@ pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
   let prior =
     Model(
       ..empty_model(),
-      erased: dict.from_list([#(2, True), #(7, True)]),
+      erased: set.from_list([2, 7]),
       undo_stack: [7, 2],
     )
 
   let #(updated, _effect) = client.update(prior, Undo)
 
   assert updated.undo_stack == [2]
-  assert dict.get(updated.erased, 7) == Error(Nil)
-  assert dict.get(updated.erased, 2) == Ok(True)
+  assert !set.contains(updated.erased, 7)
+  assert set.contains(updated.erased, 2)
 }
 
 pub fn update_undo_is_noop_when_stack_empty_test() {
@@ -640,7 +640,7 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
-      erased: dict.from_list([#(0, True), #(1, True)]),
+      erased: set.from_list([0, 1]),
       undo_stack: [1, 0],
     )
 
@@ -648,8 +648,8 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
 
   assert updated.current_page == 1
   assert updated.undo_stack == []
-  assert dict.get(updated.erased, 0) == Ok(True)
-  assert dict.get(updated.erased, 1) == Ok(True)
+  assert set.contains(updated.erased, 0)
+  assert set.contains(updated.erased, 1)
 }
 
 pub fn update_previous_page_also_clears_undo_stack_test() {
@@ -664,7 +664,7 @@ pub fn update_previous_page_also_clears_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
-      erased: dict.from_list([#(4, True)]),
+      erased: set.from_list([4]),
       undo_stack: [4],
     )
 
@@ -672,7 +672,7 @@ pub fn update_previous_page_also_clears_undo_stack_test() {
 
   assert updated.current_page == 0
   assert updated.undo_stack == []
-  assert dict.get(updated.erased, 4) == Ok(True)
+  assert set.contains(updated.erased, 4)
 }
 
 pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
@@ -686,7 +686,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
-      erased: dict.from_list([#(8, True)]),
+      erased: set.from_list([8]),
       undo_stack: [8],
     )
 
@@ -694,7 +694,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
 
   assert updated.current_page == 1
   assert updated.undo_stack == [8]
-  assert dict.get(updated.erased, 8) == Ok(True)
+  assert set.contains(updated.erased, 8)
 }
 
 pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
@@ -706,7 +706,7 @@ pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
-      erased: dict.from_list([#(2, True)]),
+      erased: set.from_list([2]),
       undo_stack: [2],
     )
 
@@ -714,7 +714,7 @@ pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
 
   assert updated.current_page == 0
   assert updated.undo_stack == [2]
-  assert dict.get(updated.erased, 2) == Ok(True)
+  assert set.contains(updated.erased, 2)
 }
 
 pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
@@ -726,7 +726,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
-      erased: dict.from_list([#(5, True)]),
+      erased: set.from_list([5]),
       undo_stack: [5],
       touch_start: Some(#(300.0, 200.0)),
     )
@@ -736,7 +736,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
 
   assert updated.current_page == 1
   assert updated.undo_stack == [5]
-  assert dict.get(updated.erased, 5) == Ok(True)
+  assert set.contains(updated.erased, 5)
   assert updated.touch_start == None
 }
 
@@ -797,7 +797,7 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
-      erased: dict.from_list([#(9, True)]),
+      erased: set.from_list([9]),
       undo_stack: [9],
       touch_start: Some(#(100.0, 200.0)),
     )
@@ -807,7 +807,7 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
 
   assert updated.current_page == 1
   assert updated.undo_stack == []
-  assert dict.get(updated.erased, 9) == Error(Nil)
+  assert !set.contains(updated.erased, 9)
   assert updated.touch_start == None
 }
 
@@ -839,7 +839,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
-      erased: dict.from_list([#(3, True)]),
+      erased: set.from_list([3]),
       undo_stack: [3],
       touch_start: Some(#(100.0, 200.0)),
     )
@@ -849,7 +849,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
   assert updated.touch_start == None
   assert updated.current_page == 0
   assert updated.undo_stack == [3]
-  assert dict.get(updated.erased, 3) == Ok(True)
+  assert set.contains(updated.erased, 3)
 }
 
 pub fn update_touch_end_after_cancel_is_safe_test() {
@@ -931,7 +931,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      erased: dict.from_list([#(1, True)]),
+      erased: set.from_list([1]),
       undo_stack: [1],
       touch_start: None,
     )
@@ -957,7 +957,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
-      erased: dict.new(),
+      erased: set.new(),
       undo_stack: [],
       touch_start: None,
     )
