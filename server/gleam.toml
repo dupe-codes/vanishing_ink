@@ -1,6 +1,6 @@
 name = "server"
 version = "0.1.0"
-description = "Vanishing Ink HTTP server. Compiles to the Erlang/BEAM target and serves the Lustre client over a Wisp + Mist stack."
+description = "Vanishing Ink HTTP server. Compiles to the Erlang/BEAM target and serves a JSON liveness endpoint on a Wisp + Mist stack. Static asset serving for the Lustre client will follow in a later quest."
 target = "erlang"
 
 [dependencies]
@@ -10,7 +10,6 @@ gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 mist = ">= 6.0.0 and < 7.0.0"
 wisp = ">= 2.2.0 and < 3.0.0"
-sqlight = ">= 1.1.0 and < 2.0.0"
 shared = { path = "../shared" }
 
 [dev_dependencies]
