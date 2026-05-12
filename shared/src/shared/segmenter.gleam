@@ -64,13 +64,12 @@ pub type Word {
 /// Re-running the function on the same input is deterministic and
 /// produces an equal value.
 pub fn segment(raw: String) -> SegmentedText {
-  raw
-  |> string.split("\n")
-  |> list.map(classify_line)
-  |> build_chapter_blocks
-  |> list.index_map(build_chapter)
-  |> assign_global_indices
-  |> SegmentedText
+  let blocks =
+    raw
+    |> string.split("\n")
+    |> list.map(classify_line)
+    |> build_chapter_blocks
+  SegmentedText(chapters: build_chapters(blocks))
 }
 
 // ---------------------------------------------------------------------------
@@ -462,21 +461,95 @@ fn close_current_chapter(state: ChapterState) -> ChapterState {
 // ---------------------------------------------------------------------------
 // Chapter / paragraph / sentence / word construction
 // ---------------------------------------------------------------------------
+//
+// Global indices are assigned on first emit by threading two counters —
+// `word_counter` and `sentence_counter` — through the recursive build.
+// The earlier implementation stamped `global_index: 0` placeholders into
+// the records and patched them afterwards, which left an invalid zero
+// reachable to any caller who skipped the patching pass. Threading the
+// counters removes that failure mode entirely.
 
-fn build_chapter(block: ChapterBlock, index: Int) -> Chapter {
-  let paragraphs =
-    block.paragraphs
-    |> list.index_map(build_paragraph)
-  Chapter(index: index, title: block.title, paragraphs: paragraphs)
+fn build_chapters(blocks: List(ChapterBlock)) -> List(Chapter) {
+  let initial = #(0, 0, 0, [])
+  let #(_, _, _, chapters_rev) =
+    list.fold(blocks, initial, fn(acc, block) {
+      let #(chapter_index, word_counter, sentence_counter, chapters_acc) = acc
+      let #(next_word, next_sentence, paragraphs) =
+        build_paragraphs(block.paragraphs, word_counter, sentence_counter)
+      let chapter =
+        Chapter(
+          index: chapter_index,
+          title: block.title,
+          paragraphs: paragraphs,
+        )
+      #(chapter_index + 1, next_word, next_sentence, [chapter, ..chapters_acc])
+    })
+  list.reverse(chapters_rev)
 }
 
-fn build_paragraph(lines: List(String), index: Int) -> Paragraph {
+fn build_paragraphs(
+  paragraph_lines_list: List(List(String)),
+  word_counter: Int,
+  sentence_counter: Int,
+) -> #(Int, Int, List(Paragraph)) {
+  let initial = #(0, word_counter, sentence_counter, [])
+  let #(_, final_word, final_sentence, paragraphs_rev) =
+    list.fold(paragraph_lines_list, initial, fn(acc, lines) {
+      let #(idx, word_in, sentence_in, paragraphs_acc) = acc
+      let #(word_out, sentence_out, paragraph) =
+        build_paragraph(lines, idx, word_in, sentence_in)
+      #(idx + 1, word_out, sentence_out, [paragraph, ..paragraphs_acc])
+    })
+  #(final_word, final_sentence, list.reverse(paragraphs_rev))
+}
+
+fn build_paragraph(
+  lines: List(String),
+  index: Int,
+  word_counter: Int,
+  sentence_counter: Int,
+) -> #(Int, Int, Paragraph) {
   let joined = string.trim(join_lines(lines))
-  let sentences =
-    joined
-    |> split_sentences
-    |> list.index_map(build_sentence_skeleton)
-  Paragraph(index: index, sentences: sentences)
+  let sentence_texts = split_sentences(joined)
+  let #(next_word, next_sentence, sentences) =
+    build_sentences(sentence_texts, word_counter, sentence_counter)
+  #(next_word, next_sentence, Paragraph(index: index, sentences: sentences))
+}
+
+fn build_sentences(
+  sentence_texts: List(String),
+  word_counter: Int,
+  sentence_counter: Int,
+) -> #(Int, Int, List(Sentence)) {
+  let initial = #(0, word_counter, sentence_counter, [])
+  let #(_, final_word, final_sentence, sentences_rev) =
+    list.fold(sentence_texts, initial, fn(acc, text) {
+      let #(idx, word_in, sentence_global, sentences_acc) = acc
+      let #(word_out, sentence) =
+        build_sentence(text, idx, sentence_global, word_in)
+      #(idx + 1, word_out, sentence_global + 1, [sentence, ..sentences_acc])
+    })
+  #(final_word, final_sentence, list.reverse(sentences_rev))
+}
+
+fn build_sentence(
+  text: String,
+  index: Int,
+  global_index: Int,
+  word_counter: Int,
+) -> #(Int, Sentence) {
+  let word_texts = split_words(text)
+  let #(_, next_word, words_rev) =
+    list.fold(word_texts, #(0, word_counter, []), fn(acc, word_text) {
+      let #(idx, word_global, words_acc) = acc
+      let word = Word(index: idx, global_index: word_global, text: word_text)
+      #(idx + 1, word_global + 1, [word, ..words_acc])
+    })
+  let words = list.reverse(words_rev)
+  #(
+    next_word,
+    Sentence(index: index, global_index: global_index, words: words),
+  )
 }
 
 fn join_lines(lines: List(String)) -> String {
@@ -484,79 +557,6 @@ fn join_lines(lines: List(String)) -> String {
   |> list.map(string.trim)
   |> list.filter(fn(line) { line != "" })
   |> string.join(" ")
-}
-
-fn build_sentence_skeleton(text: String, index: Int) -> Sentence {
-  let words =
-    text
-    |> split_words
-    |> list.index_map(fn(word_text, word_index) {
-      Word(index: word_index, global_index: 0, text: word_text)
-    })
-  Sentence(index: index, global_index: 0, words: words)
-}
-
-// ---------------------------------------------------------------------------
-// Global index assignment
-// ---------------------------------------------------------------------------
-
-fn assign_global_indices(chapters: List(Chapter)) -> List(Chapter) {
-  let #(_, _, reversed) =
-    list.fold(chapters, #(0, 0, []), fn(acc, chapter) {
-      let #(word_counter, sentence_counter, chapters_acc) = acc
-      let #(new_word_counter, new_sentence_counter, paragraphs_rev) =
-        list.fold(
-          chapter.paragraphs,
-          #(word_counter, sentence_counter, []),
-          fn(p_acc, paragraph) {
-            let #(p_word_counter, p_sentence_counter, paragraphs_acc) = p_acc
-            let #(s_word_counter, s_sentence_counter, sentences_rev) =
-              list.fold(
-                paragraph.sentences,
-                #(p_word_counter, p_sentence_counter, []),
-                fn(s_acc, sentence) {
-                  let #(w_word_counter, w_sentence_counter, sentences_acc) =
-                    s_acc
-                  let #(next_word_counter, words_rev) =
-                    list.fold(
-                      sentence.words,
-                      #(w_word_counter, []),
-                      fn(word_acc, word) {
-                        let #(word_counter_now, words_so_far) = word_acc
-                        let stamped =
-                          Word(..word, global_index: word_counter_now)
-                        #(word_counter_now + 1, [stamped, ..words_so_far])
-                      },
-                    )
-                  let words = list.reverse(words_rev)
-                  let stamped_sentence =
-                    Sentence(
-                      ..sentence,
-                      global_index: w_sentence_counter,
-                      words: words,
-                    )
-                  #(next_word_counter, w_sentence_counter + 1, [
-                    stamped_sentence,
-                    ..sentences_acc
-                  ])
-                },
-              )
-            let sentences = list.reverse(sentences_rev)
-            let stamped_paragraph = Paragraph(..paragraph, sentences: sentences)
-            #(s_word_counter, s_sentence_counter, [
-              stamped_paragraph,
-              ..paragraphs_acc
-            ])
-          },
-        )
-      let paragraphs = list.reverse(paragraphs_rev)
-      let stamped_chapter = Chapter(..chapter, paragraphs: paragraphs)
-      #(new_word_counter, new_sentence_counter, [
-        stamped_chapter,
-        ..chapters_acc
-      ])
-    })
-  list.reverse(reversed)
 }
 
 // ---------------------------------------------------------------------------
@@ -678,27 +678,12 @@ fn check_sentence_boundary(graphemes: List(String)) -> BoundaryCheck {
       case is_closing_quote(q), is_whitespace(next), peek_uppercase(rest) {
         True, True, True -> Boundary([q], [next, ..rest])
         _, _, _ ->
-          case
-            is_whitespace(q),
-            is_uppercase_letter_after_whitespace([next, ..rest])
-          {
+          case is_whitespace(q), peek_uppercase([next, ..rest]) {
             True, True -> Boundary([], graphemes)
             _, _ -> NotBoundary
           }
       }
-    [g] ->
-      case is_whitespace(g) {
-        True -> NotBoundary
-        False -> NotBoundary
-      }
-    [] -> NotBoundary
-  }
-}
-
-fn is_uppercase_letter_after_whitespace(graphemes: List(String)) -> Bool {
-  case graphemes {
-    [g, ..] -> is_uppercase_letter(g)
-    [] -> False
+    _ -> NotBoundary
   }
 }
 
