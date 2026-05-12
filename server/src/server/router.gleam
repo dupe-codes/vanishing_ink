@@ -18,6 +18,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import server/clock
 import server/db
 import server/types.{
@@ -27,6 +28,11 @@ import server/web.{type Context}
 import shared
 import shared/segmenter
 import wisp.{type Request, type Response}
+
+/// Closed vocabulary for `reading_state.mode`. The schema defaults to
+/// `'manual'` and the empty-state synthesis emits `"manual"`; new
+/// values must be added here before the router will accept them.
+const reading_state_modes: List(String) = ["manual", "ghost"]
 
 /// Top-level dispatcher. Wisp matches paths as a list of segments, so
 /// the routing table is just a literal nested `case`.
@@ -229,19 +235,55 @@ fn put_reading_state_handler(
   case decode.run(body, reading_state_input_decoder()) {
     Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
     Ok(input) ->
-      case decode_bitsets(input) {
+      case validate_reading_state_input(input) {
         Error(detail) -> wisp.bad_request(detail)
-        Ok(#(sentence_bitset, word_bitset)) ->
-          persist_reading_state(
-            ctx,
-            id,
-            input.mode,
-            sentence_bitset,
-            word_bitset,
-            input.current_page,
-            input.updated_at,
-          )
+        Ok(validated) ->
+          case decode_bitsets(validated) {
+            Error(detail) -> wisp.bad_request(detail)
+            Ok(#(sentence_bitset, word_bitset)) ->
+              persist_reading_state(
+                ctx,
+                id,
+                validated.mode,
+                sentence_bitset,
+                word_bitset,
+                validated.current_page,
+                validated.updated_at,
+              )
+          }
       }
+  }
+}
+
+/// Refuse inputs that the SQL layer would otherwise accept silently:
+/// `mode` must come from the closed vocabulary, and `updated_at` must
+/// be a parseable ISO 8601 timestamp. The returned record carries the
+/// CANONICALISED `updated_at` (`YYYY-MM-DDTHH:MM:SSZ`) so the SQL-side
+/// lexicographic comparison in `update_reading_state` matches
+/// chronological order regardless of how the client formatted the
+/// input — and so a malformed value like `"ZZZZ"` cannot wedge the row.
+fn validate_reading_state_input(
+  input: ReadingStateInput,
+) -> Result(ReadingStateInput, String) {
+  use mode <- result.try(validate_mode(input.mode))
+  use updated_at <- result.try(validate_updated_at(input.updated_at))
+  Ok(ReadingStateInput(..input, mode: mode, updated_at: updated_at))
+}
+
+fn validate_mode(mode: String) -> Result(String, String) {
+  case list.contains(reading_state_modes, mode) {
+    True -> Ok(mode)
+    False ->
+      Error(
+        "mode must be one of: " <> string.join(reading_state_modes, ", "),
+      )
+  }
+}
+
+fn validate_updated_at(updated_at: String) -> Result(String, String) {
+  case clock.parse_iso8601(updated_at) {
+    Ok(canonical) -> Ok(canonical)
+    Error(_) -> Error("updated_at must be an ISO 8601 timestamp")
   }
 }
 
