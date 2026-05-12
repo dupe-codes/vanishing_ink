@@ -56,10 +56,3 @@ For the client, `just client-build` produces `client/dist/index.html`
 mounting the Lustre app at `#app`. Serve `client/dist/` with any static
 file server (or open `index.html` after adjusting the script path) to
 see "Hello from Vanishing Ink" in the browser.
-
-## Project context
-
-Vanishing Ink is the implementation project under Operation Luminous,
-an Atelier operation focused on learning Gleam by shipping a real
-mobile-first web app. There is no JavaScript fallback — Lustre is the
-sole frontend story.
