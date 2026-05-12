@@ -23,3 +23,13 @@ shared = { path = "../shared" }
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 lustre_dev_tools = ">= 2.0.0 and < 3.0.0"
+
+# HTML shell + dev-server config consumed by `lustre_dev_tools`. The
+# stylesheet href resolves under the project's `assets/` directory at
+# dev time and is copied into the dist bundle on `gleam run -m
+# lustre/dev build`, so the same path works for both flows.
+[tools.lustre.html]
+title = "Vanishing Ink"
+
+[[tools.lustre.html.stylesheets]]
+href = "/styles.css"
