@@ -33,3 +33,9 @@ title = "Vanishing Ink"
 
 [[tools.lustre.html.stylesheets]]
 href = "/styles.css"
+
+# Dev-server network config. `0.0.0.0` allows connections from other
+# devices on the LAN — needed for iPhone testing via the machine's
+# local IP. Switch back to `"localhost"` to restrict to local-only.
+[tools.lustre.dev]
+host = "0.0.0.0"
