@@ -1449,7 +1449,27 @@ fn apply_book_loaded(
       paragraph_delay_ms: defaults.default_paragraph_delay_ms,
       page_delay_ms: defaults.default_page_delay_ms,
     ),
-    effect.batch([measure_after_paint(), fetch_book_settings(meta.id)]),
+    effect.batch([
+      measure_after_paint(),
+      // Symmetric with `apply_go_to_library`: the reset above moves
+      // `ghost_opacity` back to the global default, and the CSS
+      // custom property has to follow or the rendered opacity keeps
+      // pointing at the prior book's value until
+      // `apply_book_settings_loaded` lands (or never updates at all
+      // if the new book has no override). Today the only entry path
+      // here transits `apply_go_to_library` first, which has already
+      // pushed the global value — but the helper must be
+      // self-consistent so any future entry path (a deep-link, a
+      // programmatic open) cannot flicker the prior book's opacity
+      // onto the new one.
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(
+          css_var_ghost_opacity,
+          float.to_string(defaults.ghost_opacity),
+        )
+      }),
+      fetch_book_settings(meta.id),
+    ]),
   )
 }
 
