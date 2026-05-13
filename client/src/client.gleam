@@ -1810,6 +1810,21 @@ pub fn describe_fetch_error(error: ffi.FetchError) -> String {
 /// the individual setters use, so the rendered theme matches the
 /// loaded record on the same frame. `global_defaults` is also stamped
 /// so a later per-book merge has the latest baseline.
+///
+/// RACE — the GET that produces this dispatch fires from `init`; if
+/// the reader toggles a global setting (`ToggleDarkMode`,
+/// `SetFontSize`, `SetLineSpacing`, `ToggleGhostMode`) in the
+/// ~100–500 ms window before the response lands, the PUT it triggers
+/// races the in-flight GET. If the GET response arrives second, this
+/// helper stamps `dark_mode`, `font_size`, `line_spacing`,
+/// `ghost_mode` from the pre-edit server snapshot — the PUT succeeded
+/// server-side, but the in-memory model briefly reverts and the user
+/// watches their toggle un-toggle until the next save round-trip
+/// lands. The four overridable fields below are already re-merged
+/// through `book_settings`, so they survive the race; the four
+/// non-overridable globals have no such guard. Closing the race
+/// requires a request-id or "seen-once" flag on `SettingsLoaded`;
+/// neither is wired up today.
 fn apply_settings_loaded(
   model: Model,
   settings: UserSettings,
