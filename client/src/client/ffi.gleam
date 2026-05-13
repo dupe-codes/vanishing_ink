@@ -41,15 +41,12 @@ pub fn measure_paragraphs(container_selector: String) -> List(#(Int, Float))
 @external(javascript, "./ffi.ffi.mjs", "on_resize")
 pub fn on_resize(callback: fn() -> Nil) -> Nil
 
-/// Install a `keydown` listener on `window` that routes `ArrowLeft`
-/// to `previous_callback` and `ArrowRight` to `next_callback`. Other
-/// keys are ignored. The listener persists for the lifetime of the
-/// page.
+/// Install a `keydown` listener on `window` that routes `ArrowRight`
+/// to `next_callback`. `ArrowLeft` is intentionally not wired —
+/// backward page navigation is disabled. The listener persists for
+/// the lifetime of the page.
 @external(javascript, "./ffi.ffi.mjs", "on_arrow_key")
-pub fn on_arrow_key(
-  previous_callback previous_callback: fn() -> Nil,
-  next_callback next_callback: fn() -> Nil,
-) -> Nil
+pub fn on_arrow_key(next_callback next_callback: fn() -> Nil) -> Nil
 
 /// Install a `keydown` listener on `window` that fires `callback`
 /// for the platform-conventional undo chord — `Cmd+Z` on macOS and

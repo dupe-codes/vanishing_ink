@@ -45,8 +45,8 @@ pub type Gesture {
   /// "advance the page" in a left-to-right reading flow.
   SwipeLeft
   /// Horizontal motion to the right (end_x > start_x). Conventionally
-  /// "go back" — the reducer maps this to `Undo` if the undo stack is
-  /// non-empty, otherwise `PreviousPage`.
+  /// "go back" — the reducer maps this to `Undo`; an empty undo
+  /// stack makes it a no-op.
   SwipeRight
 }
 

@@ -40,9 +40,9 @@ import shared/segmenter.{
 import client.{
   type Model, EraseFocused, EraseSentence, FocusNext, FocusParagraphDown,
   FocusParagraphUp, FocusPrevious, Model, NextPage, ParagraphsMeasured,
-  PreviousPage, SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{type Page, Page}
@@ -122,6 +122,33 @@ fn two_chapter_text() -> SegmentedText {
           Word(index: 0, global_index: 4, text: "Third."),
         ]),
       ]),
+    ]),
+  ])
+}
+
+/// Eight-paragraph, eight-sentence fixture used by the
+/// post-repagination focus tests. One sentence per paragraph;
+/// `Sentence.global_index` matches the paragraph index so the test
+/// can name the focused sentence by paragraph number.
+fn eight_paragraph_text() -> SegmentedText {
+  let paragraph = fn(idx: Int) -> Paragraph {
+    Paragraph(index: idx, sentences: [
+      Sentence(index: idx, global_index: idx, words: [
+        Word(index: 0, global_index: idx, text: "para."),
+      ]),
+    ])
+  }
+
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      paragraph(0),
+      paragraph(1),
+      paragraph(2),
+      paragraph(3),
+      paragraph(4),
+      paragraph(5),
+      paragraph(6),
+      paragraph(7),
     ]),
   ])
 }
@@ -265,8 +292,134 @@ pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
   assert updated.pages == []
 }
 
+pub fn update_paragraphs_measured_reanchors_focused_sentence_when_repagination_moves_it_off_current_page_test() {
+  // Repagination shifts the focused sentence onto an earlier page
+  // than the visible one. Without the re-anchor in `ParagraphsMeasured`,
+  // the next vim keypress would invoke `change_page` with a target
+  // below `current_page` (the vim path does not pass through the
+  // forward-only `go_to_page` guard), regressing the page index and
+  // breaking the PR's "no backward page navigation" guarantee.
+  //
+  // Setup: eight 100px paragraphs, 200px budget → 4 pages of two
+  // paragraphs each. Reader is on page 1 (paragraphs 2-3), focused
+  // on the sentence in paragraph 2. A resize widens the budget to
+  // 400px → 2 pages of four paragraphs each. `current_page` does
+  // not clamp (still valid: 1 < 2), but paragraph 2 now lives on
+  // page 0. Re-anchor must move the cursor to the first non-erased
+  // sentence on the new `current_page` (sentence 4, the first on
+  // the four-paragraph page 1).
+  let text = eight_paragraph_text()
+  let heights_narrow = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let initial =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let #(measured, _) =
+    client.update(
+      initial,
+      ParagraphsMeasured(heights: heights_narrow, available_height: 200.0),
+    )
+  let prior = Model(..measured, current_page: 1, focused_sentence: Some(2))
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights_narrow, available_height: 400.0),
+    )
+
+  assert list.length(updated.pages) == 2
+  assert updated.current_page == 1
+  assert updated.focused_sentence == Some(4)
+}
+
+pub fn update_paragraphs_measured_preserves_focused_sentence_when_it_stays_on_current_page_test() {
+  // Repagination that leaves the focused sentence on the visible
+  // page must not move the cursor. The re-anchor only fires when
+  // the focused sentence has shifted off `current_page`; an
+  // identity re-measure (or any pagination that lands the cursor
+  // on the same page index) should be a no-op for the cursor.
+  let text = eight_paragraph_text()
+  let heights = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let initial =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let #(measured, _) =
+    client.update(
+      initial,
+      ParagraphsMeasured(heights: heights, available_height: 200.0),
+    )
+  let prior = Model(..measured, current_page: 1, focused_sentence: Some(2))
+
+  // Re-measure with the same heights and budget.
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 200.0),
+    )
+
+  assert updated.current_page == 1
+  assert updated.focused_sentence == Some(2)
+}
+
+pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test() {
+  // Repagination with no vim cursor active must not introduce one.
+  // The re-anchor logic is gated on `focused_sentence: Some(_)` so
+  // a reader in touch-only mode stays in touch-only mode across a
+  // viewport resize.
+  let text = eight_paragraph_text()
+  let heights = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      current_page: 1,
+      focused_sentence: None,
+    )
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 400.0),
+    )
+
+  assert updated.focused_sentence == None
+}
+
 // ---------------------------------------------------------------------------
-// update — NextPage / PreviousPage
+// update — NextPage
 // ---------------------------------------------------------------------------
 
 pub fn update_next_page_advances_one_when_not_on_last_page_test() {
@@ -301,32 +454,6 @@ pub fn update_next_page_holds_on_last_page_test() {
   let #(updated, _effect) = client.update(prior, NextPage)
 
   assert updated.current_page == 1
-}
-
-pub fn update_previous_page_steps_back_when_not_on_first_page_test() {
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 1,
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated.current_page == 0
-}
-
-pub fn update_previous_page_holds_on_first_page_test() {
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 0,
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated.current_page == 0
 }
 
 pub fn update_next_page_holds_when_no_pages_yet_test() {
@@ -647,27 +774,6 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
   assert updated == Model(..prior, current_page: 1, undo_stack: [])
 }
 
-pub fn update_previous_page_also_clears_undo_stack_test() {
-  // Symmetry with `NextPage`: paging *backwards* also commits
-  // erases on the page being left, so the undo stack must clear in
-  // both directions. Without this, a reader who erased a sentence
-  // on page 2 and paged back to page 1 could undo a sentence from
-  // page 2 while reading page 1 — confusing at best, broken at
-  // worst.
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 1,
-      erased: set.from_list([4]),
-      undo_stack: [4],
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
-
-  assert updated == Model(..prior, current_page: 0, undo_stack: [])
-}
-
 pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
   // A reader on the last page has unfinished erase work and presses
   // ArrowRight (or swipes left) by reflex. `current_page` clamps to
@@ -684,24 +790,6 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
-
-  assert updated == prior
-}
-
-pub fn update_previous_page_at_first_page_preserves_undo_stack_test() {
-  // Mirror of the previous test for the page-0 boundary: an
-  // ArrowLeft at the start of the book must not destroy the undo
-  // stack either.
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 0,
-      erased: set.from_list([2]),
-      undo_stack: [2],
-    )
-
-  let #(updated, _effect) = client.update(prior, PreviousPage)
 
   assert updated == prior
 }
@@ -772,10 +860,10 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
 }
 
 pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
-  // A right swipe with a non-empty undo stack must call Undo, not
-  // PreviousPage. The reader has unfinished erase work on the
-  // current page — going back would commit it via the page
-  // boundary clear, which the user did not ask for.
+  // A right swipe with a non-empty undo stack must call Undo. The
+  // reader has unfinished erase work on the current page — losing
+  // it via any other backward action would not be what the user
+  // asked for.
   let prior =
     Model(
       ..empty_model(),
@@ -793,7 +881,9 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
     == Model(..prior, erased: set.new(), undo_stack: [], touch_start: None)
 }
 
-pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
+pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
+  // Swipe-right with an empty undo stack is a no-op — backward page
+  // navigation is disabled. The only effect is clearing `touch_start`.
   let prior =
     Model(
       ..empty_model(),
@@ -804,7 +894,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_goes_back_test() {
 
   let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
 
-  assert updated == Model(..prior, current_page: 0, touch_start: None)
+  assert updated == Model(..prior, touch_start: None)
 }
 
 pub fn update_touch_cancel_clears_stale_touch_start_test() {
@@ -1317,16 +1407,15 @@ pub fn update_focus_next_crosses_page_forward_test() {
   assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
 
-pub fn update_focus_previous_crosses_page_backward_test() {
-  // Mirror of forward: cursor at the first sentence of page 1
-  // (sentence 3); FocusPrevious moves the page back AND lands the
-  // cursor on the *last* non-erased sentence of page 0 (sentence 2),
-  // not the first — `h` consistently steps one sentence backward.
+pub fn update_focus_previous_at_page_start_stops_test() {
+  // `h` stops at the page boundary. Cursor at the first sentence of
+  // page 1 (sentence 3) — there is no previous sentence on page 1,
+  // so FocusPrevious is a no-op rather than crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
   let #(updated, _) = client.update(prior, FocusPrevious)
 
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+  assert updated == prior
 }
 
 pub fn update_focus_next_crossing_page_clears_undo_stack_test() {
@@ -1391,15 +1480,16 @@ pub fn update_focus_paragraph_up_lands_on_first_of_previous_test() {
   assert updated == Model(..prior, focused_sentence: Some(0))
 }
 
-pub fn update_focus_paragraph_up_crosses_page_test() {
-  // From the first paragraph of page 1, `k` crosses back to page 0
-  // and lands on the first sentence of paragraph 1 (the previous
-  // paragraph in document order).
+pub fn update_focus_paragraph_up_at_page_start_stops_test() {
+  // `k` stops at the page boundary. Cursor at the first paragraph of
+  // page 1 (sentence 3 in paragraph 2) — there is no earlier
+  // paragraph on page 1, so FocusParagraphUp is a no-op rather than
+  // crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
   let #(updated, _) = client.update(prior, FocusParagraphUp)
 
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(2))
+  assert updated == prior
 }
 
 pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
@@ -1561,17 +1651,6 @@ pub fn update_next_page_keeps_dormant_cursor_dormant_test() {
   let #(updated, _) = client.update(prior, NextPage)
 
   assert updated == Model(..prior, current_page: 1)
-}
-
-pub fn update_previous_page_resets_cursor_when_vim_mode_active_test() {
-  // Mirror of next-page: PreviousPage in vim mode lands the cursor
-  // on the first non-erased sentence of the previous page (sentence
-  // 0), regardless of where the cursor was before.
-  let prior = Model(..vim_model_on_page(1), focused_sentence: Some(4))
-
-  let #(updated, _) = client.update(prior, PreviousPage)
-
-  assert updated == Model(..prior, current_page: 0, focused_sentence: Some(0))
 }
 
 // ---------------------------------------------------------------------------

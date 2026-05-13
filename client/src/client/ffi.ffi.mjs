@@ -87,20 +87,17 @@ export function on_resize(callback) {
 }
 
 /**
- * Installs a `keydown` listener for `ArrowLeft` and `ArrowRight`.
+ * Installs a `keydown` listener for `ArrowRight`. `ArrowLeft` is
+ * intentionally omitted — backward page navigation is disabled.
  * `preventDefault()` suppresses the browser's default scroll-by-line
- * behaviour so arrow key presses turn pages rather than also scrolling
+ * behaviour so the arrow key turns the page rather than also scrolling
  * the viewport.
  *
- * @param {function(): void} previous_callback Fired on `ArrowLeft`.
  * @param {function(): void} next_callback Fired on `ArrowRight`.
  */
-export function on_arrow_key(previous_callback, next_callback) {
+export function on_arrow_key(next_callback) {
   window.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      previous_callback();
-    } else if (event.key === "ArrowRight") {
+    if (event.key === "ArrowRight") {
       event.preventDefault();
       next_callback();
     }

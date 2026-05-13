@@ -21,9 +21,9 @@
 ////    in-progress reader does not slide off the new last page after
 ////    a resize.
 ////
-//// Keyboard navigation (`ArrowLeft`/`ArrowRight`) and `resize` are
-//// both wired through `client/ffi.gleam`. `resize` is debounced in
-//// the FFI so a continuous drag does not flood the update loop.
+//// Keyboard navigation (`ArrowRight`) and `resize` are both wired
+//// through `client/ffi.gleam`. `resize` is debounced in the FFI so
+//// a continuous drag does not flood the update loop.
 ////
 //// **Reader settings** are kept in-memory on the `Model` (no
 //// persistence today). The view tree stays free of theme/setting
@@ -162,8 +162,8 @@ const body_class_reduced_motion: String = "vi-reduced-motion"
 ///   both `ParagraphsMeasured` (to feed `calculate_pages`) and
 ///   `view_paginated` (to populate the off-screen measurement
 ///   container). Recomputing it per render would walk the whole
-///   `SegmentedText` on every `NextPage` / `PreviousPage` keystroke
-///   for no semantic reason.
+///   `SegmentedText` on every `NextPage` keystroke for no semantic
+///   reason.
 /// * `pages` — pre-calculated page boundaries. Empty between
 ///   `TextLoaded` and the first `ParagraphsMeasured`, and during a
 ///   resize while measurement is in flight.
@@ -250,15 +250,10 @@ pub type Msg {
   /// into.
   ParagraphsMeasured(heights: List(#(Int, Float)), available_height: Float)
 
-  /// Reader requested the next page (button, `ArrowRight`, or
-  /// swipe-left gesture). Clears the undo stack — erases on the
-  /// page being left commit.
+  /// Reader requested the next page (`ArrowRight` or swipe-left
+  /// gesture). Clears the undo stack — erases on the page being
+  /// left commit.
   NextPage
-
-  /// Reader requested the previous page (button, `ArrowLeft`, or a
-  /// swipe-right gesture with an empty undo stack). Clears the undo
-  /// stack so undo never crosses a page boundary backwards either.
-  PreviousPage
 
   /// Debounced `window.resize` fired. The handler re-runs the
   /// measurement effect — paragraph heights change with viewport
@@ -298,13 +293,12 @@ pub type Msg {
   TouchCancel
 
   /// Reader pressed `h` — move the keyboard cursor to the previous
-  /// non-erased sentence. Crosses page boundaries: when the cursor
-  /// sits on the first non-erased sentence of the current page,
-  /// `FocusPrevious` navigates to the previous page and lands the
-  /// cursor on its last non-erased sentence. A no-op at the start
-  /// of the document. When `focused_sentence` is `None`, the cursor
-  /// initialises to the first non-erased sentence on the current
-  /// page rather than moving — the first press wakes the cursor up.
+  /// non-erased sentence on the current page. Stops at the page
+  /// boundary: when the cursor is on the first non-erased sentence
+  /// of the current page, `FocusPrevious` is a no-op. A no-op when
+  /// `focused_sentence` is `None` — the first press wakes the cursor
+  /// rather than moving it (initialises to the first non-erased
+  /// sentence on the current page).
   FocusPrevious
 
   /// Reader pressed `l` — move the keyboard cursor to the next
@@ -314,11 +308,10 @@ pub type Msg {
   FocusNext
 
   /// Reader pressed `k` — move the keyboard cursor to the first
-  /// non-erased sentence of the previous paragraph. Fully-erased
-  /// paragraphs between the cursor's current paragraph and the
-  /// target are skipped so the cursor cannot stall on a paragraph
-  /// with no visible text. Crosses page boundaries. A no-op at the
-  /// start of the document. Initialises focus on first press.
+  /// non-erased sentence of the previous paragraph on the current
+  /// page. Fully-erased paragraphs are skipped. Stops at the page
+  /// boundary: a no-op when the cursor is already on the first
+  /// paragraph of the current page. Initialises focus on first press.
   FocusParagraphUp
 
   /// Reader pressed `j` — move the keyboard cursor to the first
@@ -465,12 +458,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       ffi.on_resize(fn() { dispatch(ViewportResized) })
     })
   let arrow_listener =
-    effect.from(fn(dispatch) {
-      ffi.on_arrow_key(
-        previous_callback: fn() { dispatch(PreviousPage) },
-        next_callback: fn() { dispatch(NextPage) },
-      )
-    })
+    effect.from(fn(dispatch) { ffi.on_arrow_key(fn() { dispatch(NextPage) }) })
   let undo_listener =
     effect.from(fn(dispatch) { ffi.on_undo_key(fn() { dispatch(Undo) }) })
   let vim_listener =
@@ -509,9 +497,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 ///    - `Tap` — no-op; sentence erasure flows through the synthesised
 ///      `click` event on the `.sentence` span.
 ///    - `SwipeLeft` — `NextPage`.
-///    - `SwipeRight` with a non-empty undo stack — `Undo` first so a
-///      right-swipe reverses the most recent erase before backing up.
-///    - `SwipeRight` with an empty undo stack — `PreviousPage`.
+///    - `SwipeRight` — `Undo` the most recent erase. A no-op when
+///      the undo stack is empty (no backward page navigation).
 /// 3. `TouchCancel` clears `touch_start` without routing anything,
 ///    preventing the stale start coordinates from corrupting the next
 ///    `touchend` classification.
@@ -544,12 +531,45 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
       let total = list.length(pages)
       let clamped = pagination.clamp_page_index(model.current_page, total)
-      #(Model(..model, pages: pages, current_page: clamped), effect.none())
+      // Re-anchor `focused_sentence` if pagination shifted it off the
+      // visible page. Without this, a viewport change can leave the
+      // vim cursor on a sentence whose `page_index` differs from
+      // `clamped`; the next vim keypress would then call `change_page`
+      // with that off-screen target, bypassing the forward-only guard
+      // in `go_to_page` and dragging `current_page` backward — the
+      // exact regression this PR exists to close. Re-anchoring to the
+      // first non-erased sentence on `clamped` keeps the cursor on
+      // the page the reader is actually looking at.
+      let focused = case model.focused_sentence {
+        None -> None
+        Some(sentence_index) -> {
+          let locations = navigation.locate_sentences(pages)
+          let on_current_page =
+            locations
+            |> list.any(fn(loc) {
+              loc.sentence_global_index == sentence_index
+              && loc.page_index == clamped
+            })
+          case on_current_page {
+            True -> Some(sentence_index)
+            False ->
+              navigation.first_on_page(locations, clamped, model.erased)
+              |> option.map(fn(loc) { loc.sentence_global_index })
+          }
+        }
+      }
+      #(
+        Model(
+          ..model,
+          pages: pages,
+          current_page: clamped,
+          focused_sentence: focused,
+        ),
+        effect.none(),
+      )
     }
 
     NextPage -> #(go_to_page(model, model.current_page + 1), effect.none())
-
-    PreviousPage -> #(go_to_page(model, model.current_page - 1), effect.none())
 
     ViewportResized -> #(model, measure_after_paint())
 
@@ -750,11 +770,7 @@ fn apply_touch_end(model: Model, x: Float, y: Float) -> Model {
       case gestures.classify(start_x, start_y, x, y) {
         gestures.Tap -> cleared
         gestures.SwipeLeft -> go_to_page(cleared, cleared.current_page + 1)
-        gestures.SwipeRight ->
-          case cleared.undo_stack {
-            [] -> go_to_page(cleared, cleared.current_page - 1)
-            _ -> apply_undo(cleared)
-          }
+        gestures.SwipeRight -> apply_undo(cleared)
       }
   }
 }
@@ -899,39 +915,43 @@ fn initialise_focus(
 }
 
 /// Move the reader to `candidate` after clamping to the current
-/// `pages` range. Clears `undo_stack` only when `clamped` differs
-/// from `current_page` — a real page change commits every erase
-/// that has not yet been undone, but a clamp-to-self (ArrowRight on
-/// the last page, ArrowLeft on the first) must leave the undo stack
-/// intact so a reader's stray reflex tap does not silently destroy
-/// erases that were undoable a moment earlier.
+/// `pages` range. Rejects any `candidate` less than `current_page`
+/// — backward page navigation is disabled; only forward movement is
+/// permitted. Clears `undo_stack` only when `clamped` differs from
+/// `current_page` — a real page change commits every erase that has
+/// not yet been undone, but a clamp-to-self (ArrowRight on the last
+/// page) must leave the undo stack intact so a reader's stray reflex
+/// tap does not silently destroy undoable erases.
 ///
-/// Used by `NextPage`/`PreviousPage`/swipes — input modes where
-/// the reader is paging through the book on their own. When
-/// `focused_sentence` is `Some(_)` (i.e. the reader is in vim
-/// mode) and the page actually changes, the cursor resets to the
-/// first non-erased sentence on the new page so the reader has
-/// somewhere to start on the fresh page. Vim-key navigation
-/// bypasses this helper through `change_page`/`move_focus`
-/// because the navigation module decides exactly where the cursor
-/// should land.
+/// Used by `NextPage`/swipes — input modes where the reader pages
+/// forward through the book. When `focused_sentence` is `Some(_)`
+/// (i.e. the reader is in vim mode) and the page actually changes,
+/// the cursor resets to the first non-erased sentence on the new
+/// page. Vim-key navigation bypasses this helper through
+/// `change_page`/`move_focus` because the navigation module decides
+/// exactly where the cursor should land.
 fn go_to_page(model: Model, candidate: Int) -> Model {
-  let after = change_page(model, candidate)
-  let focused = case after.current_page == model.current_page {
-    True -> model.focused_sentence
-    False ->
-      case model.focused_sentence {
-        None -> None
-        Some(_) ->
-          navigation.first_on_page(
-            navigation.locate_sentences(after.pages),
-            after.current_page,
-            after.erased,
-          )
-          |> option.map(fn(loc) { loc.sentence_global_index })
+  case candidate < model.current_page {
+    True -> model
+    False -> {
+      let after = change_page(model, candidate)
+      let focused = case after.current_page == model.current_page {
+        True -> model.focused_sentence
+        False ->
+          case model.focused_sentence {
+            None -> None
+            Some(_) ->
+              navigation.first_on_page(
+                navigation.locate_sentences(after.pages),
+                after.current_page,
+                after.erased,
+              )
+              |> option.map(fn(loc) { loc.sentence_global_index })
+          }
       }
+      Model(..after, focused_sentence: focused)
+    }
   }
-  Model(..after, focused_sentence: focused)
 }
 
 /// Lower-level page change: clamps `candidate` into the valid
