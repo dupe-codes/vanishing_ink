@@ -14,6 +14,18 @@ runtime = "nodejs"
 # `lustre_http` ships a stdlib-compatible release or the first quest that
 # actually needs HTTP calls from the client lands and can justify the
 # downgrade trade-off.
+#
+# Real-time fade engine deviation: the fade-engine quest also named
+# `lustre_animation`, but Lustre's animation crate posts the `setTimeout`
+# id back to Gleam via a follow-up microtask. That microtask lag leaves a
+# cancellation gap — a `PauseFade` reducer arm dispatched between the
+# `effect.from` running and the timer-id arriving has nothing to cancel,
+# so a stray AdvanceWord can fire after the pause. The engine instead
+# uses a hand-rolled single-slot FFI timer (`start_word_timer` /
+# `clear_word_timer` in `client/ffi.ffi.mjs`) that returns the id
+# synchronously and clears it synchronously, closing the race. See the
+# `apply_advance_word` header comment in `client.gleam` for the
+# state-machine context.
 [dependencies]
 gleam_stdlib = ">= 0.60.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
