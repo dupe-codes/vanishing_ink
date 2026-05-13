@@ -503,7 +503,7 @@ fn get_book_settings_handler(ctx: Context, id: String) -> Response {
         // regardless of whether the row exists yet.
         Ok(None) -> {
           let body =
-            types.book_settings_to_json(empty_book_settings())
+            types.book_settings_to_json(types.empty_book_settings())
             |> json.to_string
           wisp.json_response(body, 200)
         }
@@ -549,15 +549,6 @@ fn put_book_settings_handler(
           }
       }
   }
-}
-
-fn empty_book_settings() -> BookSettings {
-  BookSettings(
-    wpm: None,
-    paragraph_delay_ms: None,
-    page_delay_ms: None,
-    ghost_opacity: None,
-  )
 }
 
 fn book_settings_decoder() -> decode.Decoder(BookSettings) {

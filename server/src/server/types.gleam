@@ -6,7 +6,7 @@
 
 import gleam/bit_array
 import gleam/json
-import gleam/option.{type Option}
+import gleam/option.{type Option, None}
 import shared
 
 /// Lightweight book record used by list views: no raw text and no
@@ -74,6 +74,23 @@ pub type BookSettings {
     paragraph_delay_ms: Option(Int),
     page_delay_ms: Option(Int),
     ghost_opacity: Option(Float),
+  )
+}
+
+/// All-`None` `BookSettings` — the canonical "no overrides for this
+/// book" record. Returned by the router as the synthesised body when
+/// `book_settings` has no row for the requested id, used as the
+/// neutral starting point for partial-update synthesis, and reused by
+/// the test suite as the all-null reset baseline. Centralised here
+/// so the empty shape has one source of truth across router + tests
+/// (the client mirrors the same constant in `client.gleam` because
+/// the type lives on the BEAM only).
+pub fn empty_book_settings() -> BookSettings {
+  BookSettings(
+    wpm: None,
+    paragraph_delay_ms: None,
+    page_delay_ms: None,
+    ghost_opacity: None,
   )
 }
 

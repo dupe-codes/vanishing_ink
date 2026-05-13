@@ -832,7 +832,7 @@ pub fn book_settings_get_for_unwritten_book_returns_all_null_test() {
   // No row → an all-null record so the client can decode with a single
   // shape regardless of whether the book has overrides yet.
   let decoded = decode_body(response, book_settings_wire_decoder())
-  assert decoded == empty_book_settings()
+  assert decoded == types.empty_book_settings()
 }
 
 pub fn book_settings_get_for_missing_book_is_404_test() {
@@ -844,7 +844,7 @@ pub fn book_settings_get_for_missing_book_is_404_test() {
 
 pub fn book_settings_put_for_missing_book_is_404_test() {
   use ctx <- with_context
-  let body = book_settings_to_json(empty_book_settings())
+  let body = book_settings_to_json(types.empty_book_settings())
   let response =
     simulate.browser_request(http.Put, "/api/books/no-such-book/settings")
     |> simulate.json_body(body)
@@ -891,42 +891,42 @@ pub fn book_settings_put_clears_overrides_with_all_null_test() {
 
   // …then clear them.
   let cleared_response =
-    http_put_book_settings(ctx, created.book.id, empty_book_settings())
+    http_put_book_settings(ctx, created.book.id, types.empty_book_settings())
   assert cleared_response.status == 200
   assert decode_body(cleared_response, book_settings_wire_decoder())
-    == empty_book_settings()
+    == types.empty_book_settings()
 
   // GET must reflect the cleared state — INSERT OR REPLACE keeps the
   // row but every column is now SQL NULL, so the wire form is the
   // all-null record.
   let get_response = http_get_book_settings(ctx, created.book.id)
   assert decode_body(get_response, book_settings_wire_decoder())
-    == empty_book_settings()
+    == types.empty_book_settings()
 }
 
 pub fn book_settings_put_rejects_out_of_range_values_test() {
   use ctx <- with_context
   let created = http_create_book(ctx, "Title", None, sample_text)
   let cases = [
-    #("wpm", BookSettings(..empty_book_settings(), wpm: Some(0)), "wpm"),
+    #("wpm", BookSettings(..types.empty_book_settings(), wpm: Some(0)), "wpm"),
     #(
       "paragraph_delay_ms",
-      BookSettings(..empty_book_settings(), paragraph_delay_ms: Some(-5)),
+      BookSettings(..types.empty_book_settings(), paragraph_delay_ms: Some(-5)),
       "paragraph_delay_ms",
     ),
     #(
       "page_delay_ms",
-      BookSettings(..empty_book_settings(), page_delay_ms: Some(-1)),
+      BookSettings(..types.empty_book_settings(), page_delay_ms: Some(-1)),
       "page_delay_ms",
     ),
     #(
       "ghost_opacity_high",
-      BookSettings(..empty_book_settings(), ghost_opacity: Some(1.5)),
+      BookSettings(..types.empty_book_settings(), ghost_opacity: Some(1.5)),
       "ghost_opacity",
     ),
     #(
       "ghost_opacity_low",
-      BookSettings(..empty_book_settings(), ghost_opacity: Some(-0.2)),
+      BookSettings(..types.empty_book_settings(), ghost_opacity: Some(-0.2)),
       "ghost_opacity",
     ),
   ]
@@ -940,7 +940,7 @@ pub fn book_settings_put_rejects_out_of_range_values_test() {
   // the all-null default.
   let get_response = http_get_book_settings(ctx, created.book.id)
   assert decode_body(get_response, book_settings_wire_decoder())
-    == empty_book_settings()
+    == types.empty_book_settings()
 }
 
 pub fn book_settings_put_accepts_partial_overrides_test() {
@@ -1036,15 +1036,6 @@ fn http_put_book_settings(
   simulate.browser_request(http.Put, "/api/books/" <> id <> "/settings")
   |> simulate.json_body(book_settings_to_json(settings))
   |> router.handle_request(ctx)
-}
-
-fn empty_book_settings() -> BookSettings {
-  BookSettings(
-    wpm: None,
-    paragraph_delay_ms: None,
-    page_delay_ms: None,
-    ghost_opacity: None,
-  )
 }
 
 fn book_settings_wire_decoder() -> decode.Decoder(BookSettings) {
