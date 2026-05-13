@@ -1179,36 +1179,87 @@ fn first_eligible_word_on_current_page(model: Model) -> Option(WordContext) {
 /// alongside a `Bool` that's `True` when the next word lives in a
 /// different paragraph than the just-faded word — the caller uses
 /// that flag to add the inter-paragraph delay to the schedule.
+///
+/// Implemented as a single forward scan over `page_word_contexts`:
+/// the previous two-pass form (one `list.find` to resolve
+/// `current_paragraph`, then a `drop_through_word` + second
+/// `list.find` to skip past `current_idx`) walked the list twice
+/// per tick — ~400 list-element visits at 200-word pages and
+/// 200 WPM. The fused scan captures the current word's paragraph
+/// when it passes through it and continues looking for the next
+/// eligible word in the same traversal.
 fn next_eligible_after(
   model: Model,
   current_idx: Int,
 ) -> Option(#(WordContext, Bool)) {
   case pagination.nth(model.pages, model.current_page) {
     None -> None
-    Some(page) -> {
-      let contexts = page_word_contexts(page)
-      let current_paragraph = case
-        list.find(contexts, fn(ctx) { ctx.word_global_index == current_idx })
-      {
-        Ok(ctx) -> ctx.paragraph_global_index
-        // The current word lives on this page in practice — it was
-        // just faded one tick ago. Fall back to a sentinel that no
-        // real `global_index` can match so the very-next eligible
-        // word is reported as crossing a paragraph boundary;
-        // worst-case behaviour is an unnecessary paragraph delay
-        // on one tick, never silent data loss.
-        Error(_) -> -1
+    Some(page) ->
+      scan_for_next_eligible(
+        page_word_contexts(page),
+        current_idx,
+        None,
+        model.erased_words,
+        model.erased,
+      )
+  }
+}
+
+/// Tail-recursive helper for `next_eligible_after`. `current_paragraph`
+/// carries the just-faded word's paragraph index once the scan has
+/// passed it, and stays `None` until then. The arm split is therefore
+/// "before / at / after the current word":
+///
+/// * `None` + non-match → keep walking, current word not yet seen.
+/// * `None` + match → capture this element's paragraph and skip it.
+/// * `Some(_)` + visible → return as the next eligible target along
+///   with the crosses-paragraph flag.
+/// * `Some(_)` + erased → keep walking.
+///
+/// If the scan exhausts the list without ever finding `current_idx`,
+/// the result is `None` — the caller treats that as a "page
+/// exhausted" signal and walks forward to the next page.
+fn scan_for_next_eligible(
+  contexts: List(WordContext),
+  current_idx: Int,
+  current_paragraph: Option(Int),
+  erased_words: Set(Int),
+  erased_sentences: Set(Int),
+) -> Option(#(WordContext, Bool)) {
+  case contexts, current_paragraph {
+    [], _ -> None
+    [ctx, ..rest], None ->
+      case ctx.word_global_index == current_idx {
+        True ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            Some(ctx.paragraph_global_index),
+            erased_words,
+            erased_sentences,
+          )
+        False ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            None,
+            erased_words,
+            erased_sentences,
+          )
       }
-      contexts
-      |> drop_through_word(current_idx)
-      |> list.find(fn(ctx) {
-        is_word_visible(ctx, model.erased_words, model.erased)
-      })
-      |> option.from_result
-      |> option.map(fn(ctx) {
-        #(ctx, ctx.paragraph_global_index != current_paragraph)
-      })
-    }
+    [ctx, ..rest], Some(captured_paragraph) ->
+      case is_word_visible(ctx, erased_words, erased_sentences) {
+        True ->
+          Some(#(ctx, ctx.paragraph_global_index != captured_paragraph))
+        False ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            Some(captured_paragraph),
+            erased_words,
+            erased_sentences,
+          )
+      }
   }
 }
 
@@ -1231,26 +1282,6 @@ fn page_word_contexts(page: Page) -> List(WordContext) {
       })
     })
   })
-}
-
-/// Drop list elements up to and including the first one whose
-/// `word_global_index` equals `word_idx`. Returns the tail
-/// starting from the element *after* the match — the fade
-/// engine's "next word" search consumes this tail. Returns `[]`
-/// when no element matches; that's the correct empty-tail
-/// answer for "no word after the current position".
-fn drop_through_word(
-  contexts: List(WordContext),
-  word_idx: Int,
-) -> List(WordContext) {
-  case contexts {
-    [] -> []
-    [ctx, ..rest] ->
-      case ctx.word_global_index == word_idx {
-        True -> rest
-        False -> drop_through_word(rest, word_idx)
-      }
-  }
 }
 
 /// A word is visible when neither its own bitset entry nor its
