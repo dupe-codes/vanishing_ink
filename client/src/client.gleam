@@ -734,11 +734,14 @@ pub type Msg {
   /// skeleton state.
   BooksLoaded(Result(List(BookMeta), ffi.FetchError))
 
-  /// `GET /api/books/:id` resolved. The success arm reuses the
-  /// existing `TextLoaded` reducer body (re-segmenting state,
-  /// flat-paragraph cache, total counts) so the reader bootstraps
-  /// the same way it did from the bundled sample. The error arm
-  /// flips the view back to `Library` and stores the message in
+  /// `GET /api/books/:id` resolved. The success arm routes through
+  /// `apply_book_loaded`, which delegates the per-text reset
+  /// (segmented payload, flat-paragraph cache, totals, per-book
+  /// scratch bitsets) to the shared `apply_text_load` helper that
+  /// `TextLoaded` also calls, then layers on the library
+  /// bookkeeping fields (view flip to `Reader`, `active_book_id`,
+  /// `library_error: None`, engine reset). The error arm flips the
+  /// view back to `Library` and stores the message in
   /// `library_error` so the reader sees what went wrong.
   BookLoaded(Result(#(BookMeta, SegmentedText), ffi.FetchError))
 
@@ -943,34 +946,14 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 ///    `touchend` classification.
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> {
-      let #(sentences, words) = total_counts(text)
-      // `pages` is reset to `[]` here, so the cached chapter title
-      // is empty until `ParagraphsMeasured` lands the first page
-      // list. Setting it explicitly (rather than leaving the prior
-      // value in place) avoids the cache lagging across a fresh
-      // book load — the header would otherwise briefly carry the
-      // previous book's title.
-      #(
-        Model(
-          ..model,
-          text: Some(text),
-          flat_paragraphs: pagination.flatten(text),
-          pages: [],
-          current_page: 0,
-          erased: set.new(),
-          undo_stack: [],
-          touch_start: None,
-          focused_sentence: None,
-          line_boxes: [],
-          active_line: None,
-          total_sentence_count: sentences,
-          total_word_count: words,
-          current_chapter_title: "",
-        ),
-        measure_after_paint(),
-      )
-    }
+    TextLoaded(text) ->
+      // `pages` is reset to `[]` by `apply_text_load`, so the cached
+      // chapter title is empty until `ParagraphsMeasured` lands the
+      // first page list. Resetting it explicitly (rather than
+      // leaving the prior value in place) avoids the cache lagging
+      // across a fresh book load — the header would otherwise
+      // briefly carry the previous book's title.
+      #(apply_text_load(model, text), measure_after_paint())
 
     ParagraphsMeasured(heights, available_height) -> {
       let pages = case model.text {
@@ -1263,41 +1246,62 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 // update — library / book navigation helpers
 // ---------------------------------------------------------------------------
 
-/// Stamp a freshly-fetched book onto the reader state. Mirrors the
-/// `TextLoaded` arm field-for-field — flat-paragraph cache reset,
-/// pagination cleared, erasures reset, total counts cached — but
-/// also records the active book id and clears any stale
-/// `library_error`. The follow-up `ParagraphsMeasured` from the
-/// `measure_after_paint` effect is what fills `pages` in.
+/// Stamp a freshly-fetched book onto the reader state. Delegates
+/// every per-text field reset to `apply_text_load` and layers on the
+/// library-bookkeeping fields the test-only `TextLoaded` entry point
+/// has no opinion on: flip the view to `Reader`, record the active
+/// book id, clear any stale `library_error`, and force the fade
+/// engine back to its rest state so a previous book's
+/// `Running`/`Paused` cursor cannot follow into the new book. The
+/// follow-up `ParagraphsMeasured` from the `measure_after_paint`
+/// effect is what fills `pages` in.
 fn apply_book_loaded(
   model: Model,
   meta: BookMeta,
   text: SegmentedText,
 ) -> #(Model, Effect(Msg)) {
-  let #(sentences, words) = total_counts(text)
+  let loaded = apply_text_load(model, text)
   #(
     Model(
-      ..model,
+      ..loaded,
       view: Reader,
-      text: Some(text),
-      flat_paragraphs: pagination.flatten(text),
-      pages: [],
-      current_page: 0,
-      erased: set.new(),
-      undo_stack: [],
-      touch_start: None,
-      focused_sentence: None,
-      line_boxes: [],
-      active_line: None,
-      total_sentence_count: sentences,
-      total_word_count: words,
-      current_chapter_title: "",
       active_book_id: Some(meta.id),
       library_error: None,
       engine_state: Stopped,
       next_word_index: None,
     ),
     measure_after_paint(),
+  )
+}
+
+/// Per-text reset surface shared by `TextLoaded` and
+/// `apply_book_loaded`. Every field cleared / refreshed here is part
+/// of "the book the reader is currently reading" — the segmented
+/// payload, the flat-paragraph cache that view + pagination read,
+/// the paginated state (`pages` / `current_page`), every per-book
+/// scratch field (`erased` sentence bitset, `erased_words` word
+/// bitset, undo stack, touch origin, vim focus, measured line
+/// boxes, active-line index), and the cached totals + chapter
+/// title. Callers layer on view / library bookkeeping on top of the
+/// returned `Model`.
+fn apply_text_load(model: Model, text: SegmentedText) -> Model {
+  let #(sentences, words) = total_counts(text)
+  Model(
+    ..model,
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: [],
+    current_page: 0,
+    erased: set.new(),
+    erased_words: set.new(),
+    undo_stack: [],
+    touch_start: None,
+    focused_sentence: None,
+    line_boxes: [],
+    active_line: None,
+    total_sentence_count: sentences,
+    total_word_count: words,
+    current_chapter_title: "",
   )
 }
 
