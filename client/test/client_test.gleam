@@ -3526,6 +3526,39 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
   assert string.contains(rendered, "style=\"width:40.0%;\"")
 }
 
+pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
+  // ARIA progressbar semantics let screen reader users hear where
+  // they are in the book — the app's central affordance. The track
+  // div must carry `role="progressbar"`, the `aria-valuemin` /
+  // `aria-valuemax` bounds, an integer `aria-valuenow` rounded
+  // from the inline-style float, and a human label. The same
+  // 33.3% scenario as the manual-mode rendering test (one of three
+  // sentences erased) rounds to a whole-percent `aria-valuenow`
+  // of `33`. The substring assertions match the rendered attribute
+  // form rather than encoding a particular Lustre attribute order.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      mode: Manual,
+      total_sentence_count: 3,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "role=\"progressbar\"")
+  assert string.contains(rendered, "aria-valuemin=\"0\"")
+  assert string.contains(rendered, "aria-valuemax=\"100\"")
+  assert string.contains(rendered, "aria-valuenow=\"33\"")
+  assert string.contains(rendered, "aria-label=\"Reading progress\"")
+}
+
 pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
   // Manual mode bottom bar: undo button, page label, turn-page
   // button. The realtime bottom-bar classes must be entirely

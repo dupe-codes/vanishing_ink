@@ -2051,16 +2051,34 @@ fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
 fn view_progress_bar(model: Model) -> Element(Msg) {
   let percent = progress_percentage(model)
   let width_value = float.to_string(percent) <> "%"
-  html.div([attribute.class("reader-progress-track")], [
-    html.div(
-      [
-        attribute.class("reader-progress-fill"),
-        attribute.style("width", width_value),
-        attribute.attribute("aria-hidden", "true"),
-      ],
-      [],
-    ),
-  ])
+  // ARIA progressbar semantics let screen reader users hear where
+  // they are in the book — the app's central affordance. The
+  // `aria-valuenow` is rounded to the nearest whole percent so the
+  // announcement reads cleanly ("forty-two percent") rather than
+  // dictating the float's decimal tail. The fill div carries
+  // `aria-hidden="true"` because its inline `width` style is purely
+  // visual; the role/values on the track already convey the state.
+  let value_now = int.to_string(float.round(percent))
+  html.div(
+    [
+      attribute.class("reader-progress-track"),
+      attribute.role("progressbar"),
+      attribute.attribute("aria-valuemin", "0"),
+      attribute.attribute("aria-valuemax", "100"),
+      attribute.attribute("aria-valuenow", value_now),
+      attribute.attribute("aria-label", "Reading progress"),
+    ],
+    [
+      html.div(
+        [
+          attribute.class("reader-progress-fill"),
+          attribute.style("width", width_value),
+          attribute.attribute("aria-hidden", "true"),
+        ],
+        [],
+      ),
+    ],
+  )
 }
 
 /// Reading progress as a percentage, rounded to one decimal place.
