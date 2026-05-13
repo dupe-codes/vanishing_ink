@@ -877,7 +877,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           line_boxes: [],
           active_line: None,
           current_chapter_title: chapter_title,
-          total_pages: list.length(pages),
+          total_pages: total,
         ),
         // Pagination ran — chain a line measurement so the active-line
         // overlay re-anchors to the post-repagination geometry. The
