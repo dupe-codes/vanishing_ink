@@ -811,6 +811,18 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           pages: pages,
           current_page: clamped,
           focused_sentence: focused,
+          // Re-pagination invalidates the cached line geometry: the
+          // new `pages` may wrap differently and the previous
+          // `line_boxes` no longer describe what the view is about
+          // to render. Clear both fields synchronously in the same
+          // model update that schedules the re-measure so the view
+          // never paints the new page against stale overlay
+          // coordinates — without this, the 250ms `top` transition
+          // glides the overlay from the old position to the new one
+          // once `LinesMeasured` lands, which reads as drift on a
+          // settings-slider drag where each tick re-paginates.
+          line_boxes: [],
+          active_line: None,
         ),
         // Pagination ran — chain a line measurement so the active-line
         // overlay re-anchors to the post-repagination geometry. The
@@ -832,15 +844,24 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     NextPage -> {
       let updated = go_to_page(model, model.current_page + 1)
-      let effect = case updated.current_page == model.current_page {
+      case updated.current_page == model.current_page {
         // A no-op page turn (already on the last page) doesn't change
         // the rendered DOM, so re-measuring would only churn the
         // overlay position without effect. Skipping the measurement
         // here also keeps the no-page-change test pin in place.
-        True -> effect.none()
-        False -> measure_lines_after_paint()
+        True -> #(updated, effect.none())
+        // A real page turn invalidates the cached line geometry. Clear
+        // `line_boxes` and `active_line` synchronously in the same
+        // model update that schedules the re-measure — otherwise the
+        // view paints the new page with the old overlay coordinates
+        // and the 250ms `top` CSS transition glides the band into
+        // place once `LinesMeasured` lands. The cleared state mirrors
+        // the engine's own cross-page tick in `advance_to_next_page_loop`.
+        False -> #(
+          Model(..updated, line_boxes: [], active_line: None),
+          measure_lines_after_paint(),
+        )
       }
-      #(updated, effect)
     }
 
     ViewportResized -> #(model, measure_after_paint())

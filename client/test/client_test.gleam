@@ -395,6 +395,50 @@ pub fn update_paragraphs_measured_preserves_focused_sentence_when_it_stays_on_cu
   assert updated.focused_sentence == Some(2)
 }
 
+pub fn update_paragraphs_measured_clears_line_boxes_and_active_line_test() {
+  // Re-pagination (font-size / line-spacing slider tick, dyslexia
+  // toggle, viewport resize) reflows the page — the cached
+  // `line_boxes` no longer describe what is about to render.
+  // Without a synchronous clear in the same Model update that
+  // schedules `measure_lines_after_paint`, the in-between frame
+  // paints the new page geometry against the previous layout's
+  // overlay coordinates, which the 250ms `top` transition then
+  // visibly glides home. Pinning the cleared fields catches a
+  // regression that, for example, returns the new pagination
+  // alongside the old `line_boxes` and active line.
+  let text = eight_paragraph_text()
+  let heights = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 400.0),
+    )
+
+  assert updated.line_boxes == []
+  assert updated.active_line == None
+}
+
 pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test() {
   // Repagination with no vim cursor active must not introduce one.
   // The re-anchor logic is gated on `focused_sentence: Some(_)` so
@@ -476,6 +520,63 @@ pub fn update_next_page_holds_when_no_pages_yet_test() {
   let #(updated, _effect) = client.update(prior, NextPage)
 
   assert updated.current_page == 0
+}
+
+pub fn update_next_page_clears_line_boxes_and_active_line_on_real_turn_test() {
+  // Manual ArrowRight / SwipeLeft during a RealTime run: the
+  // outgoing model carries `line_boxes` and `active_line` from the
+  // previous page. Without a synchronous clear in the same Model
+  // update that schedules the re-measure, the view re-renders the
+  // new page against the old overlay coordinates — the 250ms `top`
+  // CSS transition then visibly glides the band into place once
+  // `LinesMeasured` lands. Pinning that both fields land cleared
+  // in `updated` (not just after the chained measurement) closes
+  // the one-paint-stale gap.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [
+        Page(index: 0, paragraphs: []),
+        Page(index: 1, paragraphs: []),
+      ],
+      current_page: 0,
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 1
+  assert updated.line_boxes == []
+  assert updated.active_line == None
+}
+
+pub fn update_next_page_preserves_line_boxes_on_no_op_turn_test() {
+  // The no-op last-page case (already on the final page) must not
+  // disturb `line_boxes` / `active_line`. The DOM hasn't changed,
+  // the overlay is still valid, and clearing here would cause a
+  // single-frame disappearance of the highlight every time the
+  // reader hit ArrowRight at the end of the book.
+  let prior =
+    Model(
+      ..empty_model(),
+      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
+      current_page: 1,
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 1
+  assert updated.line_boxes == fade_line_boxes()
+  assert updated.active_line == Some(0)
 }
 
 // ---------------------------------------------------------------------------
