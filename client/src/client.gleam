@@ -2310,11 +2310,14 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 /// * `Running` — render `⏸` with the default inverted background;
 ///   click dispatches `PauseFade`.
 ///
-/// `event.stop_propagation` keeps the click from bubbling up — the
-/// page-level tap handler routes taps in RealTime mode to
-/// pause/resume too, so without the guard a tap that landed on the
-/// button would fire the engine transition twice (once via the
-/// button click, once via the bubbled-up touch handler).
+/// No `event.stop_propagation` is required: the page-level touch
+/// handlers (`gestures.on_touch_*`) sit on `#vi-reading-area` /
+/// `.reader-page`, while this button lives inside
+/// `.reader-bottom-bar`. The two are *siblings* under
+/// `.reader-text`, not ancestor and descendant — DOM events bubble
+/// up through ancestors only, so a tap on the play button never
+/// reaches the reading-area touch handler and cannot fire the
+/// engine transition twice.
 fn view_bottom_realtime(model: Model) -> Element(Msg) {
   let #(button_label, button_class, play_msg) = case model.engine_state {
     Running -> #("⏸", "btn-play", PauseFade)
@@ -2331,7 +2334,7 @@ fn view_bottom_realtime(model: Model) -> Element(Msg) {
         attribute.class(button_class),
         attribute.type_("button"),
         attribute.aria_label("Play or pause reading"),
-        event.on_click(play_msg) |> event.stop_propagation,
+        event.on_click(play_msg),
       ],
       [html.text(button_label)],
     ),
