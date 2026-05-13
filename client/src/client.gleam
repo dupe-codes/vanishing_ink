@@ -1678,6 +1678,15 @@ fn fetch_book_settings(id: String) -> Effect(Msg) {
 /// surface a banner because settings saves race with rapid slider
 /// drags and a queued error toast would feel noisier than the bug
 /// it indicates.
+///
+/// ORDERING — rapid slider drags fire one PUT per `Set*` dispatch
+/// with no debounce and no sequence number. On a single HTTP/2
+/// connection these typically arrive in dispatch order, but the
+/// architecture does not enforce it: under packet reordering, a
+/// retried request, or a future multiplexed client, the last value
+/// on the server may not reflect the user's final intent.
+/// Acceptable for the MVP — a debounce or a monotonic request-id
+/// gate would pin the invariant if it ever matters.
 fn save_global_settings(settings: UserSettings) -> Effect(Msg) {
   let body =
     settings
@@ -1699,6 +1708,8 @@ fn save_global_settings(settings: UserSettings) -> Effect(Msg) {
 /// Persist the current per-book overrides via
 /// `PUT /api/books/:id/settings`. Same fire-and-forget shape as
 /// `save_global_settings`; the only failure surface is the console.
+/// The same lack-of-ordering caveat applies — see the ORDERING note
+/// on `save_global_settings`.
 fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
   let body =
     settings
