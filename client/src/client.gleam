@@ -1929,34 +1929,39 @@ fn view_paginated(model: Model) -> Element(Msg) {
   ])
 }
 
-/// Sticky top chrome row. Three slots: back glyph (left), book title
-/// (centre, ellipsised), settings gear (right). The back button
+/// Sticky top chrome row. Three slots: back glyph (left), chapter
+/// title (centre, ellipsised), settings gear (right). The back button
 /// dispatches `SetMode(Manual)` — in RealTime mode this stops the
 /// fade engine and returns to the tap-to-erase reader, in Manual
 /// mode it is an idempotent no-op (the model is already in Manual,
 /// and `apply_set_mode(model, Manual)` is safe to call against
 /// a stopped engine). Act 4 will rewire the back button to library
-/// navigation once a library view exists; until then "back" reads
-/// as "exit the active reading mode".
+/// navigation once a library view exists.
 ///
-/// The book title is hardcoded to the bundled sample's chapter and
-/// author for now; the future server-payload path will surface the
-/// real title onto the model.
-fn view_reader_header(_model: Model) -> Element(Msg) {
+/// The title slot is driven from the model: the chapter currently
+/// being read carries an `Option(String)` title on `SegmentedText`,
+/// and `current_chapter_title` looks it up by `chapter_index` on the
+/// visible page's first paragraph. When the chapter has no title —
+/// or the page list is still empty between `TextLoaded` and the
+/// first measurement pass — the slot renders an empty string rather
+/// than fabricating one. The bundled sample fixture has no chapter
+/// headings, so today's render carries an empty slot; the future
+/// server-payload path will land titled chapters that populate it
+/// without further view changes.
+fn view_reader_header(model: Model) -> Element(Msg) {
+  let title = current_chapter_title(model)
   html.div([attribute.class("reader-header")], [
     html.div([attribute.class("reader-header-inner")], [
       html.button(
         [
           attribute.class("btn-icon"),
-          attribute.aria_label("Back to library"),
+          attribute.aria_label("Switch to manual reading mode"),
           attribute.type_("button"),
           event.on_click(SetMode(Manual)),
         ],
         [html.text("←")],
       ),
-      html.div([attribute.class("reader-title")], [
-        html.text("Pride and Prejudice · Austen"),
-      ]),
+      html.div([attribute.class("reader-title")], [html.text(title)]),
       html.button(
         [
           attribute.class("btn-icon"),
@@ -1971,6 +1976,45 @@ fn view_reader_header(_model: Model) -> Element(Msg) {
       ),
     ]),
   ])
+}
+
+/// Look up the title of the chapter the current page sits in.
+/// Returns the chapter's title when one is present on the model, an
+/// empty string otherwise. Used by `view_reader_header` to populate
+/// the centre slot of the chrome row without inventing a title when
+/// the segmented text carries none.
+///
+/// The lookup walks the page → first paragraph → `chapter_index`
+/// chain so the slot tracks the reader as they cross chapter
+/// boundaries: a page that opens inside chapter 1 shows chapter 1's
+/// title even when the previous page belonged to chapter 0.
+///
+/// Falls through to `""` rather than crashing when:
+/// * `model.text` is `None` (pre-`TextLoaded` — header is not
+///   rendered today, but the helper stays total),
+/// * `model.pages` is empty (the pagination-pending window after
+///   `TextLoaded` and before the first `ParagraphsMeasured`),
+/// * the resolved chapter carries `title: None`.
+fn current_chapter_title(model: Model) -> String {
+  case model.text {
+    None -> ""
+    Some(text) ->
+      case pagination.nth(model.pages, model.current_page) {
+        None -> ""
+        Some(page) ->
+          case page.paragraphs {
+            [] -> ""
+            [first, ..] -> chapter_title_at(text, first.chapter_index)
+          }
+      }
+  }
+}
+
+fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
+  case list.find(text.chapters, fn(c) { c.index == chapter_index }) {
+    Ok(chapter) -> option.unwrap(chapter.title, "")
+    Error(_) -> ""
+  }
 }
 
 /// Thin reading-progress bar between the header and the reading

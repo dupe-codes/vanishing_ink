@@ -690,10 +690,15 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
 
   let rendered = client.view(model) |> element.to_string
 
-  // Header chrome — back button + book title + settings gear all
-  // appear in the top row.
+  // Header chrome — back button + chapter title slot + settings
+  // gear all appear in the top row. The back button's aria-label
+  // describes the action it dispatches today (`SetMode(Manual)`),
+  // not a future library-navigation behaviour.
   assert string.contains(rendered, "class=\"reader-header\"")
-  assert string.contains(rendered, "aria-label=\"Back to library\"")
+  assert string.contains(
+    rendered,
+    "aria-label=\"Switch to manual reading mode\"",
+  )
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, "class=\"reader-title\"")
 
@@ -3358,14 +3363,20 @@ pub fn default_line_spacing_matches_warm_palette_mock_test() {
 pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   // The header is rendered for every paginated view, regardless of
   // mode. It carries three slots:
-  // * Back glyph (`←`, aria "Back to library").
-  // * Book title (currently the bundled sample's chapter + author).
+  // * Back glyph (`←`, aria "Switch to manual reading mode") —
+  //   describes the present handler (`SetMode(Manual)`), not the
+  //   future library navigation that Act 4 will rewire it to.
+  // * Chapter title slot (`.reader-title`) — driven from the
+  //   current chapter's `Option(String)` title on the segmented
+  //   text. The two-chapter fixture's chapter 0 carries
+  //   `title: None`, so the slot renders empty; the sibling test
+  //   pins the populated case using chapter 1's `title: Some("Two")`.
   // * Settings gear (`⚙`, aria "Open settings") — moved from the
   //   old `.reader-control-bar` into the header row.
-  // Once Act 4 lands library navigation the back button will dispatch
-  // a real back-Msg; until then it routes through `SetMode(Manual)`,
-  // which is idempotent in Manual mode and stops the fade engine in
-  // RealTime mode.
+  // Once Act 4 lands library navigation the back button will
+  // dispatch a real back-Msg; until then it routes through
+  // `SetMode(Manual)`, which is idempotent in Manual mode and stops
+  // the fade engine in RealTime mode.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3381,12 +3392,43 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
 
   assert string.contains(rendered, "class=\"reader-header\"")
   assert string.contains(rendered, "class=\"reader-header-inner\"")
-  assert string.contains(rendered, "aria-label=\"Back to library\"")
+  assert string.contains(
+    rendered,
+    "aria-label=\"Switch to manual reading mode\"",
+  )
   assert string.contains(rendered, ">←</button>")
-  assert string.contains(rendered, "class=\"reader-title\"")
-  assert string.contains(rendered, "Pride and Prejudice")
+  // Chapter 0 has no title — the slot renders an empty element
+  // rather than inventing a string.
+  assert string.contains(rendered, "<div class=\"reader-title\"></div>")
+  // The previous "Pride and Prejudice · Austen" placeholder is
+  // gone — the header must not render a hardcoded book title.
+  assert !string.contains(rendered, "Pride and Prejudice")
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, ">⚙</button>")
+}
+
+pub fn view_reader_header_renders_chapter_title_when_present_test() {
+  // Sibling of the previous test: when the current page lives
+  // inside a chapter whose `title` is `Some(_)`, the chrome slot
+  // carries that title. The two-chapter fixture's chapter 1
+  // declares `title: Some("Two")`, and `current_page: 2` puts the
+  // reader on the page whose paragraph belongs to chapter 1, so
+  // the rendered title must read "Two".
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
 }
 
 pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
