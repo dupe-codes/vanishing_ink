@@ -437,6 +437,24 @@ export function fetch_json_post(url, body, on_complete) {
 }
 
 /**
+ * PUT counterpart to `fetch_json_post`. Same shape, different method —
+ * settings persistence and per-book override writes use PUT so the
+ * server can keep the create/update split clean (`POST /api/books` for
+ * creates, `PUT /api/.../settings` for full-record updates).
+ *
+ * @param {string} url Absolute or relative URL.
+ * @param {string} body JSON-encoded request body.
+ * @param {function(Ok<string>|GleamError): void} on_complete
+ */
+export function fetch_json_put(url, body, on_complete) {
+  do_fetch(
+    url,
+    { method: "PUT", headers: { "Content-Type": "application/json" }, body },
+    on_complete,
+  );
+}
+
+/**
  * Shared implementation for `fetch_json_get` / `fetch_json_post`. The
  * promise chain has three resolution points and each maps to one
  * `FetchError` variant:

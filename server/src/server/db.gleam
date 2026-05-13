@@ -8,8 +8,8 @@ import gleam/dynamic/decode
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import server/types.{
-  type Book, type BookMeta, type ReadingState, type UserSettings, Book, BookMeta,
-  ReadingState, UserSettings,
+  type Book, type BookMeta, type BookSettings, type ReadingState,
+  type UserSettings, Book, BookMeta, BookSettings, ReadingState, UserSettings,
 }
 import shared
 import sqlight
@@ -68,15 +68,10 @@ CREATE TABLE IF NOT EXISTS user_settings (
 -- gain `ON DELETE CASCADE` (or the delete handler must purge the
 -- dependent rows first) or the delete will fail with a FK violation
 -- under `PRAGMA foreign_keys = ON`.
---
--- SCAFFOLDING: `book_settings` is declared up front but has no Gleam
--- reader or writer yet. It exists to back a not-yet-implemented
--- per-book override feature (custom WPM, paragraph/page delays, and
--- ghost opacity for a single book, overriding `user_settings`). Adding
--- the schema now keeps the eventual migration to a populated table
--- additive — handler additions only — rather than mixing a schema
--- change into the feature work.
 CREATE TABLE IF NOT EXISTS book_settings (
+  -- See the cascade note above the `books` table: this FK lacks
+  -- `ON DELETE CASCADE`, so the first book-delete endpoint must
+  -- either purge `book_settings` rows first or migrate the FK.
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   wpm INTEGER,
   paragraph_delay_ms INTEGER,
@@ -85,6 +80,8 @@ CREATE TABLE IF NOT EXISTS book_settings (
 );
 
 CREATE TABLE IF NOT EXISTS reading_state (
+  -- Mirrors `book_settings.book_id`: same no-cascade caveat applies
+  -- to the future book-delete endpoint.
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   mode TEXT NOT NULL DEFAULT 'manual',
   sentence_bitset BLOB,
@@ -119,13 +116,15 @@ fn ensure_default_settings(
 // ---------------------------------------------------------------------------
 //
 // COLUMN-ORDER CONTRACT: the decoders below address row columns by
-// ordinal (`decode.field(0, ...)` etc.), so the `SELECT` column lists
-// in `list_books`, `get_book`, `get_reading_state`, `get_settings`, and
-// `update_settings` MUST match their corresponding decoders position
-// for position. Adding a column means appending it to both the SELECT
-// list and the decoder in the same order. The test suite covers a
-// round-trip of every field, which catches a mis-ordering as a value
-// mismatch on the changed field.
+// ordinal (`decode.field(0, ...)` etc.), so the `SELECT` (or `INSERT`
+// column-list) sites MUST match their corresponding decoders position
+// for position. Participants today: `list_books`, `get_book`,
+// `get_reading_state`, `get_settings`, `update_settings`,
+// `get_book_settings`, and `upsert_book_settings`. Adding a column
+// means appending it to both the column list and the decoder in the
+// same order. The test suite covers a round-trip of every field,
+// which catches a mis-ordering as a value mismatch on the changed
+// field.
 
 /// Insert a new book row. `uploaded_at` is supplied by the caller so
 /// request handlers can stamp the time once and tests can pass a fixed
@@ -493,6 +492,83 @@ pub fn update_settings(
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(error)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Book settings
+// ---------------------------------------------------------------------------
+
+/// Look up the per-book settings row. `Ok(None)` indicates no row
+/// has been written yet — fresh books have no overrides, which the
+/// caller surfaces as an all-null default rather than persisting an
+/// empty row up front.
+pub fn get_book_settings(
+  connection: sqlight.Connection,
+  book_id: shared.BookId,
+) -> Result(Option(BookSettings), sqlight.Error) {
+  let sql =
+    "SELECT wpm, paragraph_delay_ms, page_delay_ms, ghost_opacity
+       FROM book_settings
+      WHERE book_id = ?;"
+  case
+    sqlight.query(
+      sql,
+      on: connection,
+      with: [sqlight.text(book_id)],
+      expecting: book_settings_decoder(),
+    )
+  {
+    Ok([settings, ..]) -> Ok(Some(settings))
+    Ok([]) -> Ok(None)
+    Error(error) -> Error(error)
+  }
+}
+
+/// Insert or replace the per-book settings row. Every field is
+/// nullable — a `None` clears the override and lets the global
+/// default win on the next read. `INSERT OR REPLACE` matches the
+/// "full record overwrite" semantics the HTTP layer uses for the
+/// global settings PUT, so partial-update reasoning never leaks
+/// into the SQL.
+pub fn upsert_book_settings(
+  connection: sqlight.Connection,
+  book_id book_id: shared.BookId,
+  settings settings: BookSettings,
+) -> Result(Nil, sqlight.Error) {
+  let sql =
+    "INSERT OR REPLACE INTO book_settings
+       (book_id, wpm, paragraph_delay_ms, page_delay_ms, ghost_opacity)
+       VALUES (?, ?, ?, ?, ?);"
+  case
+    sqlight.query(
+      sql,
+      on: connection,
+      with: [
+        sqlight.text(book_id),
+        sqlight.nullable(sqlight.int, settings.wpm),
+        sqlight.nullable(sqlight.int, settings.paragraph_delay_ms),
+        sqlight.nullable(sqlight.int, settings.page_delay_ms),
+        sqlight.nullable(sqlight.float, settings.ghost_opacity),
+      ],
+      expecting: decode.dynamic,
+    )
+  {
+    Ok(_) -> Ok(Nil)
+    Error(error) -> Error(error)
+  }
+}
+
+fn book_settings_decoder() -> decode.Decoder(BookSettings) {
+  use wpm <- decode.field(0, decode.optional(decode.int))
+  use paragraph_delay_ms <- decode.field(1, decode.optional(decode.int))
+  use page_delay_ms <- decode.field(2, decode.optional(decode.int))
+  use ghost_opacity <- decode.field(3, decode.optional(decode.float))
+  decode.success(BookSettings(
+    wpm: wpm,
+    paragraph_delay_ms: paragraph_delay_ms,
+    page_delay_ms: page_delay_ms,
+    ghost_opacity: ghost_opacity,
+  ))
 }
 
 fn user_settings_decoder() -> decode.Decoder(UserSettings) {
