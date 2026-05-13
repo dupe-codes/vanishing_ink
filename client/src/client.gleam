@@ -2553,14 +2553,21 @@ fn view_paginated(model: Model) -> Element(Msg) {
 /// and `current_chapter_title` looks it up by `chapter_index` on the
 /// visible page's first paragraph. When the chapter has no title —
 /// or the page list is still empty between `TextLoaded` and the
-/// first measurement pass — the slot renders an empty string rather
-/// than fabricating one.
+/// first measurement pass — the slot falls back to the active
+/// book's title (looked up in `model.books` by `active_book_id`)
+/// so an untitled-chapter book still has a name in the chrome.
+/// The slot only renders an empty string when neither the chapter
+/// nor the active book can supply a title (the test-only
+/// `TextLoaded` entry point, which never stamps `active_book_id`).
 fn view_reader_header(model: Model) -> Element(Msg) {
   // The title is read from the cached `current_chapter_title` field
   // on the model rather than walking the page → paragraph → chapter
   // chain on every render. The field is refreshed in the reducer
   // arms that mutate any of `text` / `pages` / `current_page`.
-  let title = model.current_chapter_title
+  let title = case model.current_chapter_title {
+    "" -> active_book_title(model)
+    chapter_title -> chapter_title
+  }
   html.div([attribute.class("reader-header")], [
     html.div([attribute.class("reader-header-inner")], [
       html.button(
@@ -2587,6 +2594,31 @@ fn view_reader_header(model: Model) -> Element(Msg) {
       ),
     ]),
   ])
+}
+
+/// Resolve the title of the active book — the `BookMeta` in
+/// `model.books` whose `id` matches `model.active_book_id`. Used
+/// by the reader header as a fallback when the visible chapter
+/// carries no title of its own (every chapter in the bundled
+/// Tell-Tale Heart fixture, for instance, has `title: None`, so
+/// the reader header would otherwise show an empty centre slot).
+///
+/// Falls through to `""` when there is no active book id (the
+/// test-only `TextLoaded` entry point never stamps it) or when
+/// the book is not in `model.books` (a path that does not occur
+/// in production today — `BookCreated` prepends and `BooksLoaded`
+/// supplies the meta before `OpenBook` fires — but the helper
+/// stays total so a future direct-load entry point cannot crash
+/// the header).
+fn active_book_title(model: Model) -> String {
+  case model.active_book_id {
+    None -> ""
+    Some(id) ->
+      case list.find(model.books, fn(meta) { meta.id == id }) {
+        Ok(meta) -> meta.title
+        Error(_) -> ""
+      }
+  }
 }
 
 /// Look up the title of the chapter the current page sits in.

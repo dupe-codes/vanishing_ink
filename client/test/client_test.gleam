@@ -3401,9 +3401,11 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   //   `model.view` back to `Library`.
   // * Chapter title slot (`.reader-title`) — driven from the
   //   current chapter's `Option(String)` title on the segmented
-  //   text. The two-chapter fixture's chapter 0 carries
-  //   `title: None`, so the slot renders empty; the sibling test
-  //   pins the populated case using chapter 1's `title: Some("Two")`.
+  //   text, falling back to the active book's title when the
+  //   chapter is untitled. With no `active_book_id` and no books,
+  //   the fallback also resolves to empty and the slot is bare.
+  //   The sibling tests pin the chapter-title case and the
+  //   book-title fallback case.
   // * Settings gear (`⚙`, aria "Open settings") — moved from the
   //   old `.reader-control-bar` into the header row.
   let text = two_chapter_text()
@@ -3423,14 +3425,74 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   assert string.contains(rendered, "class=\"reader-header-inner\"")
   assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, ">←</button>")
-  // Chapter 0 has no title — the slot renders an empty element
-  // rather than inventing a string.
+  // Chapter 0 has no title; with `active_book_id: None` and empty
+  // `books`, the fallback also resolves to "" and the slot renders
+  // bare.
   assert string.contains(rendered, "<div class=\"reader-title\"></div>")
   // The previous "Pride and Prejudice · Austen" placeholder is
   // gone — the header must not render a hardcoded book title.
   assert !string.contains(rendered, "Pride and Prejudice")
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, ">⚙</button>")
+}
+
+pub fn view_reader_header_falls_back_to_book_title_when_chapter_untitled_test() {
+  // The Tell-Tale Heart bundled fixture (and every other book whose
+  // first chapter has `title: None`) would otherwise render the
+  // reader header with an empty centre slot: the chapter has no
+  // title to surface. The fallback looks up the active book in
+  // `model.books` by `model.active_book_id` and uses its `title`
+  // when the chapter title is empty. This keeps the chrome row
+  // informative on page 0 of every untitled-chapter book.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let meta = sample_book("book-x", "The Tell-Tale Heart", None)
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      // Chapter 0 has `title: None` → `current_chapter_title` is "";
+      // the fallback should pick up `meta.title`.
+      current_chapter_title: "",
+      active_book_id: Some("book-x"),
+      books: [meta],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "<div class=\"reader-title\">The Tell-Tale Heart</div>",
+  )
+}
+
+pub fn view_reader_header_prefers_chapter_title_over_book_title_test() {
+  // Sibling of the fallback test: when the current chapter *does*
+  // carry a title, the chapter title wins over the book title. The
+  // fallback only fires when `current_chapter_title == ""`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let meta = sample_book("book-x", "The Tell-Tale Heart", None)
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+      current_chapter_title: "Two",
+      active_book_id: Some("book-x"),
+      books: [meta],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
+  assert !string.contains(rendered, "The Tell-Tale Heart")
 }
 
 pub fn view_reader_header_renders_chapter_title_when_present_test() {
