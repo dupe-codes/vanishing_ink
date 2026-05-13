@@ -108,6 +108,8 @@ fn empty_model() -> Model {
     page_delay_ms: client.default_page_delay_ms,
     line_boxes: [],
     active_line: None,
+    total_sentence_count: 0,
+    total_word_count: 0,
   )
 }
 
@@ -192,11 +194,19 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
 
   let #(updated, _effect) = client.update(empty_model(), TextLoaded(payload))
 
+  // The payload carries one chapter → one paragraph → one sentence
+  // → one word, so the cached `total_sentence_count` /
+  // `total_word_count` both land on `1`. Pinning them here keeps
+  // the cache wiring on the same whole-model assertion as the
+  // `flat_paragraphs` refresh — both are computed-once-on-
+  // `TextLoaded` outputs.
   assert updated
     == Model(
       ..empty_model(),
       text: Some(payload),
       flat_paragraphs: pagination.flatten(payload),
+      total_sentence_count: 1,
+      total_word_count: 1,
     )
 }
 
@@ -3435,7 +3445,11 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
   // Progress bar fill starts at 0% before any erasure. The fill
   // element always renders (so the CSS transition has a stable
   // target to interpolate from) — only its inline width is driven
-  // by the model.
+  // by the model. With `total_sentence_count` seeded to the
+  // realistic value (the live app gets it from `TextLoaded`), the
+  // numerator drives the fraction to zero on its own — the
+  // denominator is non-zero, but `0 / 3 * 100` still rounds to
+  // `0.0`.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3445,6 +3459,7 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_sentence_count: 3,
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3458,9 +3473,12 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
 pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
   // Manual mode: width = erased sentences / total sentences * 100.
   // `two_chapter_text` has three sentences total; erasing one
-  // should drive the fill to 33.333...%. Floats stringify with
-  // their full precision, but the substring "33.3" appears
-  // regardless of the trailing digits.
+  // resolves to 33.333...%, which `float.to_precision(_, 1)` snaps
+  // to exactly `33.3`. The single-decimal rounding is what lets
+  // this test pin the full numeric value rather than a prefix
+  // substring — the previous revision emitted
+  // `width:33.333333333333%` straight out of the float division
+  // and the assertion had to substring-match `33.3`.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3472,20 +3490,23 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
       pages: pages,
       erased: set.from_list([0]),
       mode: Manual,
+      total_sentence_count: 3,
     )
 
   let rendered = client.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-progress-fill\"")
-  assert string.contains(rendered, "style=\"width:33.3")
+  assert string.contains(rendered, "style=\"width:33.3%;\"")
 }
 
 pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
   // Real-time mode: width = faded words / total words * 100.
   // `two_chapter_text` carries five words total; fading two
   // resolves to exactly 40.0% — a clean denominator so the test
-  // can pin the full numeric prefix without floating-point
-  // ambiguity.
+  // can pin the full numeric value without floating-point
+  // ambiguity. The cached `total_word_count` on the model is what
+  // the progress fraction reads, so the test seeds it explicitly
+  // rather than relying on a `TextLoaded`-shaped derivation.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3497,6 +3518,7 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
       pages: pages,
       erased_words: set.from_list([0, 1]),
       mode: RealTime,
+      total_word_count: 5,
     )
 
   let rendered = client.view(model) |> element.to_string

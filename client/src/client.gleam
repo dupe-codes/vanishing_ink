@@ -367,6 +367,16 @@ pub type LineBox {
 ///   `line_boxes` empty, or `next_word_index` not contained in
 ///   any measured line). Recomputed on every event that moves
 ///   `next_word_index` or replaces `line_boxes`.
+/// * `total_sentence_count` / `total_word_count` — cached
+///   denominators for `progress_percentage`. Computed once in the
+///   `TextLoaded` arm via `total_counts` and refreshed on every
+///   subsequent `TextLoaded`. The previous revision recomputed both
+///   on every render, which at 200 WPM (`~3` engine dispatches per
+///   second) compounded against every settings drag and keystroke
+///   into hundreds of thousands of list traversals per second on a
+///   100k-word book. The totals are immutable for the lifetime of
+///   the loaded text — caching them is a design-phase decision,
+///   not a hot-path optimisation.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -394,6 +404,8 @@ pub type Model {
     page_delay_ms: Int,
     line_boxes: List(LineBox),
     active_line: Option(Int),
+    total_sentence_count: Int,
+    total_word_count: Int,
   )
 }
 
@@ -672,6 +684,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       page_delay_ms: default_page_delay_ms,
       line_boxes: [],
       active_line: None,
+      total_sentence_count: 0,
+      total_word_count: 0,
     )
 
   // Boot effects:
@@ -750,22 +764,27 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 ///    `touchend` classification.
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> #(
-      Model(
-        ..model,
-        text: Some(text),
-        flat_paragraphs: pagination.flatten(text),
-        pages: [],
-        current_page: 0,
-        erased: set.new(),
-        undo_stack: [],
-        touch_start: None,
-        focused_sentence: None,
-        line_boxes: [],
-        active_line: None,
-      ),
-      measure_after_paint(),
-    )
+    TextLoaded(text) -> {
+      let #(sentences, words) = total_counts(text)
+      #(
+        Model(
+          ..model,
+          text: Some(text),
+          flat_paragraphs: pagination.flatten(text),
+          pages: [],
+          current_page: 0,
+          erased: set.new(),
+          undo_stack: [],
+          touch_start: None,
+          focused_sentence: None,
+          line_boxes: [],
+          active_line: None,
+          total_sentence_count: sentences,
+          total_word_count: words,
+        ),
+        measure_after_paint(),
+      )
+    }
 
     ParagraphsMeasured(heights, available_height) -> {
       let pages = case model.text {
@@ -2023,11 +2042,12 @@ fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
 /// * Manual mode — fraction of sentences erased over the whole text.
 /// * RealTime mode — fraction of words faded over the whole text.
 ///
-/// Both denominators are computed from `model.text` rather than
-/// the current page's slice, so the bar reads as "progress through
-/// the book" rather than "progress through this page". When the
-/// model has no text yet, the fill is 0% — the bar renders as an
-/// empty track until `TextLoaded` lands.
+/// Both denominators are the whole-book totals cached on the model
+/// (`total_sentence_count`, `total_word_count`) rather than the
+/// current page's slice, so the bar reads as "progress through the
+/// book" rather than "progress through this page". When the model
+/// has no text yet, the cached totals are `0` and the fill is 0% —
+/// the bar renders as an empty track until `TextLoaded` lands.
 fn view_progress_bar(model: Model) -> Element(Msg) {
   let percent = progress_percentage(model)
   let width_value = float.to_string(percent) <> "%"
@@ -2043,46 +2063,58 @@ fn view_progress_bar(model: Model) -> Element(Msg) {
   ])
 }
 
+/// Reading progress as a percentage, rounded to one decimal place.
+///
+/// The denominator is read from the cached `total_sentence_count` /
+/// `total_word_count` fields on the model — those fields are
+/// computed once per `TextLoaded` (see `total_counts`) so the
+/// per-render cost here is constant. The previous revision walked
+/// every chapter → paragraph → sentence (and word) on every call,
+/// which compounded badly against the fade engine's ~3 dispatches
+/// per second at 200 WPM plus every settings drag and keystroke.
+///
+/// `float.to_precision(_, 1)` snaps the result to a single decimal
+/// digit so the serialised `width:<n>%` style is a clean prefix
+/// (`33.3`, `40.0`) rather than the float's full-precision
+/// expansion (`33.333333333333%`). The CSS transition reads the
+/// truncated value just as faithfully, and the rendered HTML tests
+/// can pin the full value instead of a prefix substring.
 fn progress_percentage(model: Model) -> Float {
   let #(numerator, denominator) = case model.mode {
-    Manual -> #(set.size(model.erased), total_sentence_count(model.text))
-    RealTime -> #(set.size(model.erased_words), total_word_count(model.text))
+    Manual -> #(set.size(model.erased), model.total_sentence_count)
+    RealTime -> #(set.size(model.erased_words), model.total_word_count)
   }
   case denominator {
     0 -> 0.0
-    _ -> int.to_float(numerator) /. int.to_float(denominator) *. 100.0
+    _ ->
+      int.to_float(numerator)
+      /. int.to_float(denominator)
+      *. 100.0
+      |> float.to_precision(1)
   }
 }
 
-/// Total sentence count across every chapter and paragraph in the
-/// loaded text. Used as the denominator of the manual-mode progress
-/// fraction. Returns `0` when `text` is `None` so the caller's
-/// division falls through to a `0%` fill instead of a divide-by-zero
-/// crash.
-fn total_sentence_count(text: Option(SegmentedText)) -> Int {
-  case text {
-    None -> 0
-    Some(t) ->
-      t.chapters
-      |> list.flat_map(fn(ch) { ch.paragraphs })
-      |> list.flat_map(fn(p) { p.sentences })
-      |> list.length
-  }
-}
-
-/// Total word count across every sentence in the loaded text. Used
-/// as the denominator of the real-time progress fraction. Mirrors
-/// `total_sentence_count`'s shape: `None` → `0`.
-fn total_word_count(text: Option(SegmentedText)) -> Int {
-  case text {
-    None -> 0
-    Some(t) ->
-      t.chapters
-      |> list.flat_map(fn(ch) { ch.paragraphs })
-      |> list.flat_map(fn(p) { p.sentences })
-      |> list.flat_map(fn(s) { s.words })
-      |> list.length
-  }
+/// Walk the segmented text once and return `#(sentences, words)`.
+/// Called from the `TextLoaded` reducer so the result can be cached
+/// on the model — the totals do not change between loads, so the
+/// view layer reads them from constant fields instead of re-walking
+/// the whole book on every render.
+///
+/// One fold is used rather than the previous twin `list.flat_map`
+/// chains: at the design phase a 100k-word book would have driven
+/// the view-time cost into the hundreds of thousands of list
+/// traversals per second under fade-engine pacing. Caching removes
+/// that cost; the single fold here also halves the one-time cost
+/// at load.
+fn total_counts(text: SegmentedText) -> #(Int, Int) {
+  list.fold(text.chapters, #(0, 0), fn(chapter_acc, chapter) {
+    list.fold(chapter.paragraphs, chapter_acc, fn(paragraph_acc, paragraph) {
+      list.fold(paragraph.sentences, paragraph_acc, fn(sentence_acc, sentence) {
+        let #(sentences, words) = sentence_acc
+        #(sentences + 1, words + list.length(sentence.words))
+      })
+    })
+  })
 }
 
 /// Render the active-line overlay. The overlay is only visible while
