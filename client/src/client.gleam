@@ -894,7 +894,14 @@ pub type Msg {
   /// four overridable effective fields. The error arm logs and
   /// continues with the in-effect globals — a stuck request leaves
   /// the reader using the user's last-known global preferences.
-  BookSettingsLoaded(Result(String, ffi.FetchError))
+  ///
+  /// The `book_id` is the id the GET was issued for. The reducer
+  /// drops responses whose id no longer matches `model.active_book_id`
+  /// (or whose view has flipped back to `Library`) — see the guard at
+  /// the top of `apply_book_settings_loaded`. The id round-trips so
+  /// "open A → back to library → open B → A's response lands" cannot
+  /// stamp A's overrides onto B's session.
+  BookSettingsLoaded(book_id: String, result: Result(String, ffi.FetchError))
 
   /// Reader pressed "Reset to default" in the per-book section of
   /// the settings panel. Clears every per-book override (writes
@@ -1364,16 +1371,16 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(model, effect.none())
     }
 
-    BookSettingsLoaded(Ok(body)) ->
+    BookSettingsLoaded(book_id, Ok(body)) ->
       case json.parse(body, types.book_settings_decoder()) {
-        Ok(settings) -> apply_book_settings_loaded(model, settings)
+        Ok(settings) -> apply_book_settings_loaded(model, book_id, settings)
         Error(_) -> {
           io.println("Failed to decode /api/books/:id/settings response")
           #(model, effect.none())
         }
       }
 
-    BookSettingsLoaded(Error(error)) -> {
+    BookSettingsLoaded(_book_id, Error(error)) -> {
       io.println(
         "Failed to load book settings: " <> describe_fetch_error(error),
       )
@@ -1437,10 +1444,21 @@ fn apply_open_book(model: Model, id: String) -> #(Model, Effect(Msg)) {
 /// until the next slider drag re-PUTs it. The window is materially
 /// wider than the parallel init-time race on `apply_settings_loaded`
 /// because the reader is actively in the reader view and can
-/// interact immediately. Closing the race requires either a
-/// request-id (drop a stale `BookSettingsLoaded` response if a PUT
-/// has fired since the GET was issued) or a "fetch sequence number"
-/// gate; neither is wired up today.
+/// interact immediately. Closing this last-write-wins variant would
+/// require a request-id (drop a stale `BookSettingsLoaded` response
+/// if a PUT has fired since the GET was issued) or a "fetch sequence
+/// number" gate; neither is wired up today.
+///
+/// The cousin race — late `BookSettingsLoaded` landing after the
+/// reader has navigated to the library or opened a different book
+/// — IS guarded against. The Msg carries the originating `book_id`,
+/// and `apply_book_settings_loaded` drops the response when
+/// `model.view != Reader` or `model.active_book_id != Some(book_id)`.
+/// That covers the "open A → back → A's GET lands" path (the
+/// previously documented "library now shows the prior book's
+/// pacing" defect) and the "open A → back → open B → A's GET lands"
+/// path (which would otherwise stamp A's overrides onto B's
+/// session).
 fn apply_book_loaded(
   model: Model,
   meta: BookMeta,
@@ -1663,11 +1681,14 @@ fn fetch_settings() -> Effect(Msg) {
 
 /// `GET /api/books/:id/settings` and dispatch `BookSettingsLoaded`.
 /// Same shape as `fetch_settings` — the body is forwarded raw so
-/// the reducer can branch on the decode result inline.
+/// the reducer can branch on the decode result inline. The id is
+/// closed over and re-emitted on the dispatched Msg so the reducer
+/// can drop a stale response that lands after the reader has
+/// navigated away or opened a different book.
 fn fetch_book_settings(id: String) -> Effect(Msg) {
   effect.from(fn(dispatch) {
     ffi.fetch_json_get("/api/books/" <> id <> "/settings", fn(result) {
-      dispatch(BookSettingsLoaded(result))
+      dispatch(BookSettingsLoaded(id, result))
     })
   })
 }
@@ -1892,33 +1913,57 @@ fn apply_settings_loaded(
 /// `BookSettings` record is also stored so a later edit of one
 /// override (or a `ResetBookSettings`) has the prior overrides to
 /// diff against.
+///
+/// `book_id` is the id the originating `fetch_book_settings` call was
+/// issued for. The guard at the top drops the response when:
+///
+///   * the reader has navigated back to the library
+///     (`model.view != Reader` / `model.active_book_id == None`), or
+///   * the active book has changed under the in-flight request
+///     (open A → back → open B → A's GET lands).
+///
+/// Without the guard, a late response would either re-populate
+/// `book_settings: Some(_)` while `view == Library` (an internally
+/// inconsistent state — `book_settings.is_some()` should imply
+/// `active_book_id.is_some()`) or stamp the previous book's overrides
+/// onto the new active book's effective fields. Both are reachable
+/// through ordinary navigation within the GET's ~100-300 ms window.
 fn apply_book_settings_loaded(
   model: Model,
+  book_id: String,
   settings: BookSettings,
 ) -> #(Model, Effect(Msg)) {
-  let new_model =
-    Model(
-      ..model,
-      book_settings: Some(settings),
-      ghost_opacity: effective_ghost_opacity(
-        Some(settings),
-        model.global_defaults,
-      ),
-      wpm: effective_wpm(Some(settings), model.global_defaults),
-      paragraph_delay_ms: effective_paragraph_delay(
-        Some(settings),
-        model.global_defaults,
-      ),
-      page_delay_ms: effective_page_delay(Some(settings), model.global_defaults),
-    )
-  let css_effects =
-    effect.from(fn(_dispatch) {
-      ffi.set_css_property(
-        css_var_ghost_opacity,
-        float.to_string(new_model.ghost_opacity),
-      )
-    })
-  #(new_model, css_effects)
+  case model.view, model.active_book_id {
+    Reader, Some(active_id) if active_id == book_id -> {
+      let new_model =
+        Model(
+          ..model,
+          book_settings: Some(settings),
+          ghost_opacity: effective_ghost_opacity(
+            Some(settings),
+            model.global_defaults,
+          ),
+          wpm: effective_wpm(Some(settings), model.global_defaults),
+          paragraph_delay_ms: effective_paragraph_delay(
+            Some(settings),
+            model.global_defaults,
+          ),
+          page_delay_ms: effective_page_delay(
+            Some(settings),
+            model.global_defaults,
+          ),
+        )
+      let css_effects =
+        effect.from(fn(_dispatch) {
+          ffi.set_css_property(
+            css_var_ghost_opacity,
+            float.to_string(new_model.ghost_opacity),
+          )
+        })
+      #(new_model, css_effects)
+    }
+    _, _ -> #(model, effect.none())
+  }
 }
 
 /// Clear every per-book override for the current book. Writes an
