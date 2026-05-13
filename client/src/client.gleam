@@ -1959,10 +1959,18 @@ fn nth_line_box(boxes: List(LineBox), index: Int) -> Option(LineBox) {
 /// lines when `active_line` changes; the rendered HTML doesn't
 /// re-mount, it just receives new style values.
 ///
-/// Coordinates round to one decimal place to keep the rendered HTML
-/// stable across paint-to-paint sub-pixel jitter — without the
-/// rounding, a re-measure that produced `42.000001` would diff
-/// against `42.0` and trigger a needless DOM patch.
+/// `float.to_string` is used unmodified — no rounding is applied.
+/// Render stability across re-measurements relies on
+/// `getBoundingClientRect` being deterministic for an unchanged
+/// layout (the W3C CSSOM View spec requires it), so a re-measure
+/// against the same DOM produces byte-identical inline styles and
+/// Lustre's vdom diff sees no change. When the layout *does*
+/// change (page turn, re-pagination, settings drag), the new
+/// coordinates differ enough that any decimal jitter is dwarfed by
+/// the actual position delta. If a future genuine sub-pixel-jitter
+/// source surfaces, switch to `float.to_precision(_, 1)` here and
+/// add a test that pins the rounded format — do not rely on the
+/// rounding implicitly.
 fn render_active_line_overlay(box: LineBox) -> Element(Msg) {
   let top_value = float.to_string(box.top) <> "px"
   let height_value = float.to_string(box.height) <> "px"
