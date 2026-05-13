@@ -1249,8 +1249,7 @@ fn scan_for_next_eligible(
       }
     [ctx, ..rest], Some(captured_paragraph) ->
       case is_word_visible(ctx, erased_words, erased_sentences) {
-        True ->
-          Some(#(ctx, ctx.paragraph_global_index != captured_paragraph))
+        True -> Some(#(ctx, ctx.paragraph_global_index != captured_paragraph))
         False ->
           scan_for_next_eligible(
             rest,
