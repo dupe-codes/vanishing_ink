@@ -2351,12 +2351,17 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 ///
 /// The play button cycles through the engine's three states:
 ///
-/// * `Stopped` — render `▶` with the `.paused` accent background;
+/// * `Stopped` — render `▶` with the `.ready` accent background;
 ///   click dispatches `StartFade`.
-/// * `Paused`  — render `▶` with the `.paused` accent background;
+/// * `Paused`  — render `▶` with the `.ready` accent background;
 ///   click dispatches `ResumeFade`.
 /// * `Running` — render `⏸` with the default inverted background;
 ///   click dispatches `PauseFade`.
+///
+/// `Stopped` and `Paused` share the `.ready` modifier (rather
+/// than a `.paused` class that mislabels the Stopped case as
+/// "paused") because both states paint the same "press me to
+/// resume / start" affordance.
 ///
 /// No `event.stop_propagation` is required: the page-level touch
 /// handlers (`gestures.on_touch_*`) sit on `#vi-reading-area` /
@@ -2369,8 +2374,8 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 fn view_bottom_realtime(model: Model) -> Element(Msg) {
   let #(button_label, button_class, play_msg) = case model.engine_state {
     Running -> #("⏸", "btn-play", PauseFade)
-    Paused -> #("▶", "btn-play paused", ResumeFade)
-    Stopped -> #("▶", "btn-play paused", StartFade)
+    Paused -> #("▶", "btn-play ready", ResumeFade)
+    Stopped -> #("▶", "btn-play ready", StartFade)
   }
 
   html.div([attribute.class("reader-bottom-realtime")], [

@@ -3717,21 +3717,23 @@ pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
   )
 }
 
-pub fn view_realtime_play_button_shows_play_glyph_with_paused_class_when_stopped_test() {
+pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_stopped_test() {
   // Engine state `Stopped`: button shows ▶ and carries the
-  // `paused` modifier class so CSS swaps the bg to the copper
-  // accent. The reader reads it as "ready to start".
+  // `ready` modifier class so CSS swaps the bg to the copper
+  // accent. The reader reads it as "ready to start". The
+  // modifier name is state-agnostic — Paused below renders the
+  // same class — because both states share the visual treatment.
   let model =
     Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
 
   let rendered = client.view(model) |> element.to_string
 
-  assert string.contains(rendered, "class=\"btn-play paused\"")
+  assert string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">▶</button>")
 }
 
-pub fn view_realtime_play_button_shows_play_glyph_with_paused_class_when_paused_test() {
-  // Engine state `Paused`: same visuals as `Stopped` (▶, paused
+pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_paused_test() {
+  // Engine state `Paused`: same visuals as `Stopped` (▶, ready
   // class). The dispatch target differs — Stopped clicks
   // `StartFade`, Paused clicks `ResumeFade` — but the visual
   // contract is identical.
@@ -3745,12 +3747,12 @@ pub fn view_realtime_play_button_shows_play_glyph_with_paused_class_when_paused_
 
   let rendered = client.view(model) |> element.to_string
 
-  assert string.contains(rendered, "class=\"btn-play paused\"")
+  assert string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">▶</button>")
 }
 
 pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
-  // Engine state `Running`: button shows ⏸ and drops the `paused`
+  // Engine state `Running`: button shows ⏸ and drops the `ready`
   // class (so the bg returns to the inverted text-on-bg default).
   let model =
     Model(
@@ -3762,12 +3764,12 @@ pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
 
   let rendered = client.view(model) |> element.to_string
 
-  // The button's class is exactly `btn-play` (no `paused`
+  // The button's class is exactly `btn-play` (no `ready`
   // modifier) while running. Pinning the exact class string also
   // catches a regression where the modifier is left on across
   // state transitions.
   assert string.contains(rendered, "class=\"btn-play\"")
-  assert !string.contains(rendered, "class=\"btn-play paused\"")
+  assert !string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">⏸</button>")
 }
 

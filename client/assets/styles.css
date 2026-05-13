@@ -527,8 +527,12 @@ body.vi-reduced-motion .btn-bar:active {
   /* Large 56px circle — the primary affordance in real-time mode.
    * Inverted (bg = text colour) so it reads as "press me" against
    * the warm chrome. When the engine is paused or stopped, the
-   * button picks up `.paused` and swaps to the copper accent —
-   * the reader sees a coloured ▶ as "ready to start". */
+   * button picks up `.ready` and swaps to the copper accent —
+   * the reader sees a coloured ▶ as "ready to start / resume".
+   * The modifier is state-agnostic (`.ready` rather than `.paused`)
+   * because both Stopped and Paused share the same visual
+   * treatment — the markup should not mislabel Stopped as
+   * "paused". */
   flex: 0 0 auto;
   font-family: system-ui, sans-serif;
   background-color: var(--vi-fg);
@@ -549,7 +553,7 @@ body.vi-reduced-motion .btn-bar:active {
               transform 80ms;
 }
 
-.btn-play.paused {
+.btn-play.ready {
   background-color: var(--vi-accent);
   color: #ffffff;
 }
