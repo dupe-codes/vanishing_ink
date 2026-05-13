@@ -154,9 +154,7 @@ pub fn next_paragraph_sentence(
       // paragraphs on the same page as current_paragraph are eligible.
       let current_page =
         locations
-        |> list.find(fn(loc) {
-          loc.paragraph_global_index == current_paragraph
-        })
+        |> list.find(fn(loc) { loc.paragraph_global_index == current_paragraph })
         |> option.from_result
         |> option.map(fn(loc) { loc.page_index })
       case current_page {

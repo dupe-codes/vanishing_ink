@@ -458,9 +458,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       ffi.on_resize(fn() { dispatch(ViewportResized) })
     })
   let arrow_listener =
-    effect.from(fn(dispatch) {
-      ffi.on_arrow_key(fn() { dispatch(NextPage) })
-    })
+    effect.from(fn(dispatch) { ffi.on_arrow_key(fn() { dispatch(NextPage) }) })
   let undo_listener =
     effect.from(fn(dispatch) { ffi.on_undo_key(fn() { dispatch(Undo) }) })
   let vim_listener =
