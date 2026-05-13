@@ -246,6 +246,59 @@ pub fn set_book_last_read_at(
   }
 }
 
+/// Delete a book and its dependent rows (`reading_state`, `book_settings`)
+/// inside a transaction. Returns `Ok(True)` when the book existed and was
+/// deleted, `Ok(False)` when the id was not found, and `Error(error)` on
+/// any SQLite failure.
+///
+/// Dependent rows are deleted first because `PRAGMA foreign_keys = ON` is
+/// set at connection time — deleting the `books` row first would raise a
+/// constraint violation. The manual cascade is explicit by design; the
+/// schema intentionally omits `ON DELETE CASCADE` so future tables that
+/// reference `books(id)` have to opt in.
+pub fn delete_book(
+  connection: sqlight.Connection,
+  id: String,
+) -> Result(Bool, sqlight.Error) {
+  use <- transaction(connection)
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM reading_state WHERE book_id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM book_settings WHERE book_id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM books WHERE id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  // `changes()` reports how many rows the immediately preceding DML
+  // statement touched — 1 if the book existed, 0 if the id was unknown.
+  let count_decoder = {
+    use count <- decode.field(0, decode.int)
+    decode.success(count)
+  }
+  sqlight.query(
+    "SELECT changes();",
+    on: connection,
+    with: [],
+    expecting: count_decoder,
+  )
+  |> result.map(fn(rows) {
+    case rows {
+      [count, ..] -> count > 0
+      [] -> False
+    }
+  })
+}
+
 /// Run a closure inside a SQLite transaction. On `Ok` the transaction
 /// commits; on `Error` (or a panic that escapes the closure) it rolls
 /// back. `BEGIN IMMEDIATE` acquires the write lock up front so a slow

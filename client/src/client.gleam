@@ -609,6 +609,11 @@ pub type Model {
     created_book_segments: Option(#(BookMeta, SegmentedText)),
     global_defaults: UserSettings,
     book_settings: Option(BookSettings),
+    /// `Some(book_id)` while the delete confirmation overlay is visible
+    /// for that book. `None` at all other times. The overlay asks the
+    /// reader to confirm before the DELETE request fires, preventing
+    /// accidental destruction of a book and its reading history.
+    confirm_delete_id: Option(String),
   )
 }
 
@@ -909,6 +914,26 @@ pub type Msg {
   /// model), and restores the four overridable effective fields to
   /// `model.global_defaults`. A no-op when there is no active book.
   ResetBookSettings
+
+  /// Reader tapped the delete icon on a book card. Sets
+  /// `confirm_delete_id` to `Some(id)` so the confirmation overlay
+  /// renders for that specific card. No request is fired yet.
+  ConfirmDelete(id: String)
+
+  /// Reader tapped "Cancel" on the delete confirmation overlay.
+  /// Clears `confirm_delete_id` without firing a DELETE request.
+  CancelDelete
+
+  /// Reader tapped "Delete" on the delete confirmation overlay.
+  /// Fires `DELETE /api/books/:id` and clears `confirm_delete_id`.
+  ExecuteDelete(id: String)
+
+  /// `DELETE /api/books/:id` resolved. The `Ok` arm removes the book
+  /// from `model.books` and, when the deleted book is the currently
+  /// active reader book, navigates back to the library. The `Error`
+  /// arm surfaces the failure in `library_error` without removing the
+  /// book from the grid.
+  BookDeleted(id: String, result: Result(String, ffi.FetchError))
 }
 
 // ---------------------------------------------------------------------------
@@ -992,6 +1017,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       created_book_segments: None,
       global_defaults: fallback_user_settings(dark_mode),
       book_settings: None,
+      confirm_delete_id: None,
     )
 
   // Boot effects:
@@ -1388,6 +1414,37 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     ResetBookSettings -> apply_reset_book_settings(model)
+
+    ConfirmDelete(id) -> #(
+      Model(..model, confirm_delete_id: Some(id)),
+      effect.none(),
+    )
+
+    CancelDelete -> #(Model(..model, confirm_delete_id: None), effect.none())
+
+    ExecuteDelete(id) -> #(
+      Model(..model, confirm_delete_id: None),
+      delete_book_effect(id),
+    )
+
+    BookDeleted(id, Ok(_)) -> {
+      let books = list.filter(model.books, fn(b) { b.id != id })
+      case model.active_book_id == Some(id) {
+        True -> {
+          let #(nav_model, nav_effect) = apply_go_to_library(model)
+          #(Model(..nav_model, books: books, library_error: None), nav_effect)
+        }
+        False -> #(
+          Model(..model, books: books, library_error: None),
+          effect.none(),
+        )
+      }
+    }
+
+    BookDeleted(_id, Error(error)) -> #(
+      Model(..model, library_error: Some(describe_fetch_error(error))),
+      effect.none(),
+    )
   }
 }
 
@@ -1775,6 +1832,19 @@ fn book_settings_to_json(settings: BookSettings) -> json.Json {
     #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
     #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
   ])
+}
+
+/// `DELETE /api/books/:id` and dispatch `BookDeleted`. The server
+/// responds 204 No Content on success and 404 when the id is not found;
+/// both resolve through the same `Result(String, FetchError)` shape the
+/// other fetch effects use, so the update arm can treat a 404 as an
+/// error the same way it treats a network failure.
+fn delete_book_effect(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_delete("/api/books/" <> id, fn(result) {
+      dispatch(BookDeleted(id, result))
+    })
+  })
 }
 
 /// `POST /api/books` with the JSON body `{ "title", "text" }` and
@@ -4418,6 +4488,7 @@ fn view_library(model: Model) -> Element(Msg) {
     html.div([attribute.class("lib-scroll")], [view_library_body(model)]),
     view_add_book_fab(),
     view_add_book_sheet(model),
+    view_delete_confirm_overlay(model),
   ])
 }
 
@@ -4477,6 +4548,66 @@ fn view_library_body(model: Model) -> Element(Msg) {
   }
 
   html.div([attribute.class("lib-body")], [error_banner, hero, body_main])
+}
+
+/// Delete confirmation modal. Rendered as a full-screen overlay when
+/// `confirm_delete_id` is `Some(_)`. Tapping the scrim cancels;
+/// tapping Delete fires `ExecuteDelete`.
+fn view_delete_confirm_overlay(model: Model) -> Element(Msg) {
+  case model.confirm_delete_id {
+    None -> element.none()
+    Some(book_id) -> {
+      let title = case list.find(model.books, fn(b) { b.id == book_id }) {
+        Ok(book) -> book.title
+        Error(_) -> "this book"
+      }
+      html.div(
+        [
+          attribute.class("sheet-overlay open"),
+          attribute.attribute("role", "dialog"),
+          attribute.attribute("aria-modal", "true"),
+          attribute.aria_label("Confirm delete"),
+          event.on_click(CancelDelete),
+        ],
+        [
+          html.div(
+            [
+              attribute.class("delete-confirm-sheet"),
+              stop_click_propagation(),
+            ],
+            [
+              html.div([attribute.class("delete-confirm-title")], [
+                html.text("Delete \"" <> title <> "\"?"),
+              ]),
+              html.div([attribute.class("delete-confirm-sub")], [
+                html.text(
+                  "This will permanently remove the book and its reading history.",
+                ),
+              ]),
+              html.div([attribute.class("delete-confirm-actions")], [
+                html.button(
+                  [
+                    attribute.class("btn-bar"),
+                    attribute.type_("button"),
+                    event.on_click(CancelDelete),
+                  ],
+                  [html.text("Cancel")],
+                ),
+                html.button(
+                  [
+                    attribute.class("btn-bar btn-bar-danger"),
+                    attribute.type_("button"),
+                    event.on_click(ExecuteDelete(book_id)),
+                  ],
+                  [html.text("Delete")],
+                ),
+              ]),
+            ],
+          ),
+        ],
+      )
+    }
+  }
 }
 
 /// Sort by `last_read_at` descending, with unread books (None)
@@ -4626,31 +4757,42 @@ fn view_library_grid(books: List(BookMeta)) -> Element(Msg) {
 fn view_book_card(book: BookMeta) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
-  html.button(
-    [
-      attribute.class("book-card"),
-      attribute.type_("button"),
-      attribute.aria_label("Open " <> book.title),
-      event.on_click(OpenBook(book.id)),
-    ],
-    [
-      html.div(
-        [attribute.class("book-cover"), attribute.style("background", color)],
-        [
-          html.div([attribute.class("book-cover-title")], [
-            html.text(book.title),
+  html.div([attribute.class("book-card-wrapper")], [
+    html.button(
+      [
+        attribute.class("book-card"),
+        attribute.type_("button"),
+        attribute.aria_label("Open " <> book.title),
+        event.on_click(OpenBook(book.id)),
+      ],
+      [
+        html.div(
+          [attribute.class("book-cover"), attribute.style("background", color)],
+          [
+            html.div([attribute.class("book-cover-title")], [
+              html.text(book.title),
+            ]),
+          ],
+        ),
+        html.div([attribute.class("book-info")], [
+          html.div([attribute.class("book-title")], [html.text(book.title)]),
+          html.div([attribute.class("book-author")], [html.text(author)]),
+          html.div([attribute.class("book-meta")], [
+            html.text(format_word_count(book.word_count) <> " words"),
           ]),
-        ],
-      ),
-      html.div([attribute.class("book-info")], [
-        html.div([attribute.class("book-title")], [html.text(book.title)]),
-        html.div([attribute.class("book-author")], [html.text(author)]),
-        html.div([attribute.class("book-meta")], [
-          html.text(format_word_count(book.word_count) <> " words"),
         ]),
-      ]),
-    ],
-  )
+      ],
+    ),
+    html.button(
+      [
+        attribute.class("btn-delete-book"),
+        attribute.type_("button"),
+        attribute.aria_label("Delete " <> book.title),
+        event.on_click(ConfirmDelete(book.id)),
+      ],
+      [html.text("×")],
+    ),
+  ])
 }
 
 /// Format a word count with thousands separators. The prototype's

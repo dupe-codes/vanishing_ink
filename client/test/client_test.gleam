@@ -147,6 +147,7 @@ fn empty_model() -> Model {
       default_page_delay_ms: client.default_page_delay_ms,
     ),
     book_settings: None,
+    confirm_delete_id: None,
   )
 }
 

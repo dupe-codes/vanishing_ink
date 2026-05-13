@@ -972,6 +972,111 @@ pub fn book_settings_put_accepts_partial_overrides_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Delete book
+// ---------------------------------------------------------------------------
+
+pub fn delete_book_returns_204_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Doomed Book", None, sample_text)
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/" <> created.book.id),
+      ctx,
+    )
+  assert response.status == 204
+}
+
+pub fn delete_book_not_found_returns_404_test() {
+  use ctx <- with_context
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/no-such-book"),
+      ctx,
+    )
+  assert response.status == 404
+}
+
+pub fn delete_book_removes_from_list_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Ephemeral", None, sample_text)
+
+  // Verify it appears in the listing before deletion.
+  let before_resp =
+    router.handle_request(simulate.browser_request(http.Get, "/api/books"), ctx)
+  let before = decode_body(before_resp, decode.list(book_meta_wire_decoder()))
+  assert list.any(before, fn(b) { b.id == created.book.id })
+
+  let _ =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/" <> created.book.id),
+      ctx,
+    )
+
+  // Must no longer appear after deletion.
+  let after_resp =
+    router.handle_request(simulate.browser_request(http.Get, "/api/books"), ctx)
+  let after = decode_body(after_resp, decode.list(book_meta_wire_decoder()))
+  assert !list.any(after, fn(b) { b.id == created.book.id })
+}
+
+pub fn delete_book_cascades_reading_state_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "With State", None, sample_text)
+  let id = created.book.id
+
+  // Write a reading state row.
+  let _ =
+    http_put_reading_state(
+      ctx,
+      id,
+      put_reading_state_body("manual", 0, "2026-05-13T00:00:00Z"),
+    )
+
+  // Delete the book; the reading_state row must cascade.
+  let delete_resp =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/" <> id),
+      ctx,
+    )
+  assert delete_resp.status == 204
+
+  // Direct db check: reading_state row must be gone.
+  let assert Ok(state) = db.get_reading_state(ctx.db, id)
+  assert state == None
+}
+
+pub fn delete_book_cascades_book_settings_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "With Settings", None, sample_text)
+  let id = created.book.id
+
+  // Write a book_settings row.
+  let _ =
+    http_put_book_settings(
+      ctx,
+      id,
+      BookSettings(
+        wpm: Some(300),
+        paragraph_delay_ms: None,
+        page_delay_ms: None,
+        ghost_opacity: None,
+      ),
+    )
+
+  // Delete the book; the book_settings row must cascade.
+  let delete_resp =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/" <> id),
+      ctx,
+    )
+  assert delete_resp.status == 204
+
+  // Direct db check: book_settings row must be gone.
+  let assert Ok(settings) = db.get_book_settings(ctx.db, id)
+  assert settings == None
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
