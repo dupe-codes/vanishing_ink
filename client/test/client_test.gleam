@@ -3387,10 +3387,7 @@ pub fn update_book_settings_loaded_for_a_different_active_book_is_dropped_test()
   // own GET arrived (or, if B's GET arrived first, regress B's
   // already-merged state to A's).
   let defaults =
-    types.UserSettings(
-      ..empty_model().global_defaults,
-      default_wpm: 200,
-    )
+    types.UserSettings(..empty_model().global_defaults, default_wpm: 200)
   let prior =
     Model(
       ..empty_model(),
