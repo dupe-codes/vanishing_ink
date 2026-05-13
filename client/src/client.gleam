@@ -388,6 +388,17 @@ pub type LineBox {
 ///   `chapter_title_at` — the same caching pattern as the
 ///   sentence/word totals above. Empty string when no text is
 ///   loaded or the resolved chapter has no title.
+/// * `total_pages` — cached `list.length(pages)`. Maintained in
+///   the two arms that write `pages` (`TextLoaded` resets to `0`
+///   alongside `pages: []`; `ParagraphsMeasured` writes the count
+///   produced by `calculate_pages`). Same caching pattern as the
+///   sentence/word totals — the view path reads the cache rather
+///   than walking `pages` per render, which matters because
+///   re-pagination on a settings-slider drag can produce hundreds
+///   of pages on a 100k-word book. Reducer paths that need the
+///   page count (`advance_to_next_page`, `change_page`) read the
+///   cache for the same reason: a single canonical source of
+///   truth across view and reducer call sites.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -418,11 +429,14 @@ pub type Model {
     total_sentence_count: Int,
     total_word_count: Int,
     current_chapter_title: String,
-    /// Cached page count. Updated by `ParagraphsMeasured` immediately
-    /// after `calculate_pages` produces the new page list. View
-    /// functions read this field rather than calling
-    /// `list.length(model.pages)` on every render — `list.length` is
-    /// O(n) and re-pagination can produce many pages.
+    /// Cached `list.length(pages)`. Maintained in the two arms that
+    /// write `pages` — `TextLoaded` resets to `0` alongside
+    /// `pages: []`, and `ParagraphsMeasured` writes the count
+    /// produced by `calculate_pages`. Both view-path and
+    /// reducer-path call sites read this field rather than calling
+    /// `list.length(model.pages)`; `list.length` is O(n) and the
+    /// invariant `total_pages == list.length(pages)` makes the
+    /// cache the canonical source of truth.
     total_pages: Int,
   )
 }
