@@ -2603,12 +2603,40 @@ pub fn view_word_in_realtime_mode_disables_sentence_click_handler_test() {
 
 pub fn view_settings_mode_toggle_renders_with_realtime_off_by_default_test() {
   // The mode toggle is the entry point to RealTime mode. With
-  // the default model (`Manual`), the checkbox renders unchecked.
+  // the default model (`Manual`), the toggle must render
+  // unchecked. Asserting just the label string is insufficient —
+  // a regression that flipped `default_mode` to `RealTime` or
+  // hard-coded `attribute.checked(True)` would pass silently.
+  //
+  // `empty_model()` defaults to `dark_mode: True` and every
+  // other toggleable setting `False`, so a settings panel with
+  // the default model should render exactly one `checked`
+  // attribute (the dark-mode toggle). Two split chunks ⇒ one
+  // checked substring, which pins the mode toggle's off state
+  // by elimination.
   let model = Model(..empty_model(), settings_open: True)
 
   let rendered = client.view(model) |> element.to_string
 
   assert string.contains(rendered, "Real-time fade mode")
+  let checked_chunks = rendered |> string.split(" checked") |> list.length
+  assert checked_chunks == 2
+}
+
+pub fn view_settings_mode_toggle_renders_checked_when_realtime_test() {
+  // Asymmetric counterpart to the off-by-default test: when
+  // `model.mode == RealTime`, the mode toggle must render
+  // checked. With `dark_mode: True` (the `empty_model` default)
+  // and `mode: RealTime`, the settings panel should render
+  // exactly two `checked` attributes — three split chunks —
+  // catching a regression where `view_mode_toggle` hard-codes
+  // `attribute.checked(False)`.
+  let model = Model(..empty_model(), settings_open: True, mode: RealTime)
+
+  let rendered = client.view(model) |> element.to_string
+
+  let checked_chunks = rendered |> string.split(" checked") |> list.length
+  assert checked_chunks == 3
 }
 
 pub fn view_settings_wpm_slider_carries_bounds_from_constants_test() {
