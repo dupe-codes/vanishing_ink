@@ -40,11 +40,11 @@ import shared/segmenter.{
 import client.{
   type Model, AdvanceWord, EraseFocused, EraseSentence, FocusNext,
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, Manual, Model, NextPage,
-  ParagraphsMeasured, PauseFade, RealTime, ResumeFade, Running, SetFontSize,
-  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetWpm, SpacePressed, StartFade, Stopped, StopFade, TextLoaded,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  ParagraphsMeasured, PauseFade, Paused, RealTime, ResumeFade, Running,
+  SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
+  SetParagraphDelay, SetWpm, SpacePressed, StartFade, StopFade, Stopped,
+  TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{type Page, Page}
@@ -1036,7 +1036,15 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), None, True, "0", set.new(), Manual)
+    client.view_sentence(
+      sentence,
+      set.new(),
+      None,
+      True,
+      "0",
+      set.new(),
+      Manual,
+    )
     |> click_event_names
 
   assert click_events == ["click"]
@@ -2070,4 +2078,594 @@ pub fn view_settings_dyslexia_toggle_unchecked_when_field_false_test() {
 
   let checked_chunks = rendered |> string.split(" checked") |> list.length
   assert checked_chunks == 2
+}
+
+// ---------------------------------------------------------------------------
+// Real-time fade engine
+// ---------------------------------------------------------------------------
+//
+// Fade-engine fixture: two short paragraphs, one sentence each,
+// two words per sentence. Word `global_index` runs 0..3 in
+// reading order: 0 ("One") and 1 ("two.") in paragraph 0,
+// sentence 0; 2 ("Three") and 3 ("four.") in paragraph 1,
+// sentence 1. Paginated as two single-paragraph pages so the
+// boundary tests can exercise the page-advance path without
+// arithmetic acrobatics.
+
+fn fade_text() -> SegmentedText {
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      Paragraph(index: 0, sentences: [
+        Sentence(index: 0, global_index: 0, words: [
+          Word(index: 0, global_index: 0, text: "One"),
+          Word(index: 1, global_index: 1, text: "two."),
+        ]),
+      ]),
+      Paragraph(index: 1, sentences: [
+        Sentence(index: 0, global_index: 1, words: [
+          Word(index: 0, global_index: 2, text: "Three"),
+          Word(index: 1, global_index: 3, text: "four."),
+        ]),
+      ]),
+    ]),
+  ])
+}
+
+fn fade_pages() -> List(Page) {
+  let flat = pagination.flatten(fade_text())
+  list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+}
+
+fn fade_model() -> Model {
+  let text = fade_text()
+  Model(
+    ..empty_model(),
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: fade_pages(),
+    mode: RealTime,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// update — SetMode
+// ---------------------------------------------------------------------------
+
+pub fn update_set_mode_realtime_flips_mode_only_test() {
+  // A Manual → RealTime switch must not auto-start the engine.
+  // The reader has to press Space/tap to begin; `mode` flips but
+  // `engine_state` stays `Stopped` and `next_word_index` stays
+  // `None`. Pinning all three together catches any future "helpful"
+  // refactor that decides to start the engine on the mode change.
+  let prior = empty_model()
+
+  let #(updated, _effect) = client.update(prior, SetMode(RealTime))
+
+  assert updated == Model(..prior, mode: RealTime)
+}
+
+pub fn update_set_mode_manual_stops_running_engine_test() {
+  // A RealTime → Manual switch must halt any running engine — the
+  // bitset state survives (so previously-faded words stay faded)
+  // but `engine_state` resets to `Stopped` and `next_word_index`
+  // resets to `None`. The FFI `clear_word_timer` runs as a side
+  // effect; we cannot inspect the effect runtime here so we pin the
+  // model transition and trust the FFI to honour its contract.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(2),
+      erased_words: set.from_list([0, 1]),
+    )
+
+  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+
+  assert updated.mode == Manual
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  // Bitsets survive the mode switch — previously faded words stay
+  // faded so the reader's progress isn't lost on the toggle.
+  assert updated.erased_words == set.from_list([0, 1])
+}
+
+// ---------------------------------------------------------------------------
+// update — StartFade
+// ---------------------------------------------------------------------------
+
+pub fn update_start_fade_initialises_to_first_eligible_word_test() {
+  // From a clean RealTime state, StartFade picks the first word in
+  // document order on the current page and transitions to Running.
+  // Word 0 ("One") is the first word on page 0; it becomes the
+  // first fade target.
+  let prior = fade_model()
+
+  let #(updated, _effect) = client.update(prior, StartFade)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(0)
+}
+
+pub fn update_start_fade_skips_already_faded_individual_words_test() {
+  // The first word on page 0 is already in `erased_words` (e.g.
+  // the engine ran once, the reader paused on Stop, and is now
+  // restarting via SpacePressed → StartFade after the engine
+  // halted mid-page). StartFade must skip that word and pick
+  // word 1 — the next eligible word on the current page in
+  // document order.
+  let prior = Model(..fade_model(), erased_words: set.from_list([0]))
+
+  let #(updated, _effect) = client.update(prior, StartFade)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(1)
+}
+
+pub fn update_start_fade_is_noop_when_no_eligible_word_on_page_test() {
+  // Every word on page 0 is already in the bitset (worst case: the
+  // reader switched to RealTime after manually erasing the only
+  // sentence on this page). StartFade has nothing to schedule, so
+  // it stays Stopped. Without this guard, the engine would set
+  // `next_word_index` to one of the already-erased words and the
+  // first AdvanceWord would no-op forever.
+  let prior = Model(..fade_model(), erased_words: set.from_list([0, 1]))
+
+  let #(updated, _effect) = client.update(prior, StartFade)
+
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+}
+
+// ---------------------------------------------------------------------------
+// update — PauseFade / ResumeFade / StopFade
+// ---------------------------------------------------------------------------
+
+pub fn update_pause_fade_transitions_running_to_paused_test() {
+  // Pause must (a) flip the engine state and (b) keep
+  // `next_word_index` intact so resume picks up at the same word.
+  let prior =
+    Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
+
+  let #(updated, _effect) = client.update(prior, PauseFade)
+
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == Some(2)
+}
+
+pub fn update_pause_fade_is_noop_when_not_running_test() {
+  // Paused → Paused is a stable state; ditto Stopped → Stopped.
+  // Without the guard, a stray Pause from a debounced UI control
+  // could overwrite a valid Stopped state with Paused and leave
+  // the engine wedged.
+  let prior_paused = Model(..fade_model(), engine_state: Paused)
+  let prior_stopped = Model(..fade_model(), engine_state: Stopped)
+
+  let #(after_pause_on_paused, _) = client.update(prior_paused, PauseFade)
+  let #(after_pause_on_stopped, _) = client.update(prior_stopped, PauseFade)
+
+  assert after_pause_on_paused == prior_paused
+  assert after_pause_on_stopped == prior_stopped
+}
+
+pub fn update_resume_fade_transitions_paused_to_running_test() {
+  let prior =
+    Model(..fade_model(), engine_state: Paused, next_word_index: Some(1))
+
+  let #(updated, _effect) = client.update(prior, ResumeFade)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(1)
+}
+
+pub fn update_resume_fade_is_noop_when_not_paused_test() {
+  // Symmetric guard to PauseFade. A resume on a Running or Stopped
+  // engine is meaningless and must not re-schedule a timer.
+  let prior_running = Model(..fade_model(), engine_state: Running)
+  let prior_stopped = Model(..fade_model(), engine_state: Stopped)
+
+  let #(after_resume_on_running, _) = client.update(prior_running, ResumeFade)
+  let #(after_resume_on_stopped, _) = client.update(prior_stopped, ResumeFade)
+
+  assert after_resume_on_running == prior_running
+  assert after_resume_on_stopped == prior_stopped
+}
+
+pub fn update_stop_fade_clears_engine_state_and_next_word_test() {
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(2),
+      erased_words: set.from_list([0, 1]),
+    )
+
+  let #(updated, _effect) = client.update(prior, StopFade)
+
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  // Erased words persist past Stop — the reader expects the
+  // already-faded prose to stay faded; only the *timer* stops.
+  assert updated.erased_words == set.from_list([0, 1])
+}
+
+// ---------------------------------------------------------------------------
+// update — AdvanceWord
+// ---------------------------------------------------------------------------
+
+pub fn update_advance_word_fades_current_and_picks_next_on_page_test() {
+  // Running tick: the current `next_word_index` is added to
+  // `erased_words` and the next eligible word in document order
+  // becomes the new `next_word_index`. With word 0 in flight on
+  // page 0, the new target is word 1 (still in the same sentence
+  // / paragraph — no boundary crossing).
+  let prior =
+    Model(..fade_model(), engine_state: Running, next_word_index: Some(0))
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(1)
+  assert updated.erased_words == set.from_list([0])
+}
+
+pub fn update_advance_word_is_noop_when_engine_stopped_test() {
+  // Stale-tick guard. A timer callback that survives the
+  // synchronous FFI clear (it shouldn't, but the reducer is the
+  // belt to the FFI's braces) must not mutate state. Pinning the
+  // whole-model equality so a regression that, say, drops a word
+  // into `erased_words` without changing `engine_state` also fails
+  // here.
+  let prior =
+    Model(..fade_model(), engine_state: Stopped, next_word_index: None)
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated == prior
+}
+
+pub fn update_advance_word_is_noop_when_engine_paused_test() {
+  // Pause-induced stale-tick guard. Same rationale as the Stopped
+  // case — a callback that fires after `PauseFade` should be
+  // absorbed without changing the bitset.
+  let prior =
+    Model(..fade_model(), engine_state: Paused, next_word_index: Some(1))
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated == prior
+}
+
+pub fn update_advance_word_advances_to_next_page_when_current_page_exhausted_test() {
+  // Word 1 is the last eligible word on page 0. After fading it,
+  // the engine must walk forward to page 1, set the target to the
+  // first eligible word on that page (word 2), and stay Running.
+  // The page-delay milliseconds are baked into the scheduled
+  // effect (not directly observable here) — the model-level pin
+  // is the page change plus the new word target.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      erased_words: set.from_list([0]),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.engine_state == Running
+  assert updated.current_page == 1
+  assert updated.next_word_index == Some(2)
+  assert updated.erased_words == set.from_list([0, 1])
+}
+
+pub fn update_advance_word_skips_words_in_manually_erased_sentences_test() {
+  // Sentence 1 was manually erased before the engine started.
+  // After fading word 1 on page 0, the engine looks ahead and
+  // finds no eligible word on page 0 (correct — page 0 is done),
+  // crosses to page 1 to look for the next target, and finds
+  // *none* there either because both words on page 1 belong to
+  // erased sentence 1. The engine then stops gracefully rather
+  // than spinning on an empty document.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      erased: set.from_list([1]),
+      erased_words: set.from_list([0]),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  assert updated.erased_words == set.from_list([0, 1])
+}
+
+pub fn update_advance_word_stops_engine_at_end_of_document_test() {
+  // Word 3 is the last word of the last page. After fading it,
+  // there is no next eligible word anywhere — the engine
+  // transitions to Stopped and clears `next_word_index` so a
+  // subsequent SpacePressed will Start-from-scratch instead of
+  // pretending to Resume.
+  let prior =
+    Model(
+      ..fade_model(),
+      current_page: 1,
+      engine_state: Running,
+      next_word_index: Some(3),
+      erased_words: set.from_list([0, 1, 2]),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  assert updated.erased_words == set.from_list([0, 1, 2, 3])
+}
+
+// ---------------------------------------------------------------------------
+// update — SpacePressed
+// ---------------------------------------------------------------------------
+
+pub fn update_space_pressed_in_realtime_starts_engine_when_stopped_test() {
+  let prior = fade_model()
+
+  let #(updated, _effect) = client.update(prior, SpacePressed)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(0)
+}
+
+pub fn update_space_pressed_in_realtime_pauses_running_engine_test() {
+  let prior =
+    Model(..fade_model(), engine_state: Running, next_word_index: Some(1))
+
+  let #(updated, _effect) = client.update(prior, SpacePressed)
+
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == Some(1)
+}
+
+pub fn update_space_pressed_in_realtime_resumes_paused_engine_test() {
+  let prior =
+    Model(..fade_model(), engine_state: Paused, next_word_index: Some(2))
+
+  let #(updated, _effect) = client.update(prior, SpacePressed)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(2)
+}
+
+pub fn update_space_pressed_in_manual_mode_invokes_erase_focused_test() {
+  // In Manual mode `SpacePressed` must be equivalent to the
+  // pre-fade-engine `EraseFocused` keybind: erase the focused
+  // sentence and advance the cursor to the next visible one. The
+  // sentinel is the focused-sentence transition — pre: 0, post: 1.
+  // The mode field stays `Manual` and the engine state stays
+  // `Stopped`, so the fade machinery is fully bypassed.
+  let prior = Model(..fade_model(), mode: Manual, focused_sentence: Some(0))
+
+  let #(updated, _effect) = client.update(prior, SpacePressed)
+
+  assert updated.mode == Manual
+  assert updated.engine_state == Stopped
+  assert set.contains(updated.erased, 0)
+  assert updated.focused_sentence == Some(1)
+}
+
+// ---------------------------------------------------------------------------
+// update — Set* clamping on the new sliders
+// ---------------------------------------------------------------------------
+
+pub fn update_set_wpm_clamps_into_range_test() {
+  let prior = empty_model()
+  let #(low, _) = client.update(prior, SetWpm(0))
+  let #(high, _) = client.update(prior, SetWpm(10_000))
+  let #(mid, _) = client.update(prior, SetWpm(220))
+
+  assert low.wpm == client.min_wpm
+  assert high.wpm == client.max_wpm
+  assert mid.wpm == 220
+}
+
+pub fn update_set_paragraph_delay_clamps_into_range_test() {
+  let prior = empty_model()
+  let #(low, _) = client.update(prior, SetParagraphDelay(-500))
+  let #(high, _) = client.update(prior, SetParagraphDelay(99_999))
+  let #(mid, _) = client.update(prior, SetParagraphDelay(1500))
+
+  assert low.paragraph_delay_ms == client.min_paragraph_delay_ms
+  assert high.paragraph_delay_ms == client.max_paragraph_delay_ms
+  assert mid.paragraph_delay_ms == 1500
+}
+
+pub fn update_set_page_delay_clamps_into_range_test() {
+  let prior = empty_model()
+  let #(low, _) = client.update(prior, SetPageDelay(-100))
+  let #(high, _) = client.update(prior, SetPageDelay(99_999))
+  let #(mid, _) = client.update(prior, SetPageDelay(2500))
+
+  assert low.page_delay_ms == client.min_page_delay_ms
+  assert high.page_delay_ms == client.max_page_delay_ms
+  assert mid.page_delay_ms == 2500
+}
+
+// ---------------------------------------------------------------------------
+// update — TouchEnd routing in RealTime mode
+// ---------------------------------------------------------------------------
+
+pub fn update_touch_end_tap_in_realtime_mode_starts_fade_engine_test() {
+  // The touch-end Tap classification, which is a no-op in Manual
+  // mode (taps on sentences erase via the synthesised `click`
+  // event, not through the `Tap` outcome), routes to
+  // `SpacePressed` in RealTime mode. From a Stopped engine this
+  // starts the fade.
+  let prior = Model(..fade_model(), touch_start: Some(#(100.0, 100.0)))
+
+  // Coordinates close to the start coordinate → classifies as Tap.
+  let #(updated, _effect) = client.update(prior, TouchEnd(101.0, 101.0))
+
+  assert updated.touch_start == None
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(0)
+}
+
+pub fn update_touch_end_tap_in_realtime_mode_pauses_running_engine_test() {
+  // Same Tap path, this time toggling a Running engine into Paused
+  // — the page-tap pause/resume affordance the brief calls out.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      touch_start: Some(#(100.0, 100.0)),
+    )
+
+  let #(updated, _effect) = client.update(prior, TouchEnd(102.0, 100.0))
+
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == Some(1)
+}
+
+pub fn update_touch_end_swipe_left_still_advances_page_in_realtime_mode_test() {
+  // The page-swipe gesture must remain wired to NextPage even in
+  // RealTime mode — the reader still needs a way to skip ahead
+  // manually. This pins that the RealTime tap-routing addition
+  // didn't accidentally swallow swipe gestures alongside taps.
+  let prior = Model(..fade_model(), touch_start: Some(#(200.0, 100.0)))
+
+  // dx = -100 → SwipeLeft (> swipe_threshold, mostly horizontal).
+  let #(updated, _effect) = client.update(prior, TouchEnd(100.0, 100.0))
+
+  assert updated.current_page == 1
+}
+
+// ---------------------------------------------------------------------------
+// view — word-level fade rendering
+// ---------------------------------------------------------------------------
+
+pub fn view_word_in_erased_words_carries_opacity_style_test() {
+  // The fade engine writes a word's `global_index` into
+  // `erased_words`; the view must reflect that as an inline
+  // `style="opacity:..."` on the matching word span. The CSS
+  // transition does the visible fade; the inline style is the
+  // hook the rule transitions against.
+  let model = Model(..fade_model(), erased_words: set.from_list([0]))
+
+  let rendered = client.view(model) |> element.to_string
+
+  // Inline-styled word with global_index 0, opacity 0. Pinning
+  // the substring against the rendered span verifies the
+  // attribute is on the word — not, say, on the parent sentence.
+  // Lustre emits CSS declarations with a trailing semicolon
+  // (`opacity:0;`), so the substring matches that exact form.
+  assert string.contains(
+    rendered,
+    "data-global-index=\"0\" style=\"opacity:0;\"",
+  )
+  // The companion word (global_index 1) on the same page is NOT
+  // in `erased_words`, so it must NOT carry the inline opacity.
+  // A negative substring assertion catches the symmetric failure
+  // mode: a future change that inlines opacity on every word
+  // (regardless of bitset membership) would still pass the
+  // positive case above.
+  assert !string.contains(rendered, "data-global-index=\"1\" style=\"opacity")
+}
+
+pub fn view_word_in_realtime_mode_disables_sentence_click_handler_test() {
+  // In RealTime mode, sentence spans must not carry a click
+  // handler — a tap on a sentence pauses/resumes the engine via
+  // the page-level Tap routing, not erases the sentence.
+  let sentence =
+    Sentence(index: 0, global_index: 0, words: [
+      Word(index: 0, global_index: 0, text: "Hi."),
+    ])
+
+  let click_events =
+    client.view_sentence(
+      sentence,
+      set.new(),
+      None,
+      True,
+      "0",
+      set.new(),
+      RealTime,
+    )
+    |> click_event_names
+
+  assert click_events == []
+}
+
+// ---------------------------------------------------------------------------
+// view — settings panel (fade-engine additions)
+// ---------------------------------------------------------------------------
+
+pub fn view_settings_mode_toggle_renders_with_realtime_off_by_default_test() {
+  // The mode toggle is the entry point to RealTime mode. With
+  // the default model (`Manual`), the checkbox renders unchecked.
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "Real-time fade mode")
+}
+
+pub fn view_settings_wpm_slider_carries_bounds_from_constants_test() {
+  let model = Model(..empty_model(), settings_open: True, wpm: 250)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Words per minute\"")
+  assert string.contains(
+    rendered,
+    "max=\"" <> int.to_string(client.max_wpm) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> int.to_string(client.min_wpm) <> "\"",
+  )
+  assert string.contains(rendered, "step=\"10\"")
+  assert string.contains(rendered, "value=\"250\"")
+  assert string.contains(rendered, "250 wpm")
+}
+
+pub fn view_settings_paragraph_delay_slider_carries_bounds_test() {
+  let model =
+    Model(..empty_model(), settings_open: True, paragraph_delay_ms: 1500)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "aria-label=\"Paragraph pause in milliseconds\"",
+  )
+  assert string.contains(
+    rendered,
+    "max=\"" <> int.to_string(client.max_paragraph_delay_ms) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> int.to_string(client.min_paragraph_delay_ms) <> "\"",
+  )
+  assert string.contains(rendered, "value=\"1500\"")
+  assert string.contains(rendered, "1500 ms")
+}
+
+pub fn view_settings_page_delay_slider_carries_bounds_test() {
+  let model = Model(..empty_model(), settings_open: True, page_delay_ms: 2500)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Page pause in milliseconds\"")
+  assert string.contains(
+    rendered,
+    "max=\"" <> int.to_string(client.max_page_delay_ms) <> "\"",
+  )
+  assert string.contains(
+    rendered,
+    "min=\"" <> int.to_string(client.min_page_delay_ms) <> "\"",
+  )
+  assert string.contains(rendered, "value=\"2500\"")
+  assert string.contains(rendered, "2500 ms")
 }
