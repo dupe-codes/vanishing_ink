@@ -418,6 +418,12 @@ pub type Model {
     total_sentence_count: Int,
     total_word_count: Int,
     current_chapter_title: String,
+    /// Cached page count. Updated by `ParagraphsMeasured` immediately
+    /// after `calculate_pages` produces the new page list. View
+    /// functions read this field rather than calling
+    /// `list.length(model.pages)` on every render — `list.length` is
+    /// O(n) and re-pagination can produce many pages.
+    total_pages: Int,
   )
 }
 
@@ -693,6 +699,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       total_sentence_count: 0,
       total_word_count: 0,
       current_chapter_title: "",
+      total_pages: 0,
     )
 
   // Boot effects:
@@ -864,6 +871,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           line_boxes: [],
           active_line: None,
           current_chapter_title: chapter_title,
+          total_pages: list.length(pages),
         ),
         // Pagination ran — chain a line measurement so the active-line
         // overlay re-anchors to the post-repagination geometry. The
@@ -1941,7 +1949,7 @@ fn view_placeholder() -> Element(Msg) {
 /// `styles.css`) so its descendants cannot receive any touch or
 /// click events.
 fn view_paginated(model: Model) -> Element(Msg) {
-  let total = list.length(model.pages)
+  let total = model.total_pages
   let erased_opacity = erased_opacity_value(model)
   let visible = case pagination.nth(model.pages, model.current_page) {
     Some(page) ->
@@ -2116,17 +2124,17 @@ fn view_progress_bar(model: Model) -> Element(Msg) {
     [
       attribute.class("reader-progress-track"),
       attribute.role("progressbar"),
-      attribute.attribute("aria-valuemin", "0"),
-      attribute.attribute("aria-valuemax", "100"),
-      attribute.attribute("aria-valuenow", value_now),
-      attribute.attribute("aria-label", "Reading progress"),
+      attribute.aria_valuemin("0"),
+      attribute.aria_valuemax("100"),
+      attribute.aria_valuenow(value_now),
+      attribute.aria_label("Reading progress"),
     ],
     [
       html.div(
         [
           attribute.class("reader-progress-fill"),
           attribute.style("width", width_value),
-          attribute.attribute("aria-hidden", "true"),
+          attribute.aria_hidden(True),
         ],
         [],
       ),
@@ -2263,7 +2271,7 @@ fn render_active_line_overlay(box: LineBox) -> Element(Msg) {
   html.div(
     [
       attribute.class("reader-active-line"),
-      attribute.attribute("aria-hidden", "true"),
+      attribute.aria_hidden(True),
       attribute.style("top", top_value),
       attribute.style("height", height_value),
     ],
@@ -2425,21 +2433,29 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 /// reaches the reading-area touch handler and cannot fire the
 /// engine transition twice.
 fn view_bottom_realtime(model: Model) -> Element(Msg) {
-  let #(button_label, button_class, play_msg) = case model.engine_state {
-    Running -> #("⏸", "btn-play", PauseFade)
-    Paused -> #("▶", "btn-play ready", ResumeFade)
-    Stopped -> #("▶", "btn-play ready", StartFade)
+  let #(button_label, button_class, play_msg, aria_label) = case
+    model.engine_state
+  {
+    Running -> #("⏸", "btn-play", PauseFade, "Pause reading")
+    Paused -> #("▶", "btn-play ready", ResumeFade, "Resume reading")
+    Stopped -> #("▶", "btn-play ready", StartFade, "Start reading")
   }
 
   html.div([attribute.class("reader-bottom-realtime")], [
-    html.div([attribute.class("wpm-readout")], [
-      html.text(int.to_string(model.wpm) <> " wpm"),
-    ]),
+    html.div(
+      [
+        attribute.class("wpm-readout"),
+        attribute.aria_label(
+          "Reading speed: " <> int.to_string(model.wpm) <> " words per minute",
+        ),
+      ],
+      [html.text(int.to_string(model.wpm) <> " wpm")],
+    ),
     html.button(
       [
         attribute.class(button_class),
         attribute.type_("button"),
-        attribute.aria_label("Play or pause reading"),
+        attribute.aria_label(aria_label),
         event.on_click(play_msg),
       ],
       [html.text(button_label)],
@@ -2447,7 +2463,7 @@ fn view_bottom_realtime(model: Model) -> Element(Msg) {
     html.div(
       [
         attribute.class("btn-play-spacer"),
-        attribute.attribute("aria-hidden", "true"),
+        attribute.aria_hidden(True),
       ],
       [],
     ),
@@ -2479,7 +2495,7 @@ fn view_measurement_container(
     [
       attribute.id(measurement_id),
       attribute.class("reader-measurement"),
-      attribute.attribute("aria-hidden", "true"),
+      attribute.aria_hidden(True),
     ],
     list.map(paragraphs, fn(p) {
       // Mode is `Manual` here as a no-op default: the measurement
@@ -2721,9 +2737,9 @@ fn view_settings_panel(model: Model) -> Element(Msg) {
   html.div(
     [
       attribute.class("settings-overlay"),
-      attribute.attribute("role", "dialog"),
-      attribute.attribute("aria-modal", "true"),
-      attribute.attribute("aria-label", "Reader settings"),
+      attribute.role("dialog"),
+      attribute.aria_modal(True),
+      attribute.aria_label("Reader settings"),
       // A click on the scrim — not the panel — closes the overlay.
       // The panel itself stops propagation via the inner click guard
       // below, so taps inside the panel never reach this listener.
@@ -2759,7 +2775,7 @@ fn view_settings_sheet(model: Model) -> Element(Msg) {
     html.div(
       [
         attribute.class("settings-sheet-handle"),
-        attribute.attribute("aria-hidden", "true"),
+        attribute.aria_hidden(True),
       ],
       [],
     ),
@@ -2806,7 +2822,7 @@ fn view_settings_header() -> Element(Msg) {
     html.button(
       [
         attribute.class("settings-panel-close"),
-        attribute.attribute("aria-label", "Close settings"),
+        attribute.aria_label("Close settings"),
         attribute.type_("button"),
         event.on_click(ToggleSettings),
       ],
@@ -2878,7 +2894,7 @@ fn view_font_size_slider(model: Model) -> Element(Msg) {
       attribute.max(int.to_string(max_font_size)),
       attribute.step("1"),
       attribute.value(int.to_string(model.font_size)),
-      attribute.attribute("aria-label", "Font size in pixels"),
+      attribute.aria_label("Font size in pixels"),
       event.on_input(fn(value) {
         // `parse` returns `Result(Int, Nil)` — a slider always emits a
         // valid integer string, but on the off chance the browser
@@ -2908,7 +2924,7 @@ fn view_line_spacing_slider(model: Model) -> Element(Msg) {
       attribute.max(float.to_string(max_line_spacing)),
       attribute.step("0.1"),
       attribute.value(float.to_string(model.line_spacing)),
-      attribute.attribute("aria-label", "Line spacing multiplier"),
+      attribute.aria_label("Line spacing multiplier"),
       event.on_input(fn(value) {
         case float.parse(value) {
           Ok(parsed) -> SetLineSpacing(parsed)
@@ -2961,7 +2977,7 @@ fn view_wpm_slider(model: Model) -> Element(Msg) {
       attribute.max(int.to_string(max_wpm)),
       attribute.step("10"),
       attribute.value(int.to_string(model.wpm)),
-      attribute.attribute("aria-label", "Words per minute"),
+      attribute.aria_label("Words per minute"),
       event.on_input(fn(value) {
         case int.parse(value) {
           Ok(parsed) -> SetWpm(parsed)
@@ -2987,7 +3003,7 @@ fn view_paragraph_delay_slider(model: Model) -> Element(Msg) {
       attribute.max(int.to_string(max_paragraph_delay_ms)),
       attribute.step("100"),
       attribute.value(int.to_string(model.paragraph_delay_ms)),
-      attribute.attribute("aria-label", "Paragraph pause in milliseconds"),
+      attribute.aria_label("Paragraph pause in milliseconds"),
       event.on_input(fn(value) {
         case int.parse(value) {
           Ok(parsed) -> SetParagraphDelay(parsed)
@@ -3013,7 +3029,7 @@ fn view_page_delay_slider(model: Model) -> Element(Msg) {
       attribute.max(int.to_string(max_page_delay_ms)),
       attribute.step("100"),
       attribute.value(int.to_string(model.page_delay_ms)),
-      attribute.attribute("aria-label", "Page pause in milliseconds"),
+      attribute.aria_label("Page pause in milliseconds"),
       event.on_input(fn(value) {
         case int.parse(value) {
           Ok(parsed) -> SetPageDelay(parsed)
@@ -3039,7 +3055,7 @@ fn view_ghost_opacity_slider(model: Model) -> Element(Msg) {
       attribute.max(float.to_string(max_ghost_opacity)),
       attribute.step("0.01"),
       attribute.value(float.to_string(model.ghost_opacity)),
-      attribute.attribute("aria-label", "Ghost mode opacity"),
+      attribute.aria_label("Ghost mode opacity"),
       event.on_input(fn(value) {
         case float.parse(value) {
           Ok(parsed) -> SetGhostOpacity(parsed)

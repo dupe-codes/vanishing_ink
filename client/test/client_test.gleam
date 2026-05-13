@@ -114,6 +114,7 @@ fn empty_model() -> Model {
     total_sentence_count: 0,
     total_word_count: 0,
     current_chapter_title: "",
+    total_pages: 0,
   )
 }
 
@@ -487,6 +488,67 @@ pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test
   assert updated.focused_sentence == None
 }
 
+pub fn update_paragraphs_measured_caches_total_pages_test() {
+  // `total_pages` must equal `list.length(updated.pages)` after
+  // `ParagraphsMeasured` — three 100px paragraphs into a 250px
+  // budget paginates to 2 pages (2 + 1 fit).
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 250.0),
+    )
+
+  assert updated.total_pages == list.length(updated.pages)
+  assert updated.total_pages == 2
+}
+
+pub fn update_paragraphs_measured_updates_total_pages_on_repagination_test() {
+  // Reducing the available height forces repagination to more pages.
+  // `total_pages` must track the new count, not the stale one.
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_pages: 2,
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  // 25px budget forces one paragraph per page → 3 pages.
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  assert updated.total_pages == 3
+  assert updated.total_pages == list.length(updated.pages)
+}
+
+pub fn update_paragraphs_measured_sets_total_pages_zero_when_no_text_test() {
+  // A measurement that arrives while text is still None produces no
+  // pages — `total_pages` must reflect the empty result.
+  let prior = Model(..empty_model(), total_pages: 5)
+
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: [], available_height: 380.0),
+    )
+
+  assert updated.total_pages == 0
+}
+
 // ---------------------------------------------------------------------------
 // update — NextPage
 // ---------------------------------------------------------------------------
@@ -700,6 +762,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3718,6 +3781,7 @@ pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3784,6 +3848,69 @@ pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
   assert string.contains(rendered, "class=\"btn-play\"")
   assert !string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">⏸</button>")
+}
+
+pub fn view_realtime_play_button_aria_label_is_start_reading_when_stopped_test() {
+  // Screen-reader users need to know what the button does, not just
+  // that it is a play/pause toggle. Engine state `Stopped` means
+  // the first press will begin reading — announce "Start reading".
+  let model =
+    Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Start reading\"")
+}
+
+pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test() {
+  // Engine state `Paused`: reading was in progress and the reader
+  // paused it. The button press resumes from where it left off —
+  // announce "Resume reading", not "Start reading".
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Paused,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Resume reading\"")
+  assert !string.contains(rendered, "aria-label=\"Start reading\"")
+}
+
+pub fn view_realtime_play_button_aria_label_is_pause_reading_when_running_test() {
+  // Engine state `Running`: the engine is actively fading words.
+  // The button press will pause it — announce "Pause reading".
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Pause reading\"")
+  assert !string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Resume reading\"")
+}
+
+pub fn view_realtime_wpm_readout_has_accessible_label_test() {
+  // The `N wpm` text is a terse visual shorthand that screen readers
+  // may not announce in enough context. The aria-label supplies the
+  // full phrase — "Reading speed: N words per minute" — so the
+  // announcement is unambiguous regardless of the surrounding layout.
+  let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 200)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "aria-label=\"Reading speed: 200 words per minute\"",
+  )
 }
 
 pub fn view_settings_sheet_carries_handle_and_dividers_test() {
