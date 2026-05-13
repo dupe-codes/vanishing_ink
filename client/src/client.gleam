@@ -322,7 +322,7 @@ pub type LineBox {
 ///   to a snap. Seeded from `prefers-reduced-motion` at boot.
 /// * `settings_open` — when `True`, the settings panel renders as a
 ///   bottom-sheet overlay above the reading surface. The gear icon
-///   on the control bar toggles it.
+///   on the reader header toggles it.
 /// * `mode` — `Manual` (tap/click/vim erasure) or `RealTime` (the
 ///   WPM-paced fade engine). Default `Manual` to keep the original
 ///   reader behaviour for first-time users; the mode toggle in the
