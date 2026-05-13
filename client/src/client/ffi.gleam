@@ -161,3 +161,53 @@ pub fn set_body_class(class_name: String, enabled: Bool) -> Nil
 /// attribute value is touched.
 @external(javascript, "./ffi.ffi.mjs", "ensure_viewport_fit_cover")
 pub fn ensure_viewport_fit_cover() -> Nil
+
+/// Failure modes for the JSON fetch wrappers below. The shape matches
+/// the three places a request can fail:
+///
+/// * `NetworkError` — the underlying `fetch()` promise rejected (DNS,
+///   CORS, offline, server unreachable). The browser exposes the
+///   reason only as a `TypeError` message string; we surface it
+///   verbatim for the developer console.
+/// * `HttpError` — the server responded with a non-2xx status. Both
+///   the numeric status and the response body are preserved so a 4xx
+///   validation message from the API is visible to the caller.
+/// * `DecodeError` — the response body was not the expected shape.
+///   The caller maps `gleam_json`'s structured decode error into a
+///   single human-readable `detail` string before constructing this
+///   variant.
+pub type FetchError {
+  NetworkError(message: String)
+  HttpError(status: Int, body: String)
+  DecodeError(detail: String)
+}
+
+/// Issue a `GET` for `url` and invoke `on_complete` with either the
+/// raw response body (`Ok(body_string)`) or a typed `FetchError`. The
+/// caller is responsible for running a JSON decoder on the body —
+/// keeping decoding out of the FFI means a future content type (e.g.
+/// plain text health probes) reuses the same primitive without
+/// special-casing.
+///
+/// Relative URLs are resolved against the document's base URL by the
+/// browser, so `"/api/books"` works without callers needing to
+/// reconstruct the origin. This is the principal reason for the
+/// bespoke wrapper — the previous `gleam_fetch` spike could not
+/// express relative URLs because `request.to/from_uri` requires both
+/// scheme and host.
+@external(javascript, "./ffi.ffi.mjs", "fetch_json_get")
+pub fn fetch_json_get(
+  url: String,
+  on_complete: fn(Result(String, FetchError)) -> Nil,
+) -> Nil
+
+/// Issue a `POST` for `url` with `body` as the request payload (sent
+/// with `Content-Type: application/json`) and invoke `on_complete`
+/// the same way as `fetch_json_get`. The caller is responsible for
+/// serialising the request body to a JSON string before calling.
+@external(javascript, "./ffi.ffi.mjs", "fetch_json_post")
+pub fn fetch_json_post(
+  url: String,
+  body: String,
+  on_complete: fn(Result(String, FetchError)) -> Nil,
+) -> Nil

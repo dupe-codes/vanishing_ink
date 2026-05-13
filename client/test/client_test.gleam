@@ -114,6 +114,21 @@ fn empty_model() -> Model {
     total_sentence_count: 0,
     total_word_count: 0,
     current_chapter_title: "",
+    // Default the fixture to the `Reader` view so the long-standing
+    // reader-tree tests (which built models off this helper before
+    // the library view existed) continue to render the reader.
+    // Library-specific tests opt in by passing `view: client.Library`
+    // explicitly through `Model(..empty_model(), ...)`.
+    view: client.Reader,
+    books: [],
+    books_loading: False,
+    library_error: None,
+    active_book_id: None,
+    paste_title: "",
+    paste_text: "",
+    paste_submitting: False,
+    paste_error: None,
+    add_book_open: False,
   )
 }
 
@@ -625,8 +640,13 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
 pub fn view_renders_loading_placeholder_when_text_is_none_test() {
   let rendered = client.view(empty_model()) |> element.to_string
 
+  // `empty_model()` defaults to `view: Reader` so this test sees the
+  // reader's loading placeholder (rather than the library grid). The
+  // shell class is now `vi-app` because the same `<div>` hosts both
+  // views — the `reader` class previously implied the surface was
+  // always the reading view.
   assert rendered
-    == "<div class=\"reader\" id=\"vi-shell\">"
+    == "<div class=\"vi-app\" id=\"vi-shell\">"
     <> "<div class=\"reader-placeholder\">Loading...</div>"
     <> "</div>"
 }
@@ -706,13 +726,9 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
 
   // Header chrome — back button + chapter title slot + settings
   // gear all appear in the top row. The back button's aria-label
-  // describes the action it dispatches today (`SetMode(Manual)`),
-  // not a future library-navigation behaviour.
+  // describes the action it dispatches today (`GoToLibrary`).
   assert string.contains(rendered, "class=\"reader-header\"")
-  assert string.contains(
-    rendered,
-    "aria-label=\"Switch to manual reading mode\"",
-  )
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, "class=\"reader-title\"")
 
@@ -3338,9 +3354,10 @@ pub fn default_line_spacing_matches_warm_palette_mock_test() {
 pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   // The header is rendered for every paginated view, regardless of
   // mode. It carries three slots:
-  // * Back glyph (`←`, aria "Switch to manual reading mode") —
-  //   describes the present handler (`SetMode(Manual)`), not the
-  //   future library navigation that Act 4 will rewire it to.
+  // * Back glyph (`←`, aria "Back to library") — dispatches
+  //   `GoToLibrary`, which stops any in-flight fade engine, clears
+  //   the reader's per-book scratch state, and flips
+  //   `model.view` back to `Library`.
   // * Chapter title slot (`.reader-title`) — driven from the
   //   current chapter's `Option(String)` title on the segmented
   //   text. The two-chapter fixture's chapter 0 carries
@@ -3348,10 +3365,6 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   //   pins the populated case using chapter 1's `title: Some("Two")`.
   // * Settings gear (`⚙`, aria "Open settings") — moved from the
   //   old `.reader-control-bar` into the header row.
-  // Once Act 4 lands library navigation the back button will
-  // dispatch a real back-Msg; until then it routes through
-  // `SetMode(Manual)`, which is idempotent in Manual mode and stops
-  // the fade engine in RealTime mode.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3367,10 +3380,7 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
 
   assert string.contains(rendered, "class=\"reader-header\"")
   assert string.contains(rendered, "class=\"reader-header-inner\"")
-  assert string.contains(
-    rendered,
-    "aria-label=\"Switch to manual reading mode\"",
-  )
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, ">←</button>")
   // Chapter 0 has no title — the slot renders an empty element
   // rather than inventing a string.
@@ -3807,21 +3817,17 @@ pub fn view_settings_sheet_carries_handle_and_dividers_test() {
   assert divider_chunks == 3
 }
 
-pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
+pub fn view_back_button_dispatches_go_to_library_when_clicked_test() {
   // Walks the rendered view tree, locates the back-glyph button by
   // its unique `aria-label`, and simulates a click on it. The
   // simulator routes the on_click payload through `client.update`,
   // so the resulting model state reflects whatever Msg the button
   // is *actually* wired to. The post-click assertions pin the
-  // `SetMode(Manual)` postconditions against a Running RealTime
-  // engine — any refactor that rewired the back button to a
-  // different Msg would change the resulting model state and fail
-  // this test, where a reducer-level assertion would have stayed
-  // green and let the regression through.
-  //
-  // The reducer-level postconditions exercised here are also
-  // covered by `apply_set_mode` / mode-switch tests elsewhere; the
-  // point of this test is the wiring, not the reduction.
+  // `GoToLibrary` postconditions against a Running RealTime engine —
+  // any refactor that rewired the back button to a different Msg
+  // would change the resulting model state and fail this test,
+  // where a reducer-level assertion would have stayed green and let
+  // the regression through.
   let prior =
     Model(
       ..fade_model_single_page(),
@@ -3838,17 +3844,15 @@ pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
     )
 
   let back_button =
-    lustre_query.element(matching: lustre_query.aria(
-      "label",
-      "Switch to manual reading mode",
-    ))
+    lustre_query.element(matching: lustre_query.aria("label", "Back to library"))
 
   let updated =
     simulate.start(app, Nil)
     |> simulate.click(on: back_button)
     |> simulate.model
 
-  assert updated.mode == Manual
+  assert updated.view == client.Library
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
+  assert updated.text == None
 }
