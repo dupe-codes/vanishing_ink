@@ -1423,6 +1423,24 @@ fn apply_open_book(model: Model, id: String) -> #(Model, Effect(Msg)) {
 /// `Running`/`Paused` cursor cannot follow into the new book. The
 /// follow-up `ParagraphsMeasured` from the `measure_after_paint`
 /// effect is what fills `pages` in.
+///
+/// RACE — `BookSettingsLoaded` arrives asynchronously after the
+/// `fetch_book_settings` effect below. This helper flips to the
+/// reader on the same frame, so the reader can edit a slider in the
+/// window between the helper running and the GET response landing. A
+/// slider drag during that window routes through `persist_target` →
+/// `PersistBook(id)` (view is `Reader`, `active_book_id` is
+/// `Some(id)`), so the user's edit lands on `book_settings` and PUTs
+/// to the server. The in-flight GET response then arrives and
+/// `apply_book_settings_loaded` overwrites `book_settings` with the
+/// pre-PUT server snapshot, clobbering the just-applied user edit
+/// until the next slider drag re-PUTs it. The window is materially
+/// wider than the parallel init-time race on `apply_settings_loaded`
+/// because the reader is actively in the reader view and can
+/// interact immediately. Closing the race requires either a
+/// request-id (drop a stale `BookSettingsLoaded` response if a PUT
+/// has fired since the GET was issued) or a "fetch sequence number"
+/// gate; neither is wired up today.
 fn apply_book_loaded(
   model: Model,
   meta: BookMeta,
