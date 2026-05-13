@@ -59,7 +59,9 @@ pub fn on_undo_key(callback: fn() -> Nil) -> Nil
 /// Install a `keydown` listener on `window` for the vim-style
 /// reader keys. Each callback corresponds to one unmodified key
 /// press: `h`/`l` move the cursor between sentences, `j`/`k` move
-/// between paragraphs, `Space` erases the focused sentence, and
+/// between paragraphs, `Space` fires `space_callback` (the
+/// reducer then routes it to either an erase-focused or a
+/// pause/resume-engine action depending on `model.mode`), and
 /// `u` invokes undo. Modifier chords (`Cmd`/`Ctrl`/`Alt`) are
 /// ignored so the listener never collides with the existing
 /// `Cmd+Z` undo handler or with browser shortcuts; keys pressed
@@ -72,9 +74,28 @@ pub fn on_vim_keys(
   focus_paragraph_down_callback focus_paragraph_down_callback: fn() -> Nil,
   focus_paragraph_up_callback focus_paragraph_up_callback: fn() -> Nil,
   focus_next_callback focus_next_callback: fn() -> Nil,
-  erase_focused_callback erase_focused_callback: fn() -> Nil,
+  space_callback space_callback: fn() -> Nil,
   undo_callback undo_callback: fn() -> Nil,
 ) -> Nil
+
+/// Schedule the next word-fade tick. The implementation owns a
+/// single-slot timer handle so callers do not need to track it:
+/// starting a new timer cancels any previous one synchronously.
+/// `callback` fires once after `delay_ms` milliseconds.
+///
+/// Synchronous cancellation closes the race that an
+/// effect-dispatched timeout id would leave open (id arrives one
+/// tick after the effect runs, during which window a
+/// `PauseFade` would have nothing to cancel). With the slot in
+/// JS land, every model update sees the timer in a known state.
+@external(javascript, "./ffi.ffi.mjs", "start_word_timer")
+pub fn start_word_timer(delay_ms: Int, callback: fn() -> Nil) -> Nil
+
+/// Cancel any in-flight word timer. No-op when nothing is
+/// scheduled. Called from `PauseFade` and `StopFade`, and on
+/// mode switches that leave RealTime mode.
+@external(javascript, "./ffi.ffi.mjs", "clear_word_timer")
+pub fn clear_word_timer() -> Nil
 
 /// Returns `True` when the browser reports `prefers-color-scheme: dark`,
 /// `False` otherwise. Used at boot to seed the reader's theme from the

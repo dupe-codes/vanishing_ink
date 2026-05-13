@@ -335,6 +335,14 @@ body.vi-dyslexia-font .settings-panel {
 .word {
   /* Inline span so the reading flow wraps naturally. */
   display: inline;
+  /* Per-word opacity transition for the real-time fade engine.
+   * Words faded by the engine receive an inline `style="opacity:..."`
+   * (from `view_word` when `erased_words` contains the word's
+   * global_index); the transition turns that style change into a
+   * smooth fade rather than a snap. Same `--vi-transition-duration`
+   * the sentence-level rule reads, so the `vi-reduced-motion` body
+   * class collapses both rules to a snap in lock-step. */
+  transition: opacity var(--vi-transition-duration) ease;
 }
 
 /* ---------------------------------------------------------------------

@@ -38,11 +38,13 @@ import shared/segmenter.{
 }
 
 import client.{
-  type Model, EraseFocused, EraseSentence, FocusNext, FocusParagraphDown,
-  FocusParagraphUp, FocusPrevious, Model, NextPage, ParagraphsMeasured,
-  SetFontSize, SetGhostOpacity, SetLineSpacing, TextLoaded, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart, Undo, ViewportResized,
+  type Model, AdvanceWord, EraseFocused, EraseSentence, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, Manual, Model, NextPage,
+  ParagraphsMeasured, PauseFade, RealTime, ResumeFade, Running, SetFontSize,
+  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetWpm, SpacePressed, StartFade, Stopped, StopFade, TextLoaded,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
 import client/pagination.{type Page, Page}
@@ -97,6 +99,13 @@ fn empty_model() -> Model {
     dyslexia_font: False,
     reduced_motion: False,
     settings_open: False,
+    mode: client.Manual,
+    wpm: client.default_wpm,
+    engine_state: client.Stopped,
+    next_word_index: None,
+    erased_words: set.new(),
+    paragraph_delay_ms: client.default_paragraph_delay_ms,
+    page_delay_ms: client.default_page_delay_ms,
   )
 }
 
@@ -1027,7 +1036,7 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), None, True, "0")
+    client.view_sentence(sentence, set.new(), None, True, "0", set.new(), Manual)
     |> click_event_names
 
   assert click_events == ["click"]
@@ -1045,7 +1054,15 @@ pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(sentence, set.new(), None, False, "0")
+    client.view_sentence(
+      sentence,
+      set.new(),
+      None,
+      False,
+      "0",
+      set.new(),
+      Manual,
+    )
     |> click_event_names
 
   assert click_events == []

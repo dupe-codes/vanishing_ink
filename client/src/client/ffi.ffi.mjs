@@ -14,6 +14,18 @@ import { Ok, Error as GleamError, toList } from "../gleam.mjs";
 const PARAGRAPH_INDEX_ATTRIBUTE = "data-paragraph-global-index";
 const RESIZE_DEBOUNCE_MS = 250;
 
+// Single-slot module-level handle for the real-time fade engine's
+// word timer. At most one timer is ever in flight; starting a new
+// one clears any previous handle synchronously so a stray
+// callback from an old run cannot fire after pause/stop. The slot
+// returns the timeout id from `setTimeout` synchronously — unlike
+// `lustre_animation`, which posts the id back via a follow-up
+// microtask and leaves a cancellation gap. Clearing is also
+// synchronous, so a `PauseFade` reducer arm that calls
+// `clear_word_timer` is guaranteed to have stopped the in-flight
+// callback before it returns.
+let word_timer_id = null;
+
 /** @returns {number} The viewport height in CSS pixels, read at call time. */
 export function get_viewport_height() {
   return window.innerHeight;
@@ -250,6 +262,41 @@ export function set_body_class(class_name, enabled) {
  * duplicate (which would let the older one win depending on parser
  * order). When no viewport meta is present we create one.
  */
+/**
+ * Schedules the fade engine's next word tick. Clears any timer
+ * currently in flight so callers don't have to track the handle
+ * — the module owns the single-slot state. `callback` is invoked
+ * with no arguments after `delay_ms` milliseconds; the slot is
+ * cleared synchronously inside the wrapper before the callback
+ * runs so a re-entrant `start_word_timer` from inside the
+ * callback (the common case — the AdvanceWord reducer schedules
+ * the next tick) installs cleanly into a known-empty slot.
+ *
+ * @param {number} delay_ms Delay in milliseconds.
+ * @param {function(): void} callback Fired once after the delay.
+ */
+export function start_word_timer(delay_ms, callback) {
+  if (word_timer_id !== null) {
+    clearTimeout(word_timer_id);
+  }
+  word_timer_id = setTimeout(() => {
+    word_timer_id = null;
+    callback();
+  }, delay_ms);
+}
+
+/**
+ * Cancels any in-flight word timer. Safe to call when no timer
+ * is scheduled — the slot is checked before `clearTimeout`. Used
+ * by `PauseFade` and `StopFade` in the reducer.
+ */
+export function clear_word_timer() {
+  if (word_timer_id !== null) {
+    clearTimeout(word_timer_id);
+    word_timer_id = null;
+  }
+}
+
 export function ensure_viewport_fit_cover() {
   const desired = "width=device-width, initial-scale=1, viewport-fit=cover";
   let meta = document.querySelector('meta[name="viewport"]');
