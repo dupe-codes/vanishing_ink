@@ -2087,9 +2087,7 @@ fn progress_percentage(model: Model) -> Float {
   case denominator {
     0 -> 0.0
     _ ->
-      int.to_float(numerator)
-      /. int.to_float(denominator)
-      *. 100.0
+      int.to_float(numerator) /. int.to_float(denominator) *. 100.0
       |> float.to_precision(1)
   }
 }
