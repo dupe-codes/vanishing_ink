@@ -2473,6 +2473,14 @@ fn view_bottom_realtime(model: Model) -> Element(Msg) {
     html.div(
       [
         attribute.class("wpm-readout"),
+        // `role="text"` collapses the element into a single text node
+        // in the accessibility tree and exposes the aria-label as the
+        // accessible name. Without a role, a roleless `<div>` is a
+        // generic that JAWS and VoiceOver may skip in announcement
+        // passes — dropping the verbose phrase silently. `role="status"`
+        // would announce on every slider tick during a drag; we want
+        // a static label, not a live region.
+        attribute.role("text"),
         attribute.aria_label(
           "Reading speed: " <> int.to_string(model.wpm) <> " words per minute",
         ),

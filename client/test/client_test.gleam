@@ -3963,6 +3963,10 @@ pub fn view_realtime_wpm_readout_has_accessible_label_test() {
   // may not announce in enough context. The aria-label supplies the
   // full phrase — "Reading speed: N words per minute" — so the
   // announcement is unambiguous regardless of the surrounding layout.
+  // The element also needs `role="text"`: a roleless `<div>` is a
+  // generic that JAWS and VoiceOver may skip, dropping the
+  // supplemental phrase silently. Pinning the role here catches a
+  // future refactor that strips it.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 200)
 
   let rendered = client.view(model) |> element.to_string
@@ -3971,6 +3975,7 @@ pub fn view_realtime_wpm_readout_has_accessible_label_test() {
     rendered,
     "aria-label=\"Reading speed: 200 words per minute\"",
   )
+  assert string.contains(rendered, "role=\"text\"")
 }
 
 pub fn view_settings_sheet_carries_handle_and_dividers_test() {
