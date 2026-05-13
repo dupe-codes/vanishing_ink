@@ -39,13 +39,13 @@ import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
-import gleam/json
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -245,7 +245,8 @@ const cover_color_count: Int = 8
 pub fn cover_color_for_title(title: String) -> String {
   let codepoints = string.to_utf_codepoints(title)
   let sum =
-    list.fold(codepoints, 0, fn(acc, cp) { acc + string.utf_codepoint_to_int(cp)
+    list.fold(codepoints, 0, fn(acc, cp) {
+      acc + string.utf_codepoint_to_int(cp)
     })
   let index = case cover_color_count {
     0 -> 0
@@ -1171,12 +1172,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     BooksLoaded(Ok(books)) -> #(
-      Model(
-        ..model,
-        books: books,
-        books_loading: False,
-        library_error: None,
-      ),
+      Model(..model, books: books, books_loading: False, library_error: None),
       effect.none(),
     )
 
@@ -1399,9 +1395,7 @@ fn fetch_book(id: String) -> Effect(Msg) {
         result
         |> result.try(fn(body) {
           json.parse(body, types.book_with_segments_decoder())
-          |> result.map_error(fn(_) {
-            ffi.DecodeError("Failed to decode book")
-          })
+          |> result.map_error(fn(_) { ffi.DecodeError("Failed to decode book") })
         })
       dispatch(BookLoaded(decoded))
     })
@@ -2368,7 +2362,10 @@ pub fn view(model: Model) -> Element(Msg) {
     False -> element.none()
   }
 
-  html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [body, overlay])
+  html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
+    body,
+    overlay,
+  ])
 }
 
 /// Reader-view body. Renders a loading placeholder until a
@@ -3631,8 +3628,7 @@ fn grid_candidates(
 ) -> List(BookMeta) {
   case hero {
     None -> sorted
-    Some(hero_book) ->
-      list.filter(sorted, fn(book) { book.id != hero_book.id })
+    Some(hero_book) -> list.filter(sorted, fn(book) { book.id != hero_book.id })
   }
 }
 
@@ -3644,7 +3640,9 @@ fn view_library_error(message: String) -> Element(Msg) {
 }
 
 fn view_library_loading() -> Element(Msg) {
-  html.div([attribute.class("lib-loading")], [html.text("Loading your library…")])
+  html.div([attribute.class("lib-loading")], [
+    html.text("Loading your library…"),
+  ])
 }
 
 /// Empty state copy doubles as the only call-to-action the reader
@@ -3877,7 +3875,9 @@ fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
         attribute.attribute("aria-label", "Book title"),
         event.on_input(SetPasteTitle),
       ]),
-      html.label([attribute.class("paste-label")], [html.text("Paste your text")]),
+      html.label([attribute.class("paste-label")], [
+        html.text("Paste your text"),
+      ]),
       html.textarea(
         [
           attribute.class("paste-area"),

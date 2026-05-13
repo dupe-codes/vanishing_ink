@@ -69,7 +69,9 @@ pub fn book_meta_decoder() -> decode.Decoder(BookMeta) {
 /// is intentionally dropped — the reader works against the
 /// pre-segmented payload, never against the source string) and
 /// hands the segmenter sub-tree off to its own decoder.
-pub fn book_with_segments_decoder() -> decode.Decoder(#(BookMeta, SegmentedText)) {
+pub fn book_with_segments_decoder() -> decode.Decoder(
+  #(BookMeta, SegmentedText),
+) {
   use meta <- decode.then(book_meta_decoder())
   use segments <- decode.field("segments", segmenter.decoder())
   decode.success(#(meta, segments))

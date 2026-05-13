@@ -940,3 +940,480 @@ body.vi-reduced-motion .settings-toggle-input,
 body.vi-reduced-motion .settings-toggle-input::after {
   transition: none;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Library view                                                               */
+/* -------------------------------------------------------------------------- */
+/*
+ * Mirrors the design mock at
+ * `local/design-mocks/vanishing-ink/mobile-library-prototype.html`.
+ * Shares the reader's palette tokens (`--vi-bg`, `--vi-fg`,
+ * `--vi-accent`, the warm muted greys) so the theme toggle flows
+ * through the library without per-view overrides.
+ *
+ * Layout contract:
+ *   .view-library                       (full-viewport flex column)
+ *     .lib-appbar                       (52px chrome row with wordmark)
+ *     .lib-scroll                       (flex-grow scroll container)
+ *       .lib-body                       (padded column for hero + grid)
+ *     .fab                              (fixed bottom-right FAB)
+ *     .sheet-overlay.open               (add-book bottom sheet)
+ */
+
+.view-library {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--vi-bg);
+  color: var(--vi-fg);
+  transition: background-color var(--vi-theme-transition),
+              color var(--vi-theme-transition);
+}
+
+.lib-appbar {
+  flex-shrink: 0;
+  padding-top: var(--vi-safe-top);
+  background-color: var(--vi-bg);
+  border-bottom: 1px solid var(--vi-surface-border);
+  transition: background-color var(--vi-theme-transition),
+              border-color var(--vi-theme-transition);
+  z-index: 10;
+}
+
+.lib-appbar-inner {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 var(--vi-reading-padding-x);
+}
+
+.app-wordmark {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+  color: var(--vi-fg);
+}
+
+.wordmark-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--vi-accent);
+  flex-shrink: 0;
+}
+
+.lib-scroll {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  /* Trail the scroll with enough room for the FAB so the last grid
+   * row is never obscured. */
+  padding-bottom: calc(var(--vi-safe-bottom) + 88px);
+}
+
+.lib-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.lib-body {
+  padding: 24px var(--vi-reading-padding-x) 0;
+  max-width: var(--vi-reading-max-width);
+  margin: 0 auto;
+}
+
+.section-label {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--vi-fg-muted);
+  margin-bottom: 12px;
+  padding-left: 2px;
+}
+
+.lib-error {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background-color: var(--vi-accent-dim);
+  border: 1px solid var(--vi-accent);
+  color: var(--vi-fg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+}
+
+.lib-loading,
+.lib-empty {
+  padding: 40px 16px;
+  text-align: center;
+  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--vi-fg-muted);
+}
+
+.lib-empty-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  color: var(--vi-fg);
+  margin-bottom: 6px;
+}
+
+.lib-empty-subtitle {
+  font-size: 14px;
+}
+
+/* Hero card --------------------------------------------------------------- */
+
+.hero-card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 32px;
+  background: transparent;
+  border: none;
+  border-radius: 16px;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 80ms ease;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+}
+
+.hero-card:active {
+  transform: scale(0.98);
+}
+
+.hero-card .section-label {
+  /* The label rides above the cover; raise it out of the card chrome
+   * with a small margin so it doesn't run flush against the corner. */
+  margin: 0 0 8px;
+  padding-left: 2px;
+}
+
+.hero-cover {
+  position: relative;
+  width: 100%;
+  height: 160px;
+  display: flex;
+  align-items: flex-end;
+  padding: 16px;
+}
+
+.hero-cover-gradient {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 40%,
+    rgba(0, 0, 0, 0.42) 100%
+  );
+}
+
+.hero-cover-text {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 18px;
+  color: #ffffff;
+  line-height: 1.25;
+  margin-bottom: 2px;
+}
+
+.hero-author {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.hero-meta {
+  background-color: var(--vi-bg);
+  padding: 14px 16px;
+  transition: background-color var(--vi-theme-transition);
+}
+
+.hero-meta-line {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 12px;
+  color: var(--vi-fg-muted);
+  margin-bottom: 10px;
+}
+
+.hero-cta {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+  border-radius: 10px;
+  padding: 12px 0;
+  transition: opacity 120ms ease;
+}
+
+/* Book grid --------------------------------------------------------------- */
+
+.lib-grid-section {
+  margin-bottom: 16px;
+}
+
+.book-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.book-card {
+  display: block;
+  padding: 0;
+  background-color: var(--vi-bg);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 14px;
+  overflow: hidden;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 80ms ease, border-color 120ms ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07);
+}
+
+.book-card:active {
+  transform: scale(0.96);
+}
+
+.book-card:focus-visible {
+  outline: 2px solid var(--vi-focus-ring);
+  outline-offset: 2px;
+}
+
+.book-cover {
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.book-cover-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.88);
+  text-align: center;
+  padding: 8px;
+  line-height: 1.4;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.book-info {
+  padding: 10px 10px 12px;
+}
+
+.book-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  color: var(--vi-fg);
+  line-height: 1.3;
+  margin-bottom: 3px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.book-author {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 11px;
+  color: var(--vi-fg-muted);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.book-meta {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 10px;
+  color: var(--vi-fg-muted);
+}
+
+/* FAB --------------------------------------------------------------------- */
+
+.fab {
+  position: fixed;
+  bottom: calc(var(--vi-safe-bottom) + 24px);
+  right: calc(var(--vi-safe-right) + 20px);
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+  border: none;
+  border-radius: 50%;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22);
+  z-index: 20;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 80ms ease, opacity 120ms ease,
+              background-color var(--vi-theme-transition),
+              color var(--vi-theme-transition);
+}
+
+.fab:active {
+  transform: scale(0.91);
+  opacity: 0.88;
+}
+
+.fab:focus-visible {
+  outline: 2px solid var(--vi-focus-ring);
+  outline-offset: 4px;
+}
+
+/* Add-book bottom sheet --------------------------------------------------- */
+
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.32);
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.sheet-overlay.open {
+  pointer-events: all;
+}
+
+.bottom-sheet {
+  width: 100%;
+  max-width: var(--vi-reading-max-width);
+  background-color: var(--vi-bg);
+  color: var(--vi-fg);
+  border-top: 1px solid var(--vi-surface-border);
+  border-radius: 22px 22px 0 0;
+  padding: 10px 0 calc(var(--vi-safe-bottom) + 24px);
+  max-height: 92vh;
+  overflow-y: auto;
+  transition: background-color var(--vi-theme-transition);
+}
+
+.sheet-handle {
+  width: 36px;
+  height: 4px;
+  background-color: var(--vi-surface-border);
+  border-radius: 2px;
+  margin: 4px auto 16px;
+}
+
+.add-sheet-body {
+  padding: 0 var(--vi-reading-padding-x);
+}
+
+.add-sheet-title {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+  margin-bottom: 4px;
+}
+
+.add-sheet-sub {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
+  margin-bottom: 24px;
+}
+
+.paste-label {
+  display: block;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
+  margin: 12px 0 8px;
+}
+
+.paste-input,
+.paste-area {
+  width: 100%;
+  background-color: var(--vi-surface);
+  color: var(--vi-fg);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 10px;
+  padding: 12px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  outline: none;
+  -webkit-appearance: none;
+  transition: border-color 150ms ease, background-color var(--vi-theme-transition);
+}
+
+.paste-input:focus,
+.paste-area:focus {
+  border-color: var(--vi-accent);
+}
+
+.paste-area {
+  height: 140px;
+  resize: vertical;
+}
+
+.paste-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background-color: var(--vi-accent-dim);
+  border: 1px solid var(--vi-accent);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg);
+}
+
+.btn-add-book {
+  width: 100%;
+  height: 52px;
+  margin-top: 16px;
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+  border: none;
+  border-radius: 12px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity 120ms ease, background-color var(--vi-theme-transition),
+              color var(--vi-theme-transition);
+}
+
+.btn-add-book:active {
+  opacity: 0.84;
+}
+
+.btn-add-book:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+body.vi-reduced-motion .view-library,
+body.vi-reduced-motion .hero-card,
+body.vi-reduced-motion .book-card,
+body.vi-reduced-motion .fab,
+body.vi-reduced-motion .bottom-sheet,
+body.vi-reduced-motion .btn-add-book,
+body.vi-reduced-motion .paste-input,
+body.vi-reduced-motion .paste-area {
+  transition: none;
+}
