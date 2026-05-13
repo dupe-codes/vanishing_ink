@@ -3577,6 +3577,17 @@ pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
   // reader sees the disabled visual state. The `Disabled` HTML
   // attribute is the contract — CSS reads `:disabled` for the
   // dimmed-pill rendering.
+  //
+  // The substring below depends on Lustre's alphabetical
+  // attribute ordering (`aria-label` < `class` < `disabled` < ...)
+  // — the same contract noted in
+  // `view_paginated_attaches_touch_handlers_to_reading_area_test`.
+  // A Lustre version bump that changed the sort order would
+  // break this assertion without breaking the underlying
+  // rendering; a follow-up could replace the substring with a
+  // tree-walking assertion that names attributes explicitly
+  // (`find_element_by_id` + an attribute lookup), matching the
+  // shape used for touch listeners.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3602,6 +3613,14 @@ pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
 pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
   // Mirror of the above: with at least one entry on the undo
   // stack, the button is enabled (no `disabled` attribute).
+  //
+  // Same Lustre-alphabetical-ordering caveat as the disabled
+  // sibling test — the substring contract carries the
+  // `aria-label` < `class` < `type` ordering and would break
+  // under a Lustre attribute-sort change without the underlying
+  // rendering changing. A tree-walking assertion would be more
+  // robust; this assertion stays consistent with the suite's
+  // existing pattern for the moment.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3632,6 +3651,13 @@ pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
   // On the last page the turn-page button reads "✓ Finished"
   // (instead of "Turn Page →") and is disabled — there is nowhere
   // forward to go.
+  //
+  // Same Lustre-alphabetical-ordering caveat as the undo button
+  // assertions above: this substring depends on
+  // `aria-label` < `class` < `disabled` sorting on the rendered
+  // attribute list. A Lustre version bump that changed the sort
+  // order would break the assertion without breaking the
+  // rendering; a tree-walking assertion would be more robust.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
