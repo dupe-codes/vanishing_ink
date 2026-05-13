@@ -531,7 +531,42 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
       let total = list.length(pages)
       let clamped = pagination.clamp_page_index(model.current_page, total)
-      #(Model(..model, pages: pages, current_page: clamped), effect.none())
+      // Re-anchor `focused_sentence` if pagination shifted it off the
+      // visible page. Without this, a viewport change can leave the
+      // vim cursor on a sentence whose `page_index` differs from
+      // `clamped`; the next vim keypress would then call `change_page`
+      // with that off-screen target, bypassing the forward-only guard
+      // in `go_to_page` and dragging `current_page` backward — the
+      // exact regression this PR exists to close. Re-anchoring to the
+      // first non-erased sentence on `clamped` keeps the cursor on
+      // the page the reader is actually looking at.
+      let focused = case model.focused_sentence {
+        None -> None
+        Some(sentence_index) -> {
+          let locations = navigation.locate_sentences(pages)
+          let on_current_page =
+            locations
+            |> list.any(fn(loc) {
+              loc.sentence_global_index == sentence_index
+              && loc.page_index == clamped
+            })
+          case on_current_page {
+            True -> Some(sentence_index)
+            False ->
+              navigation.first_on_page(locations, clamped, model.erased)
+              |> option.map(fn(loc) { loc.sentence_global_index })
+          }
+        }
+      }
+      #(
+        Model(
+          ..model,
+          pages: pages,
+          current_page: clamped,
+          focused_sentence: focused,
+        ),
+        effect.none(),
+      )
     }
 
     NextPage -> #(go_to_page(model, model.current_page + 1), effect.none())

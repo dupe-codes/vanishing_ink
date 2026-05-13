@@ -126,6 +126,33 @@ fn two_chapter_text() -> SegmentedText {
   ])
 }
 
+/// Eight-paragraph, eight-sentence fixture used by the
+/// post-repagination focus tests. One sentence per paragraph;
+/// `Sentence.global_index` matches the paragraph index so the test
+/// can name the focused sentence by paragraph number.
+fn eight_paragraph_text() -> SegmentedText {
+  let paragraph = fn(idx: Int) -> Paragraph {
+    Paragraph(index: idx, sentences: [
+      Sentence(index: idx, global_index: idx, words: [
+        Word(index: 0, global_index: idx, text: "para."),
+      ]),
+    ])
+  }
+
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      paragraph(0),
+      paragraph(1),
+      paragraph(2),
+      paragraph(3),
+      paragraph(4),
+      paragraph(5),
+      paragraph(6),
+      paragraph(7),
+    ]),
+  ])
+}
+
 // ---------------------------------------------------------------------------
 // update — TextLoaded
 // ---------------------------------------------------------------------------
@@ -263,6 +290,132 @@ pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
     )
 
   assert updated.pages == []
+}
+
+pub fn update_paragraphs_measured_reanchors_focused_sentence_when_repagination_moves_it_off_current_page_test() {
+  // Repagination shifts the focused sentence onto an earlier page
+  // than the visible one. Without the re-anchor in `ParagraphsMeasured`,
+  // the next vim keypress would invoke `change_page` with a target
+  // below `current_page` (the vim path does not pass through the
+  // forward-only `go_to_page` guard), regressing the page index and
+  // breaking the PR's "no backward page navigation" guarantee.
+  //
+  // Setup: eight 100px paragraphs, 200px budget → 4 pages of two
+  // paragraphs each. Reader is on page 1 (paragraphs 2-3), focused
+  // on the sentence in paragraph 2. A resize widens the budget to
+  // 400px → 2 pages of four paragraphs each. `current_page` does
+  // not clamp (still valid: 1 < 2), but paragraph 2 now lives on
+  // page 0. Re-anchor must move the cursor to the first non-erased
+  // sentence on the new `current_page` (sentence 4, the first on
+  // the four-paragraph page 1).
+  let text = eight_paragraph_text()
+  let heights_narrow = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let initial =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let #(measured, _) =
+    client.update(
+      initial,
+      ParagraphsMeasured(heights: heights_narrow, available_height: 200.0),
+    )
+  let prior = Model(..measured, current_page: 1, focused_sentence: Some(2))
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights_narrow, available_height: 400.0),
+    )
+
+  assert list.length(updated.pages) == 2
+  assert updated.current_page == 1
+  assert updated.focused_sentence == Some(4)
+}
+
+pub fn update_paragraphs_measured_preserves_focused_sentence_when_it_stays_on_current_page_test() {
+  // Repagination that leaves the focused sentence on the visible
+  // page must not move the cursor. The re-anchor only fires when
+  // the focused sentence has shifted off `current_page`; an
+  // identity re-measure (or any pagination that lands the cursor
+  // on the same page index) should be a no-op for the cursor.
+  let text = eight_paragraph_text()
+  let heights = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let initial =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let #(measured, _) =
+    client.update(
+      initial,
+      ParagraphsMeasured(heights: heights, available_height: 200.0),
+    )
+  let prior = Model(..measured, current_page: 1, focused_sentence: Some(2))
+
+  // Re-measure with the same heights and budget.
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 200.0),
+    )
+
+  assert updated.current_page == 1
+  assert updated.focused_sentence == Some(2)
+}
+
+pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test() {
+  // Repagination with no vim cursor active must not introduce one.
+  // The re-anchor logic is gated on `focused_sentence: Some(_)` so
+  // a reader in touch-only mode stays in touch-only mode across a
+  // viewport resize.
+  let text = eight_paragraph_text()
+  let heights = [
+    #(0, 100.0),
+    #(1, 100.0),
+    #(2, 100.0),
+    #(3, 100.0),
+    #(4, 100.0),
+    #(5, 100.0),
+    #(6, 100.0),
+    #(7, 100.0),
+  ]
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      current_page: 1,
+      focused_sentence: None,
+    )
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 400.0),
+    )
+
+  assert updated.focused_sentence == None
 }
 
 // ---------------------------------------------------------------------------
