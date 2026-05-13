@@ -251,6 +251,16 @@ pub const cover_colors: List(String) = [
 /// Exposed so the library tests can pin the colour-for-title
 /// contract without having to walk the rendered HTML for the inline
 /// `style` value.
+///
+/// The two `let assert` rails state the invariants directly:
+/// `cover_colors` is a non-empty `pub const`, so `int.modulo` is
+/// always `Ok(_)`; `index` is always `< count`, so `list.drop`
+/// always leaves a non-empty tail. If the palette were ever
+/// shortened to empty, or `int.modulo`'s contract changed, the
+/// assertion would crash at the violation rather than survive in
+/// a degraded state. The previous revision carried three
+/// fallback branches for these impossibilities; per the operative
+/// standard, fallbacks for cases that cannot happen are dead code.
 pub fn cover_color_for_title(title: String) -> String {
   let codepoints = string.to_utf_codepoints(title)
   let sum =
@@ -258,14 +268,9 @@ pub fn cover_color_for_title(title: String) -> String {
       acc + string.utf_codepoint_to_int(cp)
     })
   let count = list.length(cover_colors)
-  let index = case count {
-    0 -> 0
-    _ -> int.modulo(sum, count) |> result.unwrap(0)
-  }
-  case list.drop(cover_colors, index) {
-    [color, ..] -> color
-    [] -> "#8A7C6E"
-  }
+  let assert Ok(index) = int.modulo(sum, count)
+  let assert [color, ..] = list.drop(cover_colors, index)
+  color
 }
 
 // ---------------------------------------------------------------------------
