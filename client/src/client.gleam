@@ -107,6 +107,68 @@ pub const min_ghost_opacity: Float = 0.0
 
 pub const max_ghost_opacity: Float = 0.3
 
+/// Default WPM for the real-time fade engine. 200 wpm is the
+/// mid-range of typical adult silent-reading speeds (most readers
+/// fall in the 175–300 wpm band); it gives a comfortable starting
+/// point that newcomers can ratchet up or down with the slider.
+pub const default_wpm: Int = 200
+
+/// Lower bound on the WPM slider. 60 wpm is roughly one word per
+/// second — slow enough for the reader to deliberately watch each
+/// word fade, which matches the therapeutic-exposure pacing the
+/// app exists to support.
+pub const min_wpm: Int = 60
+
+/// Upper bound. 500 wpm is the floor of speed-reading territory;
+/// past this point the eye stops processing words individually and
+/// the fade animation would visually blur into a single sweep,
+/// defeating the per-word visibility contract.
+pub const max_wpm: Int = 500
+
+/// Default extra pause inserted between the last word of one
+/// paragraph and the first word of the next. 1 second gives the
+/// reader a beat to register the paragraph break, then resumes the
+/// steady WPM rhythm.
+pub const default_paragraph_delay_ms: Int = 1000
+
+/// Lower bound on the Paragraph-pause slider. Zero disables the
+/// inter-paragraph pause entirely so the engine ticks at the
+/// steady WPM rhythm regardless of paragraph boundaries — the
+/// right choice for a reader who wants uninterrupted pace.
+pub const min_paragraph_delay_ms: Int = 0
+
+/// Upper bound on the Paragraph-pause slider. 5 seconds is long
+/// enough to feel like a deliberate break-and-breathe beat
+/// without dragging the reading flow into stop-start tedium;
+/// past this point readers tend to perceive the engine as
+/// stalled rather than paused.
+pub const max_paragraph_delay_ms: Int = 5000
+
+/// Default extra pause inserted between the last word of one page
+/// and the first word of the next page. Longer than the paragraph
+/// delay because the page turn is a visual context shift — the
+/// reader's eye has to reset to the top of the new page before the
+/// next fade is meaningful.
+pub const default_page_delay_ms: Int = 2000
+
+/// Lower bound on the Page-pause slider. Zero disables the
+/// page-turn pause so the engine continues directly into the
+/// first word of the new page — useful for fast readers who
+/// can mentally re-anchor without a beat.
+pub const min_page_delay_ms: Int = 0
+
+/// Upper bound on the Page-pause slider. Matches
+/// `max_paragraph_delay_ms` so the sliders feel consistent
+/// even though the page-turn beat is typically chosen longer
+/// than the paragraph beat; 5 seconds is still inside the
+/// "deliberate pause" envelope rather than reading as a stall.
+pub const max_page_delay_ms: Int = 5000
+
+/// One minute in milliseconds — the constant the WPM-to-interval
+/// conversion divides by. Pulled out so the math is named in
+/// the source rather than relying on a magic literal.
+const ms_per_minute: Int = 60_000
+
 // ---------------------------------------------------------------------------
 // DOM ids
 // ---------------------------------------------------------------------------
@@ -151,6 +213,31 @@ const body_class_reduced_motion: String = "vi-reduced-motion"
 // ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
+
+/// Reading mode. `Manual` is the original tap/click + vim-key
+/// reader: erasure happens on explicit user input. `RealTime` is
+/// the fade engine: words fade away on a WPM-paced timer, with
+/// pause/resume on Space (desktop) and tap (mobile). Both modes
+/// share the same `Model`; the bitsets (`erased`, `erased_words`)
+/// coexist so a reader who erases in Manual mode and then switches
+/// to RealTime keeps the prior erases visible-as-gone.
+pub type Mode {
+  Manual
+  RealTime
+}
+
+/// Lifecycle state of the real-time fade engine. `Stopped` means
+/// no timer scheduled and `next_word_index` is `None` — the engine
+/// is dormant. `Running` means a timer is in flight and
+/// `next_word_index` carries the word to fade on the next tick.
+/// `Paused` is `Running` minus the timer — the reader hit
+/// space/tap, so the schedule is suspended but `next_word_index`
+/// remains intact so a resume picks up at the same word.
+pub type EngineState {
+  Stopped
+  Running
+  Paused
+}
 
 /// Top-level reader state.
 ///
@@ -216,6 +303,35 @@ const body_class_reduced_motion: String = "vi-reduced-motion"
 /// * `settings_open` — when `True`, the settings panel renders as a
 ///   bottom-sheet overlay above the reading surface. The gear icon
 ///   on the control bar toggles it.
+/// * `mode` — `Manual` (tap/click/vim erasure) or `RealTime` (the
+///   WPM-paced fade engine). Default `Manual` to keep the original
+///   reader behaviour for first-time users; the mode toggle in the
+///   settings panel switches modes without converting the bitsets.
+/// * `wpm` — words-per-minute pacing for the fade engine. The
+///   per-word delay derives from this: `60_000 / wpm` milliseconds.
+///   Clamped into `[min_wpm, max_wpm]` at the reducer boundary.
+/// * `engine_state` — lifecycle state of the fade engine. See
+///   `EngineState`. Default `Stopped` — RealTime mode does not
+///   auto-start; the reader must hit Space/tap to begin.
+/// * `next_word_index` — `Some(global_index)` of the word the
+///   engine will fade on the next tick, or `None` when the engine
+///   is `Stopped` or has nothing left to fade on the document.
+///   Carries through `Paused` so resume picks up at the same word.
+/// * `erased_words` — set of `Word.global_index` for every word the
+///   fade engine has erased. Disjoint from `erased` (which keys by
+///   `Sentence.global_index`): a word is hidden when *either*
+///   `erased_words` contains it directly *or* the sentence-level
+///   `erased` contains its parent sentence. Manual-mode erasures
+///   flow into `erased`; RealTime-mode fades flow into
+///   `erased_words`, and both bitsets coexist across mode switches.
+/// * `paragraph_delay_ms` — extra delay inserted after the last
+///   word of one paragraph fades, before the first word of the
+///   next paragraph fades. Reader-configurable in the settings
+///   panel; clamped into `[min_paragraph_delay_ms,
+///   max_paragraph_delay_ms]`.
+/// * `page_delay_ms` — extra delay inserted on a page boundary
+///   when the engine advances pages automatically. Clamped into
+///   `[min_page_delay_ms, max_page_delay_ms]`.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -234,6 +350,13 @@ pub type Model {
     dyslexia_font: Bool,
     reduced_motion: Bool,
     settings_open: Bool,
+    mode: Mode,
+    wpm: Int,
+    engine_state: EngineState,
+    next_word_index: Option(Int),
+    erased_words: Set(Int),
+    paragraph_delay_ms: Int,
+    page_delay_ms: Int,
   )
 }
 
@@ -369,6 +492,75 @@ pub type Msg {
   /// body. The font swap changes paragraph heights, so this also
   /// dispatches `ViewportResized` to trigger re-pagination.
   ToggleDyslexiaFont
+
+  /// Reader selected a reading mode in the settings panel.
+  /// Switching to `Manual` stops any running fade engine and
+  /// clears its timer; switching to `RealTime` leaves the engine
+  /// in `Stopped` state (the reader must press Space/tap to
+  /// start). The bitsets are not converted — both modes share
+  /// the same `Model` and any prior erasures persist.
+  SetMode(Mode)
+
+  /// Reader pressed Space (desktop) or tapped the reader page
+  /// (mobile). In `Manual` mode this is forwarded to
+  /// `EraseFocused` so vim-keys behaviour is unchanged. In
+  /// `RealTime` mode the reducer routes it to start/pause/resume
+  /// of the fade engine based on the current `engine_state`.
+  SpacePressed
+
+  /// Start the fade engine. Finds the first non-erased word on
+  /// the current page, sets `next_word_index` to its global
+  /// index, transitions `engine_state` to `Running`, and
+  /// schedules the first AdvanceWord tick after one word
+  /// interval. No-op when there is no eligible word on the
+  /// current page or when the engine is already `Running`.
+  StartFade
+
+  /// Pause the fade engine. Clears the in-flight word timer via
+  /// FFI and transitions `engine_state` to `Paused`. Keeps
+  /// `next_word_index` intact so `ResumeFade` continues from the
+  /// same position. No-op when the engine is not `Running`.
+  PauseFade
+
+  /// Resume a paused fade engine. Re-schedules the AdvanceWord
+  /// timer at the current WPM interval and transitions
+  /// `engine_state` to `Running`. No-op when the engine is not
+  /// `Paused`.
+  ResumeFade
+
+  /// Stop the fade engine fully. Clears any in-flight timer,
+  /// transitions to `Stopped`, and resets `next_word_index` to
+  /// `None`. Used on mode-switch out of `RealTime` and on
+  /// document exhaustion (no more eligible words to fade).
+  StopFade
+
+  /// Timer callback fired by the FFI word-timer slot. Marks
+  /// `next_word_index` as faded (inserts into `erased_words`),
+  /// finds the next eligible word, and either schedules the next
+  /// tick or advances the page / stops the engine. Guarded
+  /// against stale ticks — when `engine_state != Running` the
+  /// arm is a no-op so a callback that survives a `PauseFade`
+  /// race (none should, given the synchronous FFI slot, but the
+  /// guard is the belt to the FFI's braces) cannot mutate state.
+  AdvanceWord
+
+  /// Reader dragged the WPM slider. Clamps the incoming value
+  /// into `[min_wpm, max_wpm]` and writes it to the model. Does
+  /// not re-schedule the in-flight timer — the next AdvanceWord
+  /// already reads the live `model.wpm` when it computes its
+  /// follow-up delay, so a WPM change takes effect on the next
+  /// tick without needing a restart.
+  SetWpm(Int)
+
+  /// Reader dragged the paragraph-delay slider. Clamps into
+  /// `[min_paragraph_delay_ms, max_paragraph_delay_ms]`. Same
+  /// take-effect-on-next-tick semantics as `SetWpm`.
+  SetParagraphDelay(Int)
+
+  /// Reader dragged the page-delay slider. Clamps into
+  /// `[min_page_delay_ms, max_page_delay_ms]`. Same
+  /// take-effect-on-next-tick semantics as `SetWpm`.
+  SetPageDelay(Int)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +618,13 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       dyslexia_font: False,
       reduced_motion: reduced_motion,
       settings_open: False,
+      mode: Manual,
+      wpm: default_wpm,
+      engine_state: Stopped,
+      next_word_index: None,
+      erased_words: set.new(),
+      paragraph_delay_ms: default_paragraph_delay_ms,
+      page_delay_ms: default_page_delay_ms,
     )
 
   // Boot effects:
@@ -468,7 +667,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
         focus_paragraph_down_callback: fn() { dispatch(FocusParagraphDown) },
         focus_paragraph_up_callback: fn() { dispatch(FocusParagraphUp) },
         focus_next_callback: fn() { dispatch(FocusNext) },
-        erase_focused_callback: fn() { dispatch(EraseFocused) },
+        space_callback: fn() { dispatch(SpacePressed) },
         undo_callback: fn() { dispatch(Undo) },
       )
     })
@@ -609,7 +808,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     TouchCancel -> #(Model(..model, touch_start: None), effect.none())
 
-    TouchEnd(x, y) -> #(apply_touch_end(model, x, y), effect.none())
+    TouchEnd(x, y) -> apply_touch_end(model, x, y)
 
     ToggleSettings -> #(
       Model(..model, settings_open: !model.settings_open),
@@ -627,6 +826,45 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     SetGhostOpacity(opacity) -> apply_set_ghost_opacity(model, opacity)
 
     ToggleDyslexiaFont -> apply_toggle_dyslexia_font(model)
+
+    SetMode(mode) -> apply_set_mode(model, mode)
+
+    SpacePressed -> apply_space_pressed(model)
+
+    StartFade -> apply_start_fade(model)
+
+    PauseFade -> apply_pause_fade(model)
+
+    ResumeFade -> apply_resume_fade(model)
+
+    StopFade -> apply_stop_fade(model)
+
+    AdvanceWord -> apply_advance_word(model)
+
+    SetWpm(value) -> #(
+      Model(..model, wpm: clamp_int(value, min_wpm, max_wpm)),
+      effect.none(),
+    )
+
+    SetParagraphDelay(value) -> #(
+      Model(
+        ..model,
+        paragraph_delay_ms: clamp_int(
+          value,
+          min_paragraph_delay_ms,
+          max_paragraph_delay_ms,
+        ),
+      ),
+      effect.none(),
+    )
+
+    SetPageDelay(value) -> #(
+      Model(
+        ..model,
+        page_delay_ms: clamp_int(value, min_page_delay_ms, max_page_delay_ms),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -728,6 +966,355 @@ fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// update — fade engine reducer arms
+// ---------------------------------------------------------------------------
+//
+// The real-time fade engine is a three-state machine: Stopped, Running,
+// Paused. Transitions:
+//
+//   Stopped --StartFade-->         Running  (find first eligible word,
+//                                            schedule first tick)
+//   Running --AdvanceWord-->       Running  (fade current, schedule next)
+//                          \
+//                           \-->   Stopped  (no more words; engine done)
+//   Running --PauseFade-->         Paused   (clear timer, keep next index)
+//   Paused  --ResumeFade-->        Running  (schedule next tick at WPM)
+//   *       --StopFade-->          Stopped  (clear timer, clear next index)
+//   *       --SetMode(Manual)-->   Stopped  (mode switch always halts)
+//
+// The FFI's single-slot word timer is the runtime authority on
+// "is there a timer in flight": every transition that should kill
+// the timer calls `ffi.clear_word_timer`, every transition that
+// schedules one calls `ffi.start_word_timer`. `AdvanceWord` also
+// guards on `engine_state == Running` so a stale tick that
+// somehow survives `clear_word_timer` (it shouldn't — the FFI is
+// synchronous) cannot mutate state behind a paused engine.
+
+/// Reading-order context for a single word inside the current
+/// page. Carries the word's global index alongside its enclosing
+/// paragraph and sentence indices so the engine can detect
+/// paragraph boundaries (for the inter-paragraph delay) and skip
+/// words whose parent sentence has already been manually erased.
+type WordContext {
+  WordContext(
+    word_global_index: Int,
+    paragraph_global_index: Int,
+    sentence_global_index: Int,
+  )
+}
+
+fn apply_set_mode(model: Model, mode: Mode) -> #(Model, Effect(Msg)) {
+  case mode {
+    Manual -> {
+      // Leaving RealTime: kill any in-flight timer and reset the
+      // engine to a fully-dormant state. The bitsets persist —
+      // fade-engine erasures remain visible-as-gone in Manual mode.
+      let cleared =
+        Model(
+          ..model,
+          mode: Manual,
+          engine_state: Stopped,
+          next_word_index: None,
+        )
+      #(cleared, effect.from(fn(_dispatch) { ffi.clear_word_timer() }))
+    }
+    RealTime -> #(Model(..model, mode: RealTime), effect.none())
+  }
+}
+
+fn apply_space_pressed(model: Model) -> #(Model, Effect(Msg)) {
+  case model.mode {
+    Manual -> #(apply_erase_focused(model), effect.none())
+    RealTime ->
+      case model.engine_state {
+        Running -> apply_pause_fade(model)
+        Paused -> apply_resume_fade(model)
+        Stopped -> apply_start_fade(model)
+      }
+  }
+}
+
+fn apply_start_fade(model: Model) -> #(Model, Effect(Msg)) {
+  case first_eligible_word_on_current_page(model) {
+    None -> #(model, effect.none())
+    Some(ctx) -> {
+      let started =
+        Model(
+          ..model,
+          engine_state: Running,
+          next_word_index: Some(ctx.word_global_index),
+        )
+      #(started, schedule_advance_word(word_interval_ms(model.wpm)))
+    }
+  }
+}
+
+fn apply_pause_fade(model: Model) -> #(Model, Effect(Msg)) {
+  case model.engine_state {
+    Running -> #(
+      Model(..model, engine_state: Paused),
+      effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+    )
+    _ -> #(model, effect.none())
+  }
+}
+
+fn apply_resume_fade(model: Model) -> #(Model, Effect(Msg)) {
+  case model.engine_state {
+    Paused -> #(
+      Model(..model, engine_state: Running),
+      schedule_advance_word(word_interval_ms(model.wpm)),
+    )
+    _ -> #(model, effect.none())
+  }
+}
+
+fn apply_stop_fade(model: Model) -> #(Model, Effect(Msg)) {
+  #(
+    Model(..model, engine_state: Stopped, next_word_index: None),
+    effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+  )
+}
+
+/// Process one tick of the fade engine. Guarded against stale
+/// ticks: when the engine is not `Running`, the tick is a no-op.
+/// Otherwise, marks the current `next_word_index` as faded,
+/// resolves the next target (next eligible word on the current
+/// page, or the first eligible word on the next page when this
+/// page is exhausted), and schedules the next tick at the
+/// appropriate delay. When no eligible word remains anywhere
+/// after the current page, the engine stops.
+///
+/// `Running, None` is treated as an invariant violation rather
+/// than a silent no-op: the `Model` header at lines 99-103
+/// guarantees that `Running` carries `Some(_)` in
+/// `next_word_index`, and any path that produces the inverse is
+/// a reducer bug that should fail loudly at its source rather
+/// than propagate as a phantom-tick no-op.
+fn apply_advance_word(model: Model) -> #(Model, Effect(Msg)) {
+  case model.engine_state, model.next_word_index {
+    Running, Some(current_idx) -> advance_with_current(model, current_idx)
+    Running, None ->
+      panic as "apply_advance_word: Running engine must carry Some(next_word_index)"
+    Stopped, _ -> #(model, effect.none())
+    Paused, _ -> #(model, effect.none())
+  }
+}
+
+fn advance_with_current(
+  model: Model,
+  current_idx: Int,
+) -> #(Model, Effect(Msg)) {
+  let faded =
+    Model(..model, erased_words: set.insert(model.erased_words, current_idx))
+  case next_eligible_after(faded, current_idx) {
+    Some(#(next_ctx, crosses_paragraph)) -> {
+      let delay = case crosses_paragraph {
+        True -> word_interval_ms(faded.wpm) + faded.paragraph_delay_ms
+        False -> word_interval_ms(faded.wpm)
+      }
+      let scheduled =
+        Model(..faded, next_word_index: Some(next_ctx.word_global_index))
+      #(scheduled, schedule_advance_word(delay))
+    }
+    None -> advance_to_next_page(faded)
+  }
+}
+
+/// Move the engine onto the next page when the current page is
+/// exhausted. Walks forward through the remaining pages until one
+/// with at least one eligible word is found; stops the engine when
+/// no such page exists. Uses `go_to_page` for the page change so
+/// the existing forward-only navigation invariant is preserved
+/// and the focused-sentence cursor (if any) follows along.
+fn advance_to_next_page(model: Model) -> #(Model, Effect(Msg)) {
+  let total = list.length(model.pages)
+  advance_to_next_page_loop(model, model.current_page + 1, total)
+}
+
+fn advance_to_next_page_loop(
+  model: Model,
+  candidate: Int,
+  total: Int,
+) -> #(Model, Effect(Msg)) {
+  case candidate >= total {
+    True -> apply_stop_fade(model)
+    False -> {
+      let on_page = go_to_page(model, candidate)
+      case first_eligible_word_on_current_page(on_page) {
+        Some(ctx) -> {
+          let scheduled =
+            Model(..on_page, next_word_index: Some(ctx.word_global_index))
+          #(scheduled, schedule_advance_word(on_page.page_delay_ms))
+        }
+        None -> advance_to_next_page_loop(on_page, candidate + 1, total)
+      }
+    }
+  }
+}
+
+/// Resolve the fade engine's first target on the current page.
+/// "Eligible" means the word is not in `erased_words` and its
+/// parent sentence is not in `erased`. Returns `None` when every
+/// word on the current page is hidden — the engine treats this
+/// as an empty page and either does not start (from
+/// `apply_start_fade`) or advances past it (from
+/// `advance_to_next_page`).
+fn first_eligible_word_on_current_page(model: Model) -> Option(WordContext) {
+  case pagination.nth(model.pages, model.current_page) {
+    None -> None
+    Some(page) ->
+      page
+      |> page_word_contexts
+      |> list.find(fn(ctx) {
+        is_word_visible(ctx, model.erased_words, model.erased)
+      })
+      |> option.from_result
+  }
+}
+
+/// Find the next eligible word strictly after `current_idx` in
+/// document order on the current page. Returns the target context
+/// alongside a `Bool` that's `True` when the next word lives in a
+/// different paragraph than the just-faded word — the caller uses
+/// that flag to add the inter-paragraph delay to the schedule.
+///
+/// Implemented as a single forward scan over `page_word_contexts`:
+/// the previous two-pass form (one `list.find` to resolve
+/// `current_paragraph`, then a `drop_through_word` + second
+/// `list.find` to skip past `current_idx`) walked the list twice
+/// per tick — ~400 list-element visits at 200-word pages and
+/// 200 WPM. The fused scan captures the current word's paragraph
+/// when it passes through it and continues looking for the next
+/// eligible word in the same traversal.
+fn next_eligible_after(
+  model: Model,
+  current_idx: Int,
+) -> Option(#(WordContext, Bool)) {
+  case pagination.nth(model.pages, model.current_page) {
+    None -> None
+    Some(page) ->
+      scan_for_next_eligible(
+        page_word_contexts(page),
+        current_idx,
+        None,
+        model.erased_words,
+        model.erased,
+      )
+  }
+}
+
+/// Tail-recursive helper for `next_eligible_after`. `current_paragraph`
+/// carries the just-faded word's paragraph index once the scan has
+/// passed it, and stays `None` until then. The arm split is therefore
+/// "before / at / after the current word":
+///
+/// * `None` + non-match → keep walking, current word not yet seen.
+/// * `None` + match → capture this element's paragraph and skip it.
+/// * `Some(_)` + visible → return as the next eligible target along
+///   with the crosses-paragraph flag.
+/// * `Some(_)` + erased → keep walking.
+///
+/// If the scan exhausts the list without ever finding `current_idx`,
+/// the result is `None` — the caller treats that as a "page
+/// exhausted" signal and walks forward to the next page.
+fn scan_for_next_eligible(
+  contexts: List(WordContext),
+  current_idx: Int,
+  current_paragraph: Option(Int),
+  erased_words: Set(Int),
+  erased_sentences: Set(Int),
+) -> Option(#(WordContext, Bool)) {
+  case contexts, current_paragraph {
+    [], _ -> None
+    [ctx, ..rest], None ->
+      case ctx.word_global_index == current_idx {
+        True ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            Some(ctx.paragraph_global_index),
+            erased_words,
+            erased_sentences,
+          )
+        False ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            None,
+            erased_words,
+            erased_sentences,
+          )
+      }
+    [ctx, ..rest], Some(captured_paragraph) ->
+      case is_word_visible(ctx, erased_words, erased_sentences) {
+        True -> Some(#(ctx, ctx.paragraph_global_index != captured_paragraph))
+        False ->
+          scan_for_next_eligible(
+            rest,
+            current_idx,
+            Some(captured_paragraph),
+            erased_words,
+            erased_sentences,
+          )
+      }
+  }
+}
+
+/// Flatten one page into reading-order word contexts. Iteration
+/// is `page.paragraphs[].paragraph.sentences[].words[]` —
+/// document order matches the Word.global_index sequence the
+/// segmenter assigned at build time.
+fn page_word_contexts(page: Page) -> List(WordContext) {
+  page.paragraphs
+  |> list.flat_map(fn(page_paragraph) {
+    page_paragraph.paragraph.sentences
+    |> list.flat_map(fn(sentence) {
+      sentence.words
+      |> list.map(fn(word) {
+        WordContext(
+          word_global_index: word.global_index,
+          paragraph_global_index: page_paragraph.global_index,
+          sentence_global_index: sentence.global_index,
+        )
+      })
+    })
+  })
+}
+
+/// A word is visible when neither its own bitset entry nor its
+/// parent sentence's entry is set. Shared between the engine's
+/// eligibility search and the view's render path so the two
+/// stay in lock-step.
+fn is_word_visible(
+  ctx: WordContext,
+  erased_words: Set(Int),
+  erased_sentences: Set(Int),
+) -> Bool {
+  !set.contains(erased_words, ctx.word_global_index)
+  && !set.contains(erased_sentences, ctx.sentence_global_index)
+}
+
+/// Words-per-minute → per-word delay in milliseconds. Integer
+/// division — the residual fractional millisecond is sub-frame
+/// at every realistic WPM and would not be observable in the
+/// rendered fade.
+fn word_interval_ms(wpm: Int) -> Int {
+  ms_per_minute / wpm
+}
+
+/// Schedule the next AdvanceWord dispatch after `delay_ms`. The
+/// FFI's single-slot timer clears any prior in-flight handle
+/// synchronously, so this is safe to call from any
+/// engine-transition arm without first calling
+/// `clear_word_timer` defensively.
+fn schedule_advance_word(delay_ms: Int) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.start_word_timer(delay_ms, fn() { dispatch(AdvanceWord) })
+  })
+}
+
 /// Clamp `value` into `[lo, hi]`. Defensive helper for slider /
 /// stepper inputs; the inputs themselves carry `min` and `max`
 /// attributes, but a future programmatic call (or a malformed event)
@@ -759,18 +1346,28 @@ pub fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
 /// Resolve a `TouchEnd` into the next model state. Clears
 /// `touch_start` unconditionally, then classifies the gesture
 /// (`Tap` / `SwipeLeft` / `SwipeRight`) and routes the swipe to a
-/// page navigation or an undo. Extracted from the top-level `update`
-/// case statement so the reducer dispatch stays scannable and so the
-/// nested-case gesture pipeline reads as one named procedure.
-fn apply_touch_end(model: Model, x: Float, y: Float) -> Model {
+/// page navigation or an undo. A `Tap` in `Manual` mode is a
+/// no-op — sentence erasure flows through the synthesised `click`
+/// event on the `.sentence` span. A `Tap` in `RealTime` mode is
+/// routed through `apply_space_pressed`, which toggles the fade
+/// engine's start/pause/resume state. Returns an `Effect` so the
+/// RealTime branch can schedule or cancel the FFI word timer.
+fn apply_touch_end(model: Model, x: Float, y: Float) -> #(Model, Effect(Msg)) {
   let cleared = Model(..model, touch_start: None)
   case model.touch_start {
-    None -> cleared
+    None -> #(cleared, effect.none())
     Some(#(start_x, start_y)) ->
       case gestures.classify(start_x, start_y, x, y) {
-        gestures.Tap -> cleared
-        gestures.SwipeLeft -> go_to_page(cleared, cleared.current_page + 1)
-        gestures.SwipeRight -> apply_undo(cleared)
+        gestures.Tap ->
+          case cleared.mode {
+            Manual -> #(cleared, effect.none())
+            RealTime -> apply_space_pressed(cleared)
+          }
+        gestures.SwipeLeft -> #(
+          go_to_page(cleared, cleared.current_page + 1),
+          effect.none(),
+        )
+        gestures.SwipeRight -> #(apply_undo(cleared), effect.none())
       }
   }
 }
@@ -1057,6 +1654,8 @@ fn view_paginated(model: Model) -> Element(Msg) {
         model.focused_sentence,
         True,
         erased_opacity,
+        model.erased_words,
+        model.mode,
       )
     None -> view_preparing()
   }
@@ -1117,6 +1716,8 @@ fn view_page(
   focused: Option(Int),
   interactive: Bool,
   erased_opacity: String,
+  erased_words: Set(Int),
+  mode: Mode,
 ) -> Element(Msg) {
   html.div(
     [
@@ -1124,7 +1725,15 @@ fn view_page(
       attribute.attribute("data-page-index", int.to_string(page.index)),
     ],
     list.map(page.paragraphs, fn(p) {
-      view_page_paragraph(p, erased, focused, interactive, erased_opacity)
+      view_page_paragraph(
+        p,
+        erased,
+        focused,
+        interactive,
+        erased_opacity,
+        erased_words,
+        mode,
+      )
     }),
   )
 }
@@ -1188,7 +1797,23 @@ fn view_measurement_container(
       attribute.attribute("aria-hidden", "true"),
     ],
     list.map(paragraphs, fn(p) {
-      view_page_paragraph(p, set.new(), None, False, erased_opacity)
+      // Mode is `Manual` here as a no-op default: the measurement
+      // mirror passes `interactive: False`, which already gates the
+      // click handler off regardless of mode, and the word-level
+      // fade rendering uses an empty `erased_words` set so no
+      // measurement-mirror word carries an inline opacity. The
+      // measurement DOM stays opacity-clean, so its
+      // `getBoundingClientRect().height` is unaffected by erase
+      // styling.
+      view_page_paragraph(
+        p,
+        set.new(),
+        None,
+        False,
+        erased_opacity,
+        set.new(),
+        Manual,
+      )
     }),
   )
 }
@@ -1199,6 +1824,8 @@ fn view_page_paragraph(
   focused: Option(Int),
   interactive: Bool,
   erased_opacity: String,
+  erased_words: Set(Int),
+  mode: Mode,
 ) -> Element(Msg) {
   // `data-paragraph-global-index` lives on the `.page-paragraph`
   // wrapper, not the inner `<p>`, so the FFI measures the wrapper's
@@ -1239,6 +1866,8 @@ fn view_page_paragraph(
         focused,
         interactive,
         erased_opacity,
+        erased_words,
+        mode,
       ),
     ],
   )
@@ -1250,13 +1879,23 @@ fn view_paragraph(
   focused: Option(Int),
   interactive: Bool,
   erased_opacity: String,
+  erased_words: Set(Int),
+  mode: Mode,
 ) -> Element(Msg) {
   // A literal " " text node between sentences keeps the gap visible
   // when each sentence's last word omits its trailing space.
   let sentence_elements =
     paragraph.sentences
     |> list.map(fn(s) {
-      view_sentence(s, erased, focused, interactive, erased_opacity)
+      view_sentence(
+        s,
+        erased,
+        focused,
+        interactive,
+        erased_opacity,
+        erased_words,
+        mode,
+      )
     })
     |> list.intersperse(html.text(" "))
 
@@ -1299,6 +1938,8 @@ pub fn view_sentence(
   focused: Option(Int),
   interactive: Bool,
   erased_opacity: String,
+  erased_words: Set(Int),
+  mode: Mode,
 ) -> Element(Msg) {
   let word_count = list.length(sentence.words)
   let words =
@@ -1308,7 +1949,8 @@ pub fn view_sentence(
       // sentence drops the space — the inter-sentence separator
       // above owns that boundary instead.
       let with_trailing_space = index < word_count - 1
-      view_word(word, with_trailing_space)
+      let word_erased = set.contains(erased_words, word.global_index)
+      view_word(word, with_trailing_space, word_erased, erased_opacity)
     })
 
   let is_erased = set.contains(erased, sentence.global_index)
@@ -1320,11 +1962,14 @@ pub fn view_sentence(
     True -> "sentence sentence-focused"
     False -> "sentence"
   }
-  // Both conditional attributes collapse into a single trailing list
-  // so the surrounding `html.span` call constructs the attribute
-  // sequence in one literal expression rather than appending two
-  // separately-built lists.
-  let trailing_attrs = case interactive, is_erased {
+  // Click-to-erase is a Manual-mode affordance only. In RealTime
+  // mode the engine drives fades; a stray tap on a sentence span
+  // must not erase the whole sentence — the page-level `Tap`
+  // gesture is routed to pause/resume instead. The measurement
+  // mirror passes `interactive: False`, so its spans never carry
+  // a click handler regardless of mode.
+  let click_enabled = interactive && mode == Manual
+  let trailing_attrs = case click_enabled, is_erased {
     True, True -> [
       event.on_click(EraseSentence(sentence.global_index)),
       attribute.style("opacity", erased_opacity),
@@ -1347,16 +1992,32 @@ pub fn view_sentence(
   )
 }
 
-fn view_word(word: Word, with_trailing_space: Bool) -> Element(Msg) {
+fn view_word(
+  word: Word,
+  with_trailing_space: Bool,
+  word_erased: Bool,
+  erased_opacity: String,
+) -> Element(Msg) {
   let text_content = case with_trailing_space {
     True -> word.text <> " "
     False -> word.text
+  }
+  // Individual-word opacity is the fade engine's render hook.
+  // Ghost mode applies through the same `erased_opacity` string
+  // that drives sentence-level erasure so a reader running with
+  // ghost mode on sees faded words at the configured ghost
+  // opacity rather than fully invisible. CSS handles the
+  // transition timing via `.word { transition: opacity ... }`.
+  let opacity_attrs = case word_erased {
+    True -> [attribute.style("opacity", erased_opacity)]
+    False -> []
   }
 
   html.span(
     [
       attribute.class("word"),
       attribute.attribute("data-global-index", int.to_string(word.global_index)),
+      ..opacity_attrs
     ],
     [html.text(text_content)],
   )
@@ -1396,6 +2057,10 @@ fn view_settings_panel(model: Model) -> Element(Msg) {
 fn view_settings_sheet(model: Model) -> Element(Msg) {
   html.div([attribute.class("settings-panel"), stop_click_propagation()], [
     view_settings_header(),
+    view_mode_toggle(model),
+    view_wpm_slider(model),
+    view_paragraph_delay_slider(model),
+    view_page_delay_slider(model),
     view_theme_toggle(model),
     view_font_size_slider(model),
     view_line_spacing_slider(model),
@@ -1539,6 +2204,111 @@ fn view_line_spacing_slider(model: Model) -> Element(Msg) {
         case float.parse(value) {
           Ok(parsed) -> SetLineSpacing(parsed)
           Error(_) -> SetLineSpacing(model.line_spacing)
+        }
+      }),
+    ]),
+  ])
+}
+
+fn view_mode_toggle(model: Model) -> Element(Msg) {
+  // Checkbox semantics: unchecked → `Manual`, checked → `RealTime`.
+  // The label reads as "Real-time fade mode" so the off state
+  // (the default) reads as "the original tap/click reader" without
+  // needing to name it explicitly. `event.on_check` carries the
+  // new checkbox state, which maps directly to `Mode`.
+  let checked = model.mode == RealTime
+  html.div([attribute.class("settings-row")], [
+    html.label([attribute.class("settings-toggle")], [
+      html.span([attribute.class("settings-toggle-label")], [
+        html.text("Real-time fade mode"),
+      ]),
+      html.input([
+        attribute.class("settings-toggle-input"),
+        attribute.type_("checkbox"),
+        attribute.checked(checked),
+        event.on_check(fn(is_on) {
+          case is_on {
+            True -> SetMode(RealTime)
+            False -> SetMode(Manual)
+          }
+        }),
+      ]),
+    ]),
+  ])
+}
+
+fn view_wpm_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Reading speed")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(int.to_string(model.wpm) <> " wpm"),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(int.to_string(min_wpm)),
+      attribute.max(int.to_string(max_wpm)),
+      attribute.step("10"),
+      attribute.value(int.to_string(model.wpm)),
+      attribute.attribute("aria-label", "Words per minute"),
+      event.on_input(fn(value) {
+        case int.parse(value) {
+          Ok(parsed) -> SetWpm(parsed)
+          Error(_) -> SetWpm(model.wpm)
+        }
+      }),
+    ]),
+  ])
+}
+
+fn view_paragraph_delay_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Paragraph pause")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(int.to_string(model.paragraph_delay_ms) <> " ms"),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(int.to_string(min_paragraph_delay_ms)),
+      attribute.max(int.to_string(max_paragraph_delay_ms)),
+      attribute.step("100"),
+      attribute.value(int.to_string(model.paragraph_delay_ms)),
+      attribute.attribute("aria-label", "Paragraph pause in milliseconds"),
+      event.on_input(fn(value) {
+        case int.parse(value) {
+          Ok(parsed) -> SetParagraphDelay(parsed)
+          Error(_) -> SetParagraphDelay(model.paragraph_delay_ms)
+        }
+      }),
+    ]),
+  ])
+}
+
+fn view_page_delay_slider(model: Model) -> Element(Msg) {
+  html.div([attribute.class("settings-row")], [
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Page pause")]),
+      html.span([attribute.class("settings-row-value")], [
+        html.text(int.to_string(model.page_delay_ms) <> " ms"),
+      ]),
+    ]),
+    html.input([
+      attribute.class("settings-slider"),
+      attribute.type_("range"),
+      attribute.min(int.to_string(min_page_delay_ms)),
+      attribute.max(int.to_string(max_page_delay_ms)),
+      attribute.step("100"),
+      attribute.value(int.to_string(model.page_delay_ms)),
+      attribute.attribute("aria-label", "Page pause in milliseconds"),
+      event.on_input(fn(value) {
+        case int.parse(value) {
+          Ok(parsed) -> SetPageDelay(parsed)
+          Error(_) -> SetPageDelay(model.page_delay_ms)
         }
       }),
     ]),
