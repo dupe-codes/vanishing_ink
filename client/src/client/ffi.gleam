@@ -211,3 +211,15 @@ pub fn fetch_json_post(
   body: String,
   on_complete: fn(Result(String, FetchError)) -> Nil,
 ) -> Nil
+
+/// PUT counterpart to `fetch_json_post`. The settings endpoints use PUT
+/// rather than POST so the server stays on the convention of "POST for
+/// creates, PUT for full-record updates" — `/api/settings` and
+/// `/api/books/:id/settings` both replace the whole record on write,
+/// which is the canonical PUT semantic.
+@external(javascript, "./ffi.ffi.mjs", "fetch_json_put")
+pub fn fetch_json_put(
+  url: String,
+  body: String,
+  on_complete: fn(Result(String, FetchError)) -> Nil,
+) -> Nil

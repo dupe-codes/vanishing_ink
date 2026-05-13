@@ -22,7 +22,8 @@ import gleam/string
 import server/clock
 import server/db
 import server/types.{
-  type ReadingState, type UserSettings, BookMeta, ReadingState, UserSettings,
+  type BookSettings, type ReadingState, type UserSettings, BookMeta,
+  BookSettings, ReadingState, UserSettings,
 }
 import server/web.{type Context}
 import shared
@@ -47,6 +48,7 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
     ["api", "books"] -> books_collection(req, ctx)
     ["api", "books", id] -> books_item(req, ctx, id)
     ["api", "books", id, "state"] -> reading_state(req, ctx, id)
+    ["api", "books", id, "settings"] -> book_settings(req, ctx, id)
     ["api", "settings"] -> settings(req, ctx)
 
     // SPA shell — serve index.html for the root and any non-API,
@@ -491,6 +493,161 @@ fn decode_optional_base64(
         Ok(bytes) -> Ok(Some(bytes))
         Error(_) -> Error(field_name <> " is not valid base64")
       }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Book settings
+// ---------------------------------------------------------------------------
+
+fn book_settings(req: Request, ctx: Context, id: String) -> Response {
+  case req.method {
+    Get -> get_book_settings_handler(ctx, id)
+    Put -> put_book_settings_handler(req, ctx, id)
+    _ -> wisp.method_not_allowed([Get, Put])
+  }
+}
+
+fn get_book_settings_handler(ctx: Context, id: String) -> Response {
+  // Existence-check the book first so a missing id maps to a clean
+  // 404 rather than a synthesized all-null payload that the client
+  // would mistake for "book exists, no overrides set".
+  case db.get_book(ctx.db, id) {
+    Error(error) -> db_error_response("db.get_book", error)
+    Ok(None) -> wisp.not_found()
+    Ok(Some(_)) ->
+      case db.get_book_settings(ctx.db, id) {
+        Error(error) -> db_error_response("db.get_book_settings", error)
+        // A book with no overrides surfaces as an all-null record so
+        // the client can decode the response with a single shape
+        // regardless of whether the row exists yet.
+        Ok(None) -> {
+          let body =
+            types.book_settings_to_json(types.empty_book_settings())
+            |> json.to_string
+          wisp.json_response(body, 200)
+        }
+        Ok(Some(settings)) -> {
+          let body =
+            types.book_settings_to_json(settings)
+            |> json.to_string
+          wisp.json_response(body, 200)
+        }
+      }
+  }
+}
+
+fn put_book_settings_handler(
+  req: Request,
+  ctx: Context,
+  id: String,
+) -> Response {
+  use body <- wisp.require_json(req)
+
+  case db.get_book(ctx.db, id) {
+    Error(error) -> db_error_response("db.get_book", error)
+    Ok(None) -> wisp.not_found()
+    Ok(Some(_)) ->
+      case decode.run(body, book_settings_decoder()) {
+        Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+        Ok(settings) ->
+          case validate_book_settings(settings) {
+            Error(detail) -> wisp.bad_request(detail)
+            Ok(settings) ->
+              case
+                db.upsert_book_settings(ctx.db, book_id: id, settings: settings)
+              {
+                Error(error) ->
+                  db_error_response("db.upsert_book_settings", error)
+                Ok(Nil) -> {
+                  let body =
+                    types.book_settings_to_json(settings)
+                    |> json.to_string
+                  wisp.json_response(body, 200)
+                }
+              }
+          }
+      }
+  }
+}
+
+fn book_settings_decoder() -> decode.Decoder(BookSettings) {
+  use wpm <- decode.optional_field("wpm", None, decode.optional(decode.int))
+  use paragraph_delay_ms <- decode.optional_field(
+    "paragraph_delay_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use page_delay_ms <- decode.optional_field(
+    "page_delay_ms",
+    None,
+    decode.optional(decode.int),
+  )
+  use ghost_opacity <- decode.optional_field(
+    "ghost_opacity",
+    None,
+    decode.optional(decode.float),
+  )
+  decode.success(BookSettings(
+    wpm: wpm,
+    paragraph_delay_ms: paragraph_delay_ms,
+    page_delay_ms: page_delay_ms,
+    ghost_opacity: ghost_opacity,
+  ))
+}
+
+/// Validate per-book overrides. The constraints mirror the global
+/// `validate_user_settings` predicates so a per-book WPM of `0` is
+/// rejected the same way `default_wpm: 0` would be. Each field is
+/// only checked when an override is actually present — `None`
+/// always passes because it means "use the global default", which
+/// the global validator already vetted.
+fn validate_book_settings(
+  settings: BookSettings,
+) -> Result(BookSettings, String) {
+  use _ <- result.try(validate_optional_positive_int("wpm", settings.wpm))
+  use _ <- result.try(validate_optional_non_negative_int(
+    "paragraph_delay_ms",
+    settings.paragraph_delay_ms,
+  ))
+  use _ <- result.try(validate_optional_non_negative_int(
+    "page_delay_ms",
+    settings.page_delay_ms,
+  ))
+  use _ <- result.try(validate_optional_unit_interval(
+    "ghost_opacity",
+    settings.ghost_opacity,
+  ))
+  Ok(settings)
+}
+
+fn validate_optional_positive_int(
+  field: String,
+  value: Option(Int),
+) -> Result(Nil, String) {
+  case value {
+    None -> Ok(Nil)
+    Some(v) -> require_positive_int(field, v)
+  }
+}
+
+fn validate_optional_non_negative_int(
+  field: String,
+  value: Option(Int),
+) -> Result(Nil, String) {
+  case value {
+    None -> Ok(Nil)
+    Some(v) -> require_non_negative_int(field, v)
+  }
+}
+
+fn validate_optional_unit_interval(
+  field: String,
+  value: Option(Float),
+) -> Result(Nil, String) {
+  case value {
+    None -> Ok(Nil)
+    Some(v) -> require_unit_interval(field, v)
   }
 }
 

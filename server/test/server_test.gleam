@@ -20,7 +20,10 @@ import gleam/string
 import gleeunit
 import server/db
 import server/router
-import server/types.{type ReadingState, type UserSettings, ReadingState}
+import server/types.{
+  type BookSettings, type ReadingState, type UserSettings, BookSettings,
+  ReadingState,
+}
 import server/web
 import shared/segmenter
 import sqlight
@@ -827,6 +830,148 @@ pub fn settings_put_endpoint_round_trips_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Book settings
+// ---------------------------------------------------------------------------
+
+pub fn book_settings_get_for_unwritten_book_returns_all_null_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let response = http_get_book_settings(ctx, created.book.id)
+  assert response.status == 200
+  // No row → an all-null record so the client can decode with a single
+  // shape regardless of whether the book has overrides yet.
+  let decoded = decode_body(response, book_settings_wire_decoder())
+  assert decoded == types.empty_book_settings()
+}
+
+pub fn book_settings_get_for_missing_book_is_404_test() {
+  use ctx <- with_context
+  let response = http_get_book_settings(ctx, "no-such-book")
+  assert response.status == 404
+  assert simulate.read_body(response) == "Not found"
+}
+
+pub fn book_settings_put_for_missing_book_is_404_test() {
+  use ctx <- with_context
+  let body = book_settings_to_json(types.empty_book_settings())
+  let response =
+    simulate.browser_request(http.Put, "/api/books/no-such-book/settings")
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+  assert response.status == 404
+}
+
+pub fn book_settings_put_round_trips_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let new_settings =
+    BookSettings(
+      wpm: Some(350),
+      paragraph_delay_ms: Some(400),
+      page_delay_ms: Some(900),
+      ghost_opacity: Some(0.2),
+    )
+
+  let response = http_put_book_settings(ctx, created.book.id, new_settings)
+  assert response.status == 200
+  let put_decoded = decode_body(response, book_settings_wire_decoder())
+  assert put_decoded == new_settings
+
+  // The GET reflects what was just persisted.
+  let get_response = http_get_book_settings(ctx, created.book.id)
+  assert decode_body(get_response, book_settings_wire_decoder()) == new_settings
+}
+
+pub fn book_settings_put_clears_overrides_with_all_null_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  // Seed with overrides…
+  let with_overrides =
+    BookSettings(
+      wpm: Some(100),
+      paragraph_delay_ms: Some(50),
+      page_delay_ms: None,
+      ghost_opacity: Some(0.1),
+    )
+  let seed_response =
+    http_put_book_settings(ctx, created.book.id, with_overrides)
+  assert seed_response.status == 200
+
+  // …then clear them.
+  let cleared_response =
+    http_put_book_settings(ctx, created.book.id, types.empty_book_settings())
+  assert cleared_response.status == 200
+  assert decode_body(cleared_response, book_settings_wire_decoder())
+    == types.empty_book_settings()
+
+  // GET must reflect the cleared state — INSERT OR REPLACE keeps the
+  // row but every column is now SQL NULL, so the wire form is the
+  // all-null record.
+  let get_response = http_get_book_settings(ctx, created.book.id)
+  assert decode_body(get_response, book_settings_wire_decoder())
+    == types.empty_book_settings()
+}
+
+pub fn book_settings_put_rejects_out_of_range_values_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let cases = [
+    #("wpm", BookSettings(..types.empty_book_settings(), wpm: Some(0)), "wpm"),
+    #(
+      "paragraph_delay_ms",
+      BookSettings(..types.empty_book_settings(), paragraph_delay_ms: Some(-5)),
+      "paragraph_delay_ms",
+    ),
+    #(
+      "page_delay_ms",
+      BookSettings(..types.empty_book_settings(), page_delay_ms: Some(-1)),
+      "page_delay_ms",
+    ),
+    #(
+      "ghost_opacity_high",
+      BookSettings(..types.empty_book_settings(), ghost_opacity: Some(1.5)),
+      "ghost_opacity",
+    ),
+    #(
+      "ghost_opacity_low",
+      BookSettings(..types.empty_book_settings(), ghost_opacity: Some(-0.2)),
+      "ghost_opacity",
+    ),
+  ]
+  list.each(cases, fn(case_) {
+    let #(_name, bad_settings, expected_field) = case_
+    let response = http_put_book_settings(ctx, created.book.id, bad_settings)
+    assert response.status == 400
+    assert string.contains(simulate.read_body(response), expected_field)
+  })
+  // None of the bad writes squeaked through — the GET still surfaces
+  // the all-null default.
+  let get_response = http_get_book_settings(ctx, created.book.id)
+  assert decode_body(get_response, book_settings_wire_decoder())
+    == types.empty_book_settings()
+}
+
+pub fn book_settings_put_accepts_partial_overrides_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  // Only `wpm` is set — the other three fall back to the global
+  // default through the client merge; the server persists exactly
+  // what the wire carries.
+  let partial =
+    BookSettings(
+      wpm: Some(275),
+      paragraph_delay_ms: None,
+      page_delay_ms: None,
+      ghost_opacity: None,
+    )
+  let response = http_put_book_settings(ctx, created.book.id, partial)
+  assert response.status == 200
+  let get_response = http_get_book_settings(ctx, created.book.id)
+  assert decode_body(get_response, book_settings_wire_decoder()) == partial
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -882,6 +1027,57 @@ fn put_reading_state_body(
     #("word_bitset", json.null()),
     #("current_page", json.int(current_page)),
     #("updated_at", json.string(updated_at)),
+  ])
+}
+
+fn http_get_book_settings(ctx: web.Context, id: String) -> wisp.Response {
+  router.handle_request(
+    simulate.browser_request(http.Get, "/api/books/" <> id <> "/settings"),
+    ctx,
+  )
+}
+
+fn http_put_book_settings(
+  ctx: web.Context,
+  id: String,
+  settings: BookSettings,
+) -> wisp.Response {
+  simulate.browser_request(http.Put, "/api/books/" <> id <> "/settings")
+  |> simulate.json_body(book_settings_to_json(settings))
+  |> router.handle_request(ctx)
+}
+
+fn book_settings_wire_decoder() -> decode.Decoder(BookSettings) {
+  use wpm <- decode.field("wpm", decode.optional(decode.int))
+  use paragraph_delay_ms <- decode.field(
+    "paragraph_delay_ms",
+    decode.optional(decode.int),
+  )
+  use page_delay_ms <- decode.field(
+    "page_delay_ms",
+    decode.optional(decode.int),
+  )
+  use ghost_opacity <- decode.field(
+    "ghost_opacity",
+    decode.optional(decode.float),
+  )
+  decode.success(BookSettings(
+    wpm: wpm,
+    paragraph_delay_ms: paragraph_delay_ms,
+    page_delay_ms: page_delay_ms,
+    ghost_opacity: ghost_opacity,
+  ))
+}
+
+fn book_settings_to_json(settings: BookSettings) -> json.Json {
+  json.object([
+    #("wpm", json.nullable(settings.wpm, json.int)),
+    #(
+      "paragraph_delay_ms",
+      json.nullable(settings.paragraph_delay_ms, json.int),
+    ),
+    #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
+    #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
   ])
 }
 
