@@ -597,12 +597,6 @@ pub type Msg {
   /// `Paused`.
   ResumeFade
 
-  /// Stop the fade engine fully. Clears any in-flight timer,
-  /// transitions to `Stopped`, and resets `next_word_index` to
-  /// `None`. Used on mode-switch out of `RealTime` and on
-  /// document exhaustion (no more eligible words to fade).
-  StopFade
-
   /// Timer callback fired by the FFI word-timer slot. Marks
   /// `next_word_index` as faded (inserts into `erased_words`),
   /// finds the next eligible word, and either schedules the next
@@ -978,8 +972,6 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     ResumeFade -> apply_resume_fade(model)
 
-    StopFade -> apply_stop_fade(model)
-
     AdvanceWord -> apply_advance_word(model)
 
     SetWpm(value) -> #(
@@ -1121,8 +1113,19 @@ fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
 //                           \-->   Stopped  (no more words; engine done)
 //   Running --PauseFade-->         Paused   (clear timer, keep next index)
 //   Paused  --ResumeFade-->        Running  (schedule next tick at WPM)
-//   *       --StopFade-->          Stopped  (clear timer, clear next index)
 //   *       --SetMode(Manual)-->   Stopped  (mode switch always halts)
+//
+// There is no user-facing `StopFade` Msg: the engine reaches
+// `Stopped` either through `SetMode(Manual)` (the back arrow on
+// the reader header) or through document exhaustion in
+// `advance_to_next_page_loop`. The internal `apply_stop_fade`
+// helper is the implementation of that second path; the previous
+// revision also exposed a `StopFade` Msg variant that had no view
+// dispatcher, which left a reducer arm reachable only from tests.
+// The variant was removed when no UI affordance materialised for
+// it; if a future design wants an explicit "Stop" button distinct
+// from "leave RealTime mode," reintroduce the Msg and route it
+// through `apply_stop_fade`.
 //
 // The FFI's single-slot word timer is the runtime authority on
 // "is there a timer in flight": every transition that should kill

@@ -45,8 +45,8 @@ import client.{
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, LineBox, LinesMeasured,
   Manual, Model, NextPage, ParagraphsMeasured, PauseFade, Paused, RealTime,
   ResumeFade, Running, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, StopFade,
-  Stopped, TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, Stopped,
+  TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
   ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
@@ -2385,7 +2385,7 @@ pub fn update_start_fade_is_noop_when_no_eligible_word_on_page_test() {
 }
 
 // ---------------------------------------------------------------------------
-// update — PauseFade / ResumeFade / StopFade
+// update — PauseFade / ResumeFade
 // ---------------------------------------------------------------------------
 
 pub fn update_pause_fade_transitions_running_to_paused_test() {
@@ -2436,24 +2436,6 @@ pub fn update_resume_fade_is_noop_when_not_paused_test() {
 
   assert after_resume_on_running == prior_running
   assert after_resume_on_stopped == prior_stopped
-}
-
-pub fn update_stop_fade_clears_engine_state_and_next_word_test() {
-  let prior =
-    Model(
-      ..fade_model(),
-      engine_state: Running,
-      next_word_index: Some(2),
-      erased_words: set.from_list([0, 1]),
-    )
-
-  let #(updated, _effect) = client.update(prior, StopFade)
-
-  assert updated.engine_state == Stopped
-  assert updated.next_word_index == None
-  // Erased words persist past Stop — the reader expects the
-  // already-faded prose to stay faded; only the *timer* stops.
-  assert updated.erased_words == set.from_list([0, 1])
 }
 
 // ---------------------------------------------------------------------------
@@ -3061,27 +3043,6 @@ pub fn update_advance_word_clears_active_line_on_page_advance_test() {
   assert updated.current_page == 1
   assert updated.next_word_index == Some(2)
   assert updated.line_boxes == []
-  assert updated.active_line == None
-}
-
-pub fn update_stop_fade_clears_active_line_test() {
-  // Stopping the engine drops the overlay alongside the timer —
-  // there's no target to track when the engine is dormant. The
-  // bitset state (`erased_words`) survives, but `active_line`
-  // resets to `None` so the overlay doesn't ghost on a row the
-  // reader is no longer at.
-  let prior =
-    Model(
-      ..fade_model(),
-      engine_state: Running,
-      next_word_index: Some(1),
-      line_boxes: fade_line_boxes(),
-      active_line: Some(0),
-    )
-
-  let #(updated, _effect) = client.update(prior, StopFade)
-
-  assert updated.engine_state == Stopped
   assert updated.active_line == None
 }
 
