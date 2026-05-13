@@ -184,8 +184,49 @@ body.vi-dyslexia-font .settings-panel {
   /* FFI reads this element's `getBoundingClientRect().height`
    * as the available content-area budget for one page. The padding
    * is intentionally zero so the measurement is a clean
-   * content-box height with no chrome to subtract. */
+   * content-box height with no chrome to subtract.
+   *
+   * `position: relative` anchors the absolutely-positioned
+   * `.reader-active-line` overlay against this container so its
+   * inline `top` / `height` (in CSS pixels) resolve against the
+   * page's content area — the same coordinate space the FFI
+   * normalises each `LineBox.top` into. */
+  position: relative;
   height: 100%;
+}
+
+.reader-active-line {
+  /* Fade-engine active-line highlight. A single overlay div whose
+   * `top` and `height` are written inline from the matching
+   * `LineBox`; CSS handles the smooth glide between rows when the
+   * engine ticks across a line boundary.
+   *
+   * Anchored to the full width of `.reader-page-content` (its
+   * positioned ancestor) so a partial last line on a row still
+   * reads as "this whole row is active" rather than as a band
+   * that ends mid-text. `pointer-events: none` keeps the overlay
+   * from intercepting taps that should reach the words underneath.
+   *
+   * The background colour is a warm low-opacity tint that sits
+   * subtly behind the prose — well below 10% per the design spec.
+   * The exact rgba is independent of the dark/light palette
+   * because the overlay's job is to *suggest* a focus row, not to
+   * carry contrast on its own. */
+  position: absolute;
+  left: 0;
+  right: 0;
+  background-color: rgba(255, 196, 130, 0.06);
+  border-radius: 2px;
+  pointer-events: none;
+  transition: top 250ms ease, height 250ms ease;
+}
+
+body.vi-reduced-motion .reader-active-line {
+  /* Reduced motion: the glide collapses to a snap. The overlay
+   * still appears, but it teleports between rows rather than
+   * sliding — matching the rest of the reader's reduced-motion
+   * behaviour (sentence fades, settings toggles). */
+  transition: none;
 }
 
 .reader-preparing {

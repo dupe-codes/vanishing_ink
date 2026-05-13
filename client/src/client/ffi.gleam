@@ -34,6 +34,24 @@ pub fn get_element_height(selector: String) -> Result(Float, Nil)
 @external(javascript, "./ffi.ffi.mjs", "measure_paragraphs")
 pub fn measure_paragraphs(container_selector: String) -> List(#(Int, Float))
 
+/// Walk every `[data-global-index]` descendant of `container_selector`,
+/// group them by their visual line (rounded `getBoundingClientRect().top`),
+/// and return one tuple per line in document order:
+/// `#(relative_top, height, first_word_global_index, last_word_global_index)`.
+///
+/// `relative_top` is the line's distance from the container's top edge in
+/// CSS pixels (the JS side subtracts the container's own
+/// `getBoundingClientRect().top` from each word's). The caller drops
+/// the tuple directly onto an absolutely-positioned overlay anchored
+/// inside the container — no further offset arithmetic needed.
+///
+/// Returns an empty list when the selector matches no element or when
+/// the container has no `[data-global-index]` descendants.
+@external(javascript, "./ffi.ffi.mjs", "measure_word_lines")
+pub fn measure_word_lines(
+  container_selector: String,
+) -> List(#(Float, Float, Int, Int))
+
 /// Install a debounced `resize` listener on `window`. The callback is
 /// invoked at most once per debounce window (250 ms) after the most
 /// recent resize event. The handle is anchored on `window` itself —

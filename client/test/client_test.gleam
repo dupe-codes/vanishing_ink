@@ -106,6 +106,8 @@ fn empty_model() -> Model {
     erased_words: set.new(),
     paragraph_delay_ms: client.default_paragraph_delay_ms,
     page_delay_ms: client.default_page_delay_ms,
+    line_boxes: [],
+    active_line: None,
   )
 }
 
