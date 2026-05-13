@@ -28,6 +28,9 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
 import gleeunit
+import lustre/dev/query as lustre_query
+import lustre/dev/simulate
+import lustre/effect
 import lustre/element
 import lustre/vdom/vattr
 import lustre/vdom/vnode
@@ -3790,15 +3793,20 @@ pub fn view_settings_sheet_carries_handle_and_dividers_test() {
 }
 
 pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
-  // The back glyph in the header dispatches `SetMode(Manual)`.
-  // When the reader is already in Manual mode this is an
-  // idempotent no-op; when the reader is in RealTime mode it
-  // stops the fade engine and switches mode. Either way, the
-  // dispatch is unconditional — the routing happens in `update`,
-  // not in the view.
+  // Walks the rendered view tree, locates the back-glyph button by
+  // its unique `aria-label`, and simulates a click on it. The
+  // simulator routes the on_click payload through `client.update`,
+  // so the resulting model state reflects whatever Msg the button
+  // is *actually* wired to. The post-click assertions pin the
+  // `SetMode(Manual)` postconditions against a Running RealTime
+  // engine — any refactor that rewired the back button to a
+  // different Msg would change the resulting model state and fail
+  // this test, where a reducer-level assertion would have stayed
+  // green and let the regression through.
   //
-  // `SetMode(Manual)` against a Running engine should produce a
-  // Stopped engine and Manual mode, with the timer cleared.
+  // The reducer-level postconditions exercised here are also
+  // covered by `apply_set_mode` / mode-switch tests elsewhere; the
+  // point of this test is the wiring, not the reduction.
   let prior =
     Model(
       ..fade_model_single_page(),
@@ -3807,7 +3815,23 @@ pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
       next_word_index: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+  let app =
+    simulate.application(
+      init: fn(_) { #(prior, effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  let back_button =
+    lustre_query.element(matching: lustre_query.aria(
+      "label",
+      "Switch to manual reading mode",
+    ))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: back_button)
+    |> simulate.model
 
   assert updated.mode == Manual
   assert updated.engine_state == Stopped
