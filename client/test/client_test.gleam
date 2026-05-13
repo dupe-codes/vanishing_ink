@@ -3903,12 +3903,18 @@ pub fn view_realtime_play_button_aria_label_is_start_reading_when_stopped_test()
   // Screen-reader users need to know what the button does, not just
   // that it is a play/pause toggle. Engine state `Stopped` means
   // the first press will begin reading — announce "Start reading".
+  // Mirror the negation pattern the Resume / Pause sibling tests
+  // use: pin the absent labels too so a future refactor that
+  // accidentally emits multiple labels for the same button is
+  // caught here, not at runtime by a screen-reader user.
   let model =
     Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
 
   let rendered = client.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Resume reading\"")
+  assert !string.contains(rendered, "aria-label=\"Pause reading\"")
 }
 
 pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test() {
