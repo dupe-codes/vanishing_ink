@@ -90,8 +90,10 @@ pub const min_font_size: Int = 14
 pub const max_font_size: Int = 28
 
 /// Default `line_spacing`. Matches the bundled stylesheet's
-/// `--vi-line-height`.
-pub const default_line_spacing: Float = 1.6
+/// `--vi-line-height` (the warm-palette mock pacing is `1.85`,
+/// which gives the prose enough breathing room that the line-
+/// highlight overlay reads as one row rather than wrapping two).
+pub const default_line_spacing: Float = 1.85
 
 pub const min_line_spacing: Float = 1.2
 
@@ -320,7 +322,7 @@ pub type LineBox {
 ///   to a snap. Seeded from `prefers-reduced-motion` at boot.
 /// * `settings_open` — when `True`, the settings panel renders as a
 ///   bottom-sheet overlay above the reading surface. The gear icon
-///   on the control bar toggles it.
+///   on the reader header toggles it.
 /// * `mode` — `Manual` (tap/click/vim erasure) or `RealTime` (the
 ///   WPM-paced fade engine). Default `Manual` to keep the original
 ///   reader behaviour for first-time users; the mode toggle in the
@@ -365,6 +367,27 @@ pub type LineBox {
 ///   `line_boxes` empty, or `next_word_index` not contained in
 ///   any measured line). Recomputed on every event that moves
 ///   `next_word_index` or replaces `line_boxes`.
+/// * `total_sentence_count` / `total_word_count` — cached
+///   denominators for `progress_percentage`. Computed once in the
+///   `TextLoaded` arm via `total_counts` and refreshed on every
+///   subsequent `TextLoaded`. The previous revision recomputed both
+///   on every render, which at 200 WPM (`~3` engine dispatches per
+///   second) compounded against every settings drag and keystroke
+///   into hundreds of thousands of list traversals per second on a
+///   100k-word book. The totals are immutable for the lifetime of
+///   the loaded text — caching them is a design-phase decision,
+///   not a hot-path optimisation.
+/// * `current_chapter_title` — cached title for the chapter that
+///   the visible page sits in, used by `view_reader_header` to
+///   populate the centre slot of the chrome row. Computed via
+///   `compute_current_chapter_title` and refreshed in the three
+///   reducer arms that mutate any of `text` / `pages` /
+///   `current_page` (`TextLoaded`, `ParagraphsMeasured`,
+///   `change_page`). The view reads the cached field directly so
+///   each render avoids re-walking `pagination.nth` and
+///   `chapter_title_at` — the same caching pattern as the
+///   sentence/word totals above. Empty string when no text is
+///   loaded or the resolved chapter has no title.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -392,6 +415,9 @@ pub type Model {
     page_delay_ms: Int,
     line_boxes: List(LineBox),
     active_line: Option(Int),
+    total_sentence_count: Int,
+    total_word_count: Int,
+    current_chapter_title: String,
   )
 }
 
@@ -571,12 +597,6 @@ pub type Msg {
   /// `Paused`.
   ResumeFade
 
-  /// Stop the fade engine fully. Clears any in-flight timer,
-  /// transitions to `Stopped`, and resets `next_word_index` to
-  /// `None`. Used on mode-switch out of `RealTime` and on
-  /// document exhaustion (no more eligible words to fade).
-  StopFade
-
   /// Timer callback fired by the FFI word-timer slot. Marks
   /// `next_word_index` as faded (inserts into `erased_words`),
   /// finds the next eligible word, and either schedules the next
@@ -670,6 +690,9 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       page_delay_ms: default_page_delay_ms,
       line_boxes: [],
       active_line: None,
+      total_sentence_count: 0,
+      total_word_count: 0,
+      current_chapter_title: "",
     )
 
   // Boot effects:
@@ -748,22 +771,34 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 ///    `touchend` classification.
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> #(
-      Model(
-        ..model,
-        text: Some(text),
-        flat_paragraphs: pagination.flatten(text),
-        pages: [],
-        current_page: 0,
-        erased: set.new(),
-        undo_stack: [],
-        touch_start: None,
-        focused_sentence: None,
-        line_boxes: [],
-        active_line: None,
-      ),
-      measure_after_paint(),
-    )
+    TextLoaded(text) -> {
+      let #(sentences, words) = total_counts(text)
+      // `pages` is reset to `[]` here, so the cached chapter title
+      // is empty until `ParagraphsMeasured` lands the first page
+      // list. Setting it explicitly (rather than leaving the prior
+      // value in place) avoids the cache lagging across a fresh
+      // book load — the header would otherwise briefly carry the
+      // previous book's title.
+      #(
+        Model(
+          ..model,
+          text: Some(text),
+          flat_paragraphs: pagination.flatten(text),
+          pages: [],
+          current_page: 0,
+          erased: set.new(),
+          undo_stack: [],
+          touch_start: None,
+          focused_sentence: None,
+          line_boxes: [],
+          active_line: None,
+          total_sentence_count: sentences,
+          total_word_count: words,
+          current_chapter_title: "",
+        ),
+        measure_after_paint(),
+      )
+    }
 
     ParagraphsMeasured(heights, available_height) -> {
       let pages = case model.text {
@@ -804,6 +839,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           }
         }
       }
+      // Refresh the cached chapter title against the post-clamp
+      // page list — the visible page's chapter may have shifted if
+      // pagination repacked paragraphs or the clamp moved the
+      // current page.
+      let chapter_title =
+        compute_current_chapter_title(model.text, pages, clamped)
       #(
         Model(
           ..model,
@@ -822,6 +863,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           // settings-slider drag where each tick re-paginates.
           line_boxes: [],
           active_line: None,
+          current_chapter_title: chapter_title,
         ),
         // Pagination ran — chain a line measurement so the active-line
         // overlay re-anchors to the post-repagination geometry. The
@@ -929,8 +971,6 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     PauseFade -> apply_pause_fade(model)
 
     ResumeFade -> apply_resume_fade(model)
-
-    StopFade -> apply_stop_fade(model)
 
     AdvanceWord -> apply_advance_word(model)
 
@@ -1073,8 +1113,19 @@ fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
 //                           \-->   Stopped  (no more words; engine done)
 //   Running --PauseFade-->         Paused   (clear timer, keep next index)
 //   Paused  --ResumeFade-->        Running  (schedule next tick at WPM)
-//   *       --StopFade-->          Stopped  (clear timer, clear next index)
 //   *       --SetMode(Manual)-->   Stopped  (mode switch always halts)
+//
+// There is no user-facing `StopFade` Msg: the engine reaches
+// `Stopped` either through `SetMode(Manual)` (the back arrow on
+// the reader header) or through document exhaustion in
+// `advance_to_next_page_loop`. The internal `apply_stop_fade`
+// helper is the implementation of that second path; the previous
+// revision also exposed a `StopFade` Msg variant that had no view
+// dispatcher, which left a reducer arm reachable only from tests.
+// The variant was removed when no UI affordance materialised for
+// it; if a future design wants an explicit "Stop" button distinct
+// from "leave RealTime mode," reintroduce the Msg and route it
+// through `apply_stop_fade`.
 //
 // The FFI's single-slot word timer is the runtime authority on
 // "is there a timer in flight": every transition that should kill
@@ -1701,7 +1752,20 @@ fn change_page(model: Model, candidate: Int) -> Model {
   let clamped = pagination.clamp_page_index(candidate, total)
   case clamped == model.current_page {
     True -> model
-    False -> Model(..model, current_page: clamped, undo_stack: [])
+    False -> {
+      // Refresh the cached chapter title against the new page —
+      // crossing chapter boundaries on `NextPage` (or the
+      // navigation paths) is the routine cache-invalidation
+      // trigger.
+      let chapter_title =
+        compute_current_chapter_title(model.text, model.pages, clamped)
+      Model(
+        ..model,
+        current_page: clamped,
+        undo_stack: [],
+        current_chapter_title: chapter_title,
+      )
+    }
   }
 }
 
@@ -1852,20 +1916,30 @@ fn view_placeholder() -> Element(Msg) {
   html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
 }
 
-/// Build the full reading surface: visible page, control bar (page
-/// indicator + settings gear), and off-screen measurement container.
+/// Build the full reading surface: sticky header, reading-progress
+/// bar, visible page, mode-aware bottom bar, and off-screen
+/// measurement container.
+///
+/// The chrome rows (`view_reader_header`, `view_progress_bar`,
+/// `view_bottom_bar`) flank the central `.reader-page` so the
+/// reading area is the flex-grow child between two `flex: 0 0 auto`
+/// frames. The header carries the back glyph, current book title,
+/// and settings gear; the bottom bar swaps shape with `model.mode`
+/// — Manual gets undo / page indicator / turn-page, RealTime gets
+/// WPM readout / play-pause / spacer.
 ///
 /// The `#vi-measurement` container receives all paragraphs from the
-/// whole book — not just the current page. This lets `measure_after_paint`
-/// read every paragraph height in a single DOM pass after `TextLoaded` or
-/// `ViewportResized`, rather than re-measuring on every page turn.
+/// whole book — not just the current page. This lets
+/// `measure_after_paint` read every paragraph height in a single DOM
+/// pass after `TextLoaded` or `ViewportResized`, rather than
+/// re-measuring on every page turn.
 ///
 /// Touch handlers are placed on `.reader-page` rather than the outer
-/// `.reader-text` so neither the control bar (with its tappable gear
-/// icon) nor the off-screen measurement container can intercept page
-/// swipes. The measurement container is `pointer-events: none`
-/// (see `.reader-measurement` in `styles.css`) so its descendants
-/// cannot receive any touch or click events.
+/// `.reader-text` so neither the chrome rows nor the off-screen
+/// measurement container can intercept page swipes. The measurement
+/// container is `pointer-events: none` (see `.reader-measurement` in
+/// `styles.css`) so its descendants cannot receive any touch or
+/// click events.
 fn view_paginated(model: Model) -> Element(Msg) {
   let total = list.length(model.pages)
   let erased_opacity = erased_opacity_value(model)
@@ -1892,6 +1966,8 @@ fn view_paginated(model: Model) -> Element(Msg) {
   let active_line_overlay = view_active_line_overlay(model)
 
   html.div([attribute.class("reader-text")], [
+    view_reader_header(model),
+    view_progress_bar(model),
     html.div(
       [
         attribute.id(reading_area_id),
@@ -1910,9 +1986,204 @@ fn view_paginated(model: Model) -> Element(Msg) {
         ),
       ],
     ),
-    view_control_bar(total, model.current_page),
+    view_bottom_bar(model, total),
     view_measurement_container(model.flat_paragraphs, erased_opacity),
   ])
+}
+
+/// Sticky top chrome row. Three slots: back glyph (left), chapter
+/// title (centre, ellipsised), settings gear (right). The back button
+/// dispatches `SetMode(Manual)` — in RealTime mode this stops the
+/// fade engine and returns to the tap-to-erase reader, in Manual
+/// mode it is an idempotent no-op (the model is already in Manual,
+/// and `apply_set_mode(model, Manual)` is safe to call against
+/// a stopped engine). Act 4 will rewire the back button to library
+/// navigation once a library view exists.
+///
+/// The title slot is driven from the model: the chapter currently
+/// being read carries an `Option(String)` title on `SegmentedText`,
+/// and `current_chapter_title` looks it up by `chapter_index` on the
+/// visible page's first paragraph. When the chapter has no title —
+/// or the page list is still empty between `TextLoaded` and the
+/// first measurement pass — the slot renders an empty string rather
+/// than fabricating one. The bundled sample fixture has no chapter
+/// headings, so today's render carries an empty slot; the future
+/// server-payload path will land titled chapters that populate it
+/// without further view changes.
+fn view_reader_header(model: Model) -> Element(Msg) {
+  // The title is read from the cached `current_chapter_title` field
+  // on the model rather than walking the page → paragraph → chapter
+  // chain on every render. The field is refreshed in the reducer
+  // arms that mutate any of `text` / `pages` / `current_page`.
+  let title = model.current_chapter_title
+  html.div([attribute.class("reader-header")], [
+    html.div([attribute.class("reader-header-inner")], [
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Switch to manual reading mode"),
+          attribute.type_("button"),
+          event.on_click(SetMode(Manual)),
+        ],
+        [html.text("←")],
+      ),
+      html.div([attribute.class("reader-title")], [html.text(title)]),
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Open settings"),
+          attribute.type_("button"),
+          event.on_click(ToggleSettings),
+        ],
+        // Unicode gear glyph keeps the asset surface zero. A later
+        // quest can swap this for an inline SVG if iconography
+        // becomes a theme concern.
+        [html.text("⚙")],
+      ),
+    ]),
+  ])
+}
+
+/// Look up the title of the chapter the current page sits in.
+/// Returns the chapter's title when one is present, an empty
+/// string otherwise. Called from the three reducer arms that
+/// mutate any of `text` / `pages` / `current_page` to refresh
+/// the cached `Model.current_chapter_title` field; the view
+/// reads the cached field rather than calling this helper on
+/// every render.
+///
+/// The lookup walks the page → first paragraph → `chapter_index`
+/// chain so the slot tracks the reader as they cross chapter
+/// boundaries: a page that opens inside chapter 1 shows chapter 1's
+/// title even when the previous page belonged to chapter 0.
+///
+/// Falls through to `""` rather than crashing when:
+/// * `text` is `None` (pre-`TextLoaded` — header is not rendered
+///   today, but the helper stays total),
+/// * `pages` is empty (the pagination-pending window after
+///   `TextLoaded` and before the first `ParagraphsMeasured`),
+/// * the resolved chapter carries `title: None`.
+fn compute_current_chapter_title(
+  text: Option(SegmentedText),
+  pages: List(Page),
+  current_page: Int,
+) -> String {
+  case text {
+    None -> ""
+    Some(t) ->
+      case pagination.nth(pages, current_page) {
+        None -> ""
+        Some(page) ->
+          case page.paragraphs {
+            [] -> ""
+            [first, ..] -> chapter_title_at(t, first.chapter_index)
+          }
+      }
+  }
+}
+
+fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
+  case list.find(text.chapters, fn(c) { c.index == chapter_index }) {
+    Ok(chapter) -> option.unwrap(chapter.title, "")
+    Error(_) -> ""
+  }
+}
+
+/// Thin reading-progress bar between the header and the reading
+/// area. The fill width is driven inline from the model:
+///
+/// * Manual mode — fraction of sentences erased over the whole text.
+/// * RealTime mode — fraction of words faded over the whole text.
+///
+/// Both denominators are the whole-book totals cached on the model
+/// (`total_sentence_count`, `total_word_count`) rather than the
+/// current page's slice, so the bar reads as "progress through the
+/// book" rather than "progress through this page". When the model
+/// has no text yet, the cached totals are `0` and the fill is 0% —
+/// the bar renders as an empty track until `TextLoaded` lands.
+fn view_progress_bar(model: Model) -> Element(Msg) {
+  let percent = progress_percentage(model)
+  let width_value = float.to_string(percent) <> "%"
+  // ARIA progressbar semantics let screen reader users hear where
+  // they are in the book — the app's central affordance. The
+  // `aria-valuenow` is rounded to the nearest whole percent so the
+  // announcement reads cleanly ("forty-two percent") rather than
+  // dictating the float's decimal tail. The fill div carries
+  // `aria-hidden="true"` because its inline `width` style is purely
+  // visual; the role/values on the track already convey the state.
+  let value_now = int.to_string(float.round(percent))
+  html.div(
+    [
+      attribute.class("reader-progress-track"),
+      attribute.role("progressbar"),
+      attribute.attribute("aria-valuemin", "0"),
+      attribute.attribute("aria-valuemax", "100"),
+      attribute.attribute("aria-valuenow", value_now),
+      attribute.attribute("aria-label", "Reading progress"),
+    ],
+    [
+      html.div(
+        [
+          attribute.class("reader-progress-fill"),
+          attribute.style("width", width_value),
+          attribute.attribute("aria-hidden", "true"),
+        ],
+        [],
+      ),
+    ],
+  )
+}
+
+/// Reading progress as a percentage, rounded to one decimal place.
+///
+/// The denominator is read from the cached `total_sentence_count` /
+/// `total_word_count` fields on the model — those fields are
+/// computed once per `TextLoaded` (see `total_counts`) so the
+/// per-render cost here is constant. The previous revision walked
+/// every chapter → paragraph → sentence (and word) on every call,
+/// which compounded badly against the fade engine's ~3 dispatches
+/// per second at 200 WPM plus every settings drag and keystroke.
+///
+/// `float.to_precision(_, 1)` snaps the result to a single decimal
+/// digit so the serialised `width:<n>%` style is a clean prefix
+/// (`33.3`, `40.0`) rather than the float's full-precision
+/// expansion (`33.333333333333%`). The CSS transition reads the
+/// truncated value just as faithfully, and the rendered HTML tests
+/// can pin the full value instead of a prefix substring.
+fn progress_percentage(model: Model) -> Float {
+  let #(numerator, denominator) = case model.mode {
+    Manual -> #(set.size(model.erased), model.total_sentence_count)
+    RealTime -> #(set.size(model.erased_words), model.total_word_count)
+  }
+  case denominator {
+    0 -> 0.0
+    _ ->
+      int.to_float(numerator) /. int.to_float(denominator) *. 100.0
+      |> float.to_precision(1)
+  }
+}
+
+/// Walk the segmented text once and return `#(sentences, words)`.
+/// Called from the `TextLoaded` reducer so the result can be cached
+/// on the model — the totals do not change between loads, so the
+/// view layer reads them from constant fields instead of re-walking
+/// the whole book on every render.
+///
+/// One fold is used rather than the previous twin `list.flat_map`
+/// chains: at the design phase a 100k-word book would have driven
+/// the view-time cost into the hundreds of thousands of list
+/// traversals per second under fade-engine pacing. Caching removes
+/// that cost; the single fold here also halves the one-time cost
+/// at load.
+fn total_counts(text: SegmentedText) -> #(Int, Int) {
+  list.fold(text.chapters, #(0, 0), fn(chapter_acc, chapter) {
+    list.fold(chapter.paragraphs, chapter_acc, fn(paragraph_acc, paragraph) {
+      list.fold(paragraph.sentences, paragraph_acc, fn(sentence_acc, sentence) {
+        let #(sentences, words) = sentence_acc
+        #(sentences + 1, words + list.length(sentence.words))
+      })
+    })
+  })
 }
 
 /// Render the active-line overlay. The overlay is only visible while
@@ -2054,33 +2325,131 @@ fn view_page(
   )
 }
 
-/// Bottom control bar. Holds the page indicator (centred) and the
-/// settings gear button (right-aligned, ≥ 44 × 44 CSS pixels). The
-/// page indicator renders an empty string when no pages are
-/// available yet; the bar's `min-height: var(--vi-tap-target)` rule
-/// (see `.reader-control-bar` in `styles.css`) keeps the row at the
-/// thumb-friendly tap target so the gear is reachable from the first
-/// paint, before pagination has produced its first result.
-fn view_control_bar(total: Int, current: Int) -> Element(Msg) {
-  let indicator_text = case total {
-    0 -> ""
-    _ -> "Page " <> int.to_string(current + 1) <> " of " <> int.to_string(total)
+/// Bottom bar — mode-aware. Manual mode renders the undo / page-
+/// indicator / turn-page trio so the reader can step through the
+/// book with thumb-reachable controls; RealTime mode renders the
+/// WPM readout, the play / pause button, and a balancing spacer so
+/// the play button sits centred between two equal-width siblings.
+///
+/// The outer `.reader-bottom-bar` carries the safe-area-bottom
+/// padding and the warm chrome bg so both branches inherit the
+/// same frame; only the inner row changes shape with `model.mode`.
+fn view_bottom_bar(model: Model, total: Int) -> Element(Msg) {
+  let inner = case model.mode {
+    Manual -> view_bottom_manual(model, total)
+    RealTime -> view_bottom_realtime(model)
   }
-  html.div([attribute.class("reader-control-bar")], [
-    html.div([attribute.class("reader-page-indicator")], [
-      html.text(indicator_text),
+  html.div([attribute.class("reader-bottom-bar")], [inner])
+}
+
+/// Manual-mode bottom bar inner row.
+///
+/// Layout: `[↩ Undo]   Page N of M   [Turn Page →]`.
+///
+/// * Undo button — disabled when the undo stack is empty. Dispatches
+///   `Undo`.
+/// * Page label — same `Page N of M` text the old `view_control_bar`
+///   carried; renders an empty string when no pages are available yet,
+///   so the bar's frame stays the same height before pagination has
+///   produced its first result.
+/// * Turn-page button — primary (inverted) styling so the eye is
+///   drawn to it. Reads "✓ Finished" on the last page and is
+///   disabled there (the reader has nowhere to advance to). Dispatches
+///   `NextPage`.
+fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
+  let on_last_page = total > 0 && model.current_page >= total - 1
+  let next_label = case on_last_page {
+    True -> "✓ Finished"
+    False -> "Turn Page →"
+  }
+  let next_disabled = total == 0 || on_last_page
+  let page_text = case total {
+    0 -> ""
+    _ ->
+      "Page "
+      <> int.to_string(model.current_page + 1)
+      <> " of "
+      <> int.to_string(total)
+  }
+  let undo_disabled = list.is_empty(model.undo_stack)
+
+  html.div([attribute.class("reader-bottom-manual")], [
+    html.button(
+      [
+        attribute.class("btn-bar"),
+        attribute.type_("button"),
+        attribute.disabled(undo_disabled),
+        attribute.aria_label("Undo last erase"),
+        event.on_click(Undo),
+      ],
+      [html.text("↩ Undo")],
+    ),
+    html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
+    html.button(
+      [
+        attribute.class("btn-bar primary"),
+        attribute.type_("button"),
+        attribute.disabled(next_disabled),
+        attribute.aria_label("Turn page"),
+        event.on_click(NextPage),
+      ],
+      [html.text(next_label)],
+    ),
+  ])
+}
+
+/// Real-time mode bottom bar inner row.
+///
+/// Layout: `WPM readout   [▶ / ⏸]   (spacer)`.
+///
+/// The play button cycles through the engine's three states:
+///
+/// * `Stopped` — render `▶` with the `.ready` accent background;
+///   click dispatches `StartFade`.
+/// * `Paused`  — render `▶` with the `.ready` accent background;
+///   click dispatches `ResumeFade`.
+/// * `Running` — render `⏸` with the default inverted background;
+///   click dispatches `PauseFade`.
+///
+/// `Stopped` and `Paused` share the `.ready` modifier (rather
+/// than a `.paused` class that mislabels the Stopped case as
+/// "paused") because both states paint the same "press me to
+/// resume / start" affordance.
+///
+/// No `event.stop_propagation` is required: the page-level touch
+/// handlers (`gestures.on_touch_*`) sit on `#vi-reading-area` /
+/// `.reader-page`, while this button lives inside
+/// `.reader-bottom-bar`. The two are *siblings* under
+/// `.reader-text`, not ancestor and descendant — DOM events bubble
+/// up through ancestors only, so a tap on the play button never
+/// reaches the reading-area touch handler and cannot fire the
+/// engine transition twice.
+fn view_bottom_realtime(model: Model) -> Element(Msg) {
+  let #(button_label, button_class, play_msg) = case model.engine_state {
+    Running -> #("⏸", "btn-play", PauseFade)
+    Paused -> #("▶", "btn-play ready", ResumeFade)
+    Stopped -> #("▶", "btn-play ready", StartFade)
+  }
+
+  html.div([attribute.class("reader-bottom-realtime")], [
+    html.div([attribute.class("wpm-readout")], [
+      html.text(int.to_string(model.wpm) <> " wpm"),
     ]),
     html.button(
       [
-        attribute.class("reader-settings-button"),
-        attribute.attribute("aria-label", "Open settings"),
+        attribute.class(button_class),
         attribute.type_("button"),
-        event.on_click(ToggleSettings),
+        attribute.aria_label("Play or pause reading"),
+        event.on_click(play_msg),
       ],
-      // Unicode gear glyph keeps the asset surface zero. A later
-      // quest can swap this for an inline SVG if iconography becomes
-      // a theme concern.
-      [html.text("⚙")],
+      [html.text(button_label)],
+    ),
+    html.div(
+      [
+        attribute.class("btn-play-spacer"),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
     ),
   ])
 }
@@ -2370,16 +2739,40 @@ fn view_settings_panel(model: Model) -> Element(Msg) {
 /// would also close the panel. The propagation guard is encapsulated
 /// in `stop_click_propagation` so the `Msg` ADT doesn't carry a
 /// `NoOp` variant just to satisfy Lustre's "handler required" rule.
+///
+/// Visual structure (matching `mobile-reader-prototype.html`):
+///
+///   .sheet-handle                 — visual drag affordance
+///   .settings-panel-header        — uppercase section title + close
+///   pacing group
+///     mode toggle
+///     WPM / paragraph / page delay sliders
+///   <hr> divider
+///   appearance group
+///     theme toggle
+///     font / line-spacing sliders
+///   <hr> divider
+///   reading-aid group
+///     ghost mode + opacity, dyslexia font
 fn view_settings_sheet(model: Model) -> Element(Msg) {
   html.div([attribute.class("settings-panel"), stop_click_propagation()], [
+    html.div(
+      [
+        attribute.class("settings-sheet-handle"),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
+    ),
     view_settings_header(),
     view_mode_toggle(model),
     view_wpm_slider(model),
     view_paragraph_delay_slider(model),
     view_page_delay_slider(model),
+    html.hr([attribute.class("settings-divider")]),
     view_theme_toggle(model),
     view_font_size_slider(model),
     view_line_spacing_slider(model),
+    html.hr([attribute.class("settings-divider")]),
     view_ghost_mode_toggle(model),
     view_ghost_opacity_slider(model),
     view_dyslexia_font_toggle(model),

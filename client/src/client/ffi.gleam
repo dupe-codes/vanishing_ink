@@ -110,8 +110,9 @@ pub fn on_vim_keys(
 pub fn start_word_timer(delay_ms: Int, callback: fn() -> Nil) -> Nil
 
 /// Cancel any in-flight word timer. No-op when nothing is
-/// scheduled. Called from `PauseFade` and `StopFade`, and on
-/// mode switches that leave RealTime mode.
+/// scheduled. Called from `PauseFade`, from the internal
+/// `apply_stop_fade` helper (engine exhaustion at end of book),
+/// and on mode switches that leave RealTime mode.
 @external(javascript, "./ffi.ffi.mjs", "clear_word_timer")
 pub fn clear_word_timer() -> Nil
 

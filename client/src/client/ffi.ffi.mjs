@@ -386,7 +386,8 @@ export function start_word_timer(delay_ms, callback) {
 /**
  * Cancels any in-flight word timer. Safe to call when no timer
  * is scheduled — the slot is checked before `clearTimeout`. Used
- * by `PauseFade` and `StopFade` in the reducer.
+ * by `PauseFade`, by mode switches leaving RealTime, and by the
+ * internal `apply_stop_fade` helper on engine exhaustion.
  */
 export function clear_word_timer() {
   if (word_timer_id !== null) {

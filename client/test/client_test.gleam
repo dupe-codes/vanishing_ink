@@ -28,6 +28,9 @@ import gleam/option.{None, Some}
 import gleam/set
 import gleam/string
 import gleeunit
+import lustre/dev/query as lustre_query
+import lustre/dev/simulate
+import lustre/effect
 import lustre/element
 import lustre/vdom/vattr
 import lustre/vdom/vnode
@@ -42,8 +45,8 @@ import client.{
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, LineBox, LinesMeasured,
   Manual, Model, NextPage, ParagraphsMeasured, PauseFade, Paused, RealTime,
   ResumeFade, Running, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, StopFade,
-  Stopped, TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, Stopped,
+  TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
   ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
@@ -108,6 +111,9 @@ fn empty_model() -> Model {
     page_delay_ms: client.default_page_delay_ms,
     line_boxes: [],
     active_line: None,
+    total_sentence_count: 0,
+    total_word_count: 0,
+    current_chapter_title: "",
   )
 }
 
@@ -192,11 +198,19 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
 
   let #(updated, _effect) = client.update(empty_model(), TextLoaded(payload))
 
+  // The payload carries one chapter → one paragraph → one sentence
+  // → one word, so the cached `total_sentence_count` /
+  // `total_word_count` both land on `1`. Pinning them here keeps
+  // the cache wiring on the same whole-model assertion as the
+  // `flat_paragraphs` refresh — both are computed-once-on-
+  // `TextLoaded` outputs.
   assert updated
     == Model(
       ..empty_model(),
       text: Some(payload),
       flat_paragraphs: pagination.flatten(payload),
+      total_sentence_count: 1,
+      total_word_count: 1,
     )
 }
 
@@ -664,11 +678,17 @@ pub fn view_renders_measurement_container_and_preparing_when_pages_empty_test() 
 
 pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   // With pages calculated, the visible reading area renders only
-  // the current page's paragraphs and the page indicator reads the
-  // one-based current page out of the total. The measurement
-  // container is still in the DOM (with every paragraph, not just
-  // the current page's) so a subsequent resize can re-measure
-  // without rebuilding it.
+  // the current page's paragraphs and the manual-mode bottom bar's
+  // page label reads the one-based current page out of the total.
+  // The measurement container is still in the DOM (with every
+  // paragraph, not just the current page's) so a subsequent resize
+  // can re-measure without rebuilding it.
+  //
+  // Pinned alongside the page label: the reader header (with its
+  // back glyph, book title, and settings gear) and the manual
+  // bottom bar's undo / turn-page controls — these chrome surfaces
+  // are part of the visual-polish surface and a refactor that drops
+  // any of them should land here loudly.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   // Build a 3-page slice manually — one paragraph per page.
@@ -684,10 +704,32 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
 
   let rendered = client.view(model) |> element.to_string
 
+  // Header chrome — back button + chapter title slot + settings
+  // gear all appear in the top row. The back button's aria-label
+  // describes the action it dispatches today (`SetMode(Manual)`),
+  // not a future library-navigation behaviour.
+  assert string.contains(rendered, "class=\"reader-header\"")
   assert string.contains(
     rendered,
-    "<div class=\"reader-page-indicator\">Page 2 of 3</div>",
+    "aria-label=\"Switch to manual reading mode\"",
   )
+  assert string.contains(rendered, "aria-label=\"Open settings\"")
+  assert string.contains(rendered, "class=\"reader-title\"")
+
+  // Progress bar between header and content.
+  assert string.contains(rendered, "class=\"reader-progress-track\"")
+  assert string.contains(rendered, "class=\"reader-progress-fill\"")
+
+  // Page label lives in the manual-mode bottom bar.
+  assert string.contains(
+    rendered,
+    "<div class=\"reader-page-label\">Page 2 of 3</div>",
+  )
+  assert string.contains(rendered, "class=\"reader-bottom-bar\"")
+  assert string.contains(rendered, "class=\"reader-bottom-manual\"")
+  assert string.contains(rendered, "Turn Page →")
+  assert string.contains(rendered, "↩ Undo")
+
   assert string.contains(rendered, "<div class=\"page\" data-page-index=\"1\">")
   // The visible page (#1) renders paragraph 1 — but not 0 or 2.
   assert string.contains(rendered, "data-paragraph-global-index=\"1\"")
@@ -2343,7 +2385,7 @@ pub fn update_start_fade_is_noop_when_no_eligible_word_on_page_test() {
 }
 
 // ---------------------------------------------------------------------------
-// update — PauseFade / ResumeFade / StopFade
+// update — PauseFade / ResumeFade
 // ---------------------------------------------------------------------------
 
 pub fn update_pause_fade_transitions_running_to_paused_test() {
@@ -2394,24 +2436,6 @@ pub fn update_resume_fade_is_noop_when_not_paused_test() {
 
   assert after_resume_on_running == prior_running
   assert after_resume_on_stopped == prior_stopped
-}
-
-pub fn update_stop_fade_clears_engine_state_and_next_word_test() {
-  let prior =
-    Model(
-      ..fade_model(),
-      engine_state: Running,
-      next_word_index: Some(2),
-      erased_words: set.from_list([0, 1]),
-    )
-
-  let #(updated, _effect) = client.update(prior, StopFade)
-
-  assert updated.engine_state == Stopped
-  assert updated.next_word_index == None
-  // Erased words persist past Stop — the reader expects the
-  // already-faded prose to stay faded; only the *timer* stops.
-  assert updated.erased_words == set.from_list([0, 1])
 }
 
 // ---------------------------------------------------------------------------
@@ -3022,27 +3046,6 @@ pub fn update_advance_word_clears_active_line_on_page_advance_test() {
   assert updated.active_line == None
 }
 
-pub fn update_stop_fade_clears_active_line_test() {
-  // Stopping the engine drops the overlay alongside the timer —
-  // there's no target to track when the engine is dormant. The
-  // bitset state (`erased_words`) survives, but `active_line`
-  // resets to `None` so the overlay doesn't ghost on a row the
-  // reader is no longer at.
-  let prior =
-    Model(
-      ..fade_model(),
-      engine_state: Running,
-      next_word_index: Some(1),
-      line_boxes: fade_line_boxes(),
-      active_line: Some(0),
-    )
-
-  let #(updated, _effect) = client.update(prior, StopFade)
-
-  assert updated.engine_state == Stopped
-  assert updated.active_line == None
-}
-
 pub fn update_pause_fade_keeps_active_line_visible_test() {
   // Pause is the "show where the reader stopped" state — the
   // overlay must remain visible at the current row so the reader
@@ -3306,4 +3309,546 @@ pub fn view_sentence_level_erase_subsumes_word_level_opacity_test() {
     rendered,
     "data-sentence-index=\"0\" style=\"opacity:0;\"",
   )
+}
+
+// ---------------------------------------------------------------------------
+// view — reader chrome: header, progress bar, mode-aware bottom bars
+// ---------------------------------------------------------------------------
+//
+// The visual-polish quest replaced the old `.reader-control-bar`
+// (page indicator + settings gear) with a three-row chrome: a sticky
+// header at the top (back glyph, book title, settings gear), a thin
+// progress bar between header and content, and a mode-aware bottom
+// bar (manual gets undo / page label / turn-page; realtime gets WPM
+// readout / play button / spacer). The tests below pin the rendered
+// structure so a future refactor cannot quietly drop any of those
+// elements.
+
+pub fn default_line_spacing_matches_warm_palette_mock_test() {
+  // The mock spec (`mobile-reader-prototype.html`) uses `--lh: 1.85`
+  // for the reading surface. The Gleam constant is the source of
+  // truth for the initial model field; the CSS variable receives
+  // the same number on first paint, so a divergence here would put
+  // the engine's line measurement and the visible line spacing out
+  // of phase. The exact float value is pinned rather than a range
+  // because the spec is the contract.
+  assert client.default_line_spacing == 1.85
+}
+
+pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
+  // The header is rendered for every paginated view, regardless of
+  // mode. It carries three slots:
+  // * Back glyph (`←`, aria "Switch to manual reading mode") —
+  //   describes the present handler (`SetMode(Manual)`), not the
+  //   future library navigation that Act 4 will rewire it to.
+  // * Chapter title slot (`.reader-title`) — driven from the
+  //   current chapter's `Option(String)` title on the segmented
+  //   text. The two-chapter fixture's chapter 0 carries
+  //   `title: None`, so the slot renders empty; the sibling test
+  //   pins the populated case using chapter 1's `title: Some("Two")`.
+  // * Settings gear (`⚙`, aria "Open settings") — moved from the
+  //   old `.reader-control-bar` into the header row.
+  // Once Act 4 lands library navigation the back button will
+  // dispatch a real back-Msg; until then it routes through
+  // `SetMode(Manual)`, which is idempotent in Manual mode and stops
+  // the fade engine in RealTime mode.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-header\"")
+  assert string.contains(rendered, "class=\"reader-header-inner\"")
+  assert string.contains(
+    rendered,
+    "aria-label=\"Switch to manual reading mode\"",
+  )
+  assert string.contains(rendered, ">←</button>")
+  // Chapter 0 has no title — the slot renders an empty element
+  // rather than inventing a string.
+  assert string.contains(rendered, "<div class=\"reader-title\"></div>")
+  // The previous "Pride and Prejudice · Austen" placeholder is
+  // gone — the header must not render a hardcoded book title.
+  assert !string.contains(rendered, "Pride and Prejudice")
+  assert string.contains(rendered, "aria-label=\"Open settings\"")
+  assert string.contains(rendered, ">⚙</button>")
+}
+
+pub fn view_reader_header_renders_chapter_title_when_present_test() {
+  // Sibling of the previous test: when the current page lives
+  // inside a chapter whose `title` is `Some(_)`, the chrome slot
+  // carries that title. The two-chapter fixture's chapter 1
+  // declares `title: Some("Two")`, and `current_page: 2` puts the
+  // reader on the page whose paragraph belongs to chapter 1, so
+  // the rendered title must read "Two".
+  //
+  // `current_chapter_title` is a cached field on the model — the
+  // view reads it directly rather than walking the page chain on
+  // every render. The reducer arms keep the field in sync; this
+  // test seeds it directly because it constructs the model via
+  // `..empty_model()` rather than through `client.update`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+      current_chapter_title: "Two",
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
+}
+
+pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
+  // Progress bar fill starts at 0% before any erasure. The fill
+  // element always renders (so the CSS transition has a stable
+  // target to interpolate from) — only its inline width is driven
+  // by the model. With `total_sentence_count` seeded to the
+  // realistic value (the live app gets it from `TextLoaded`), the
+  // numerator drives the fraction to zero on its own — the
+  // denominator is non-zero, but `0 / 3 * 100` still rounds to
+  // `0.0`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      total_sentence_count: 3,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-progress-track\"")
+  // `width:0.0%;` is the float-formatted zero — `float.to_string(0.0)`
+  // yields `"0.0"`. The serialised inline style pins the unit.
+  assert string.contains(rendered, "style=\"width:0.0%;\"")
+}
+
+pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
+  // Manual mode: width = erased sentences / total sentences * 100.
+  // `two_chapter_text` has three sentences total; erasing one
+  // resolves to 33.333...%, which `float.to_precision(_, 1)` snaps
+  // to exactly `33.3`. The single-decimal rounding is what lets
+  // this test pin the full numeric value rather than a prefix
+  // substring — the previous revision emitted
+  // `width:33.333333333333%` straight out of the float division
+  // and the assertion had to substring-match `33.3`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      mode: Manual,
+      total_sentence_count: 3,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-progress-fill\"")
+  assert string.contains(rendered, "style=\"width:33.3%;\"")
+}
+
+pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
+  // Real-time mode: width = faded words / total words * 100.
+  // `two_chapter_text` carries five words total; fading two
+  // resolves to exactly 40.0% — a clean denominator so the test
+  // can pin the full numeric value without floating-point
+  // ambiguity. The cached `total_word_count` on the model is what
+  // the progress fraction reads, so the test seeds it explicitly
+  // rather than relying on a `TextLoaded`-shaped derivation.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased_words: set.from_list([0, 1]),
+      mode: RealTime,
+      total_word_count: 5,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "style=\"width:40.0%;\"")
+}
+
+pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
+  // The `current_chapter_title` field is cached on the model so
+  // the view does not re-walk the page chain on every render.
+  // The cache is refreshed in the reducer arms that mutate any
+  // of `text` / `pages` / `current_page` — this test exercises
+  // the `NextPage` path, which calls `change_page` and lands on
+  // a page whose first paragraph belongs to a different chapter.
+  //
+  // The two-chapter fixture pages 0 and 1 sit inside chapter 0
+  // (untitled), and page 2 sits inside chapter 1 (`title:
+  // Some("Two")`). Dispatching `NextPage` from page 1 should
+  // refresh the cached title from `""` to `"Two"`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 1,
+      current_chapter_title: "",
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 2
+  assert updated.current_chapter_title == "Two"
+}
+
+pub fn text_loaded_resets_cached_chapter_title_test() {
+  // `TextLoaded` resets `pages` to `[]` and `current_page` to
+  // `0` because pagination has not run yet for the new book. The
+  // cached chapter title is reset to `""` in the same arm so the
+  // header does not briefly carry the previous book's title.
+  let prior =
+    Model(..empty_model(), current_chapter_title: "Lingering Old Chapter")
+
+  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+
+  assert updated.current_chapter_title == ""
+}
+
+pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
+  // ARIA progressbar semantics let screen reader users hear where
+  // they are in the book — the app's central affordance. The track
+  // div must carry `role="progressbar"`, the `aria-valuemin` /
+  // `aria-valuemax` bounds, an integer `aria-valuenow` rounded
+  // from the inline-style float, and a human label. The same
+  // 33.3% scenario as the manual-mode rendering test (one of three
+  // sentences erased) rounds to a whole-percent `aria-valuenow`
+  // of `33`. The substring assertions match the rendered attribute
+  // form rather than encoding a particular Lustre attribute order.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      mode: Manual,
+      total_sentence_count: 3,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "role=\"progressbar\"")
+  assert string.contains(rendered, "aria-valuemin=\"0\"")
+  assert string.contains(rendered, "aria-valuemax=\"100\"")
+  assert string.contains(rendered, "aria-valuenow=\"33\"")
+  assert string.contains(rendered, "aria-label=\"Reading progress\"")
+}
+
+pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
+  // Manual mode bottom bar: undo button, page label, turn-page
+  // button. The realtime bottom-bar classes must be entirely
+  // absent — the bar is mode-conditional, not just CSS-toggled.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      mode: Manual,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-bottom-manual\"")
+  assert string.contains(rendered, "↩ Undo")
+  assert string.contains(rendered, "Turn Page →")
+  // Realtime-only chrome must not appear in Manual mode.
+  assert !string.contains(rendered, "reader-bottom-realtime")
+  assert !string.contains(rendered, "btn-play")
+  assert !string.contains(rendered, "wpm-readout")
+}
+
+pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
+  // RealTime mode bottom bar: WPM readout, play button, spacer.
+  // Manual chrome (undo, turn-page) must not appear — the bar is
+  // mode-conditional.
+  let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-bottom-realtime\"")
+  assert string.contains(rendered, "class=\"wpm-readout\"")
+  assert string.contains(rendered, "250 wpm")
+  assert string.contains(rendered, "btn-play")
+  assert string.contains(rendered, "btn-play-spacer")
+  // Manual-only chrome must not appear in RealTime mode.
+  assert !string.contains(rendered, "reader-bottom-manual")
+  assert !string.contains(rendered, "↩ Undo")
+  assert !string.contains(rendered, "Turn Page →")
+}
+
+pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
+  // Undo button is `disabled` when `undo_stack` is empty so the
+  // reader sees the disabled visual state. The `Disabled` HTML
+  // attribute is the contract — CSS reads `:disabled` for the
+  // dimmed-pill rendering.
+  //
+  // The substring below depends on Lustre's alphabetical
+  // attribute ordering (`aria-label` < `class` < `disabled` < ...)
+  // — the same contract noted in
+  // `view_paginated_attaches_touch_handlers_to_reading_area_test`.
+  // A Lustre version bump that changed the sort order would
+  // break this assertion without breaking the underlying
+  // rendering; a follow-up could replace the substring with a
+  // tree-walking assertion that names attributes explicitly
+  // (`find_element_by_id` + an attribute lookup), matching the
+  // shape used for touch listeners.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      undo_stack: [],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // The undo button carries its aria-label so we can grep around
+  // it; the same span must contain the disabled attribute.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Undo last erase\" class=\"btn-bar\" disabled",
+  )
+}
+
+pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
+  // Mirror of the above: with at least one entry on the undo
+  // stack, the button is enabled (no `disabled` attribute).
+  //
+  // Same Lustre-alphabetical-ordering caveat as the disabled
+  // sibling test — the substring contract carries the
+  // `aria-label` < `class` < `type` ordering and would break
+  // under a Lustre attribute-sort change without the underlying
+  // rendering changing. A tree-walking assertion would be more
+  // robust; this assertion stays consistent with the suite's
+  // existing pattern for the moment.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      undo_stack: [0],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // Undo button is enabled: aria-label present, but no `disabled`
+  // attribute on the same button. We pin the absence of
+  // `disabled` immediately after the aria-label of the undo
+  // button — the turn-page button comes later in the markup with
+  // its own aria-label, so this substring is unambiguous.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Undo last erase\" class=\"btn-bar\" type=\"button\">↩ Undo",
+  )
+}
+
+pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
+  // On the last page the turn-page button reads "✓ Finished"
+  // (instead of "Turn Page →") and is disabled — there is nowhere
+  // forward to go.
+  //
+  // Same Lustre-alphabetical-ordering caveat as the undo button
+  // assertions above: this substring depends on
+  // `aria-label` < `class` < `disabled` sorting on the rendered
+  // attribute list. A Lustre version bump that changed the sort
+  // order would break the assertion without breaking the
+  // rendering; a tree-walking assertion would be more robust.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  // Three pages; current_page = 2 is the last.
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "✓ Finished")
+  assert !string.contains(rendered, "Turn Page →")
+  assert string.contains(
+    rendered,
+    "aria-label=\"Turn page\" class=\"btn-bar primary\" disabled",
+  )
+}
+
+pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_stopped_test() {
+  // Engine state `Stopped`: button shows ▶ and carries the
+  // `ready` modifier class so CSS swaps the bg to the copper
+  // accent. The reader reads it as "ready to start". The
+  // modifier name is state-agnostic — Paused below renders the
+  // same class — because both states share the visual treatment.
+  let model =
+    Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-play ready\"")
+  assert string.contains(rendered, ">▶</button>")
+}
+
+pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_paused_test() {
+  // Engine state `Paused`: same visuals as `Stopped` (▶, ready
+  // class). The dispatch target differs — Stopped clicks
+  // `StartFade`, Paused clicks `ResumeFade` — but the visual
+  // contract is identical.
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Paused,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-play ready\"")
+  assert string.contains(rendered, ">▶</button>")
+}
+
+pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
+  // Engine state `Running`: button shows ⏸ and drops the `ready`
+  // class (so the bg returns to the inverted text-on-bg default).
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // The button's class is exactly `btn-play` (no `ready`
+  // modifier) while running. Pinning the exact class string also
+  // catches a regression where the modifier is left on across
+  // state transitions.
+  assert string.contains(rendered, "class=\"btn-play\"")
+  assert !string.contains(rendered, "class=\"btn-play ready\"")
+  assert string.contains(rendered, ">⏸</button>")
+}
+
+pub fn view_settings_sheet_carries_handle_and_dividers_test() {
+  // The settings sheet's visual update adds:
+  // * A `.settings-sheet-handle` indicator at the top — a small
+  //   rounded bar that matches iOS / Material bottom-sheet
+  //   conventions.
+  // * Two `<hr class="settings-divider">` rules between the three
+  //   logical groups (pacing / appearance / reading-aids).
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"settings-sheet-handle\"")
+  // Two dividers — count by splitting and asserting the resulting
+  // chunk count (one more than the divider count).
+  let divider_chunks =
+    rendered
+    |> string.split("class=\"settings-divider\"")
+    |> list.length
+  assert divider_chunks == 3
+}
+
+pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
+  // Walks the rendered view tree, locates the back-glyph button by
+  // its unique `aria-label`, and simulates a click on it. The
+  // simulator routes the on_click payload through `client.update`,
+  // so the resulting model state reflects whatever Msg the button
+  // is *actually* wired to. The post-click assertions pin the
+  // `SetMode(Manual)` postconditions against a Running RealTime
+  // engine — any refactor that rewired the back button to a
+  // different Msg would change the resulting model state and fail
+  // this test, where a reducer-level assertion would have stayed
+  // green and let the regression through.
+  //
+  // The reducer-level postconditions exercised here are also
+  // covered by `apply_set_mode` / mode-switch tests elsewhere; the
+  // point of this test is the wiring, not the reduction.
+  let prior =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let app =
+    simulate.application(
+      init: fn(_) { #(prior, effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  let back_button =
+    lustre_query.element(matching: lustre_query.aria(
+      "label",
+      "Switch to manual reading mode",
+    ))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: back_button)
+    |> simulate.model
+
+  assert updated.mode == Manual
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
 }
