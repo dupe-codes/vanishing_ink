@@ -230,12 +230,18 @@ const body_class_reduced_motion: String = "vi-reduced-motion"
 // the title so re-renders on the same book always paint the same
 // colour, and two books with adjacent titles spread across the
 // palette instead of clumping on one swatch.
-const cover_colors: List(String) = [
+/// The palette is the single source of truth for both the per-title
+/// hash modulus (read via `list.length` in `cover_color_for_title`)
+/// and the test's "every result is one of these" pin (read via
+/// `cover_palette()` from the test module). Keeping the modulus
+/// derived rather than hard-coded prevents the lock-step drift a
+/// hard-coded `cover_color_count` invites — `gleam/list` is a
+/// pure-Gleam list so `list.length` is O(n) but `n = 8`, and the
+/// helper is called once per book per render.
+pub const cover_colors: List(String) = [
   "#B87A52", "#4A7A8E", "#5A6B50", "#8A7C6E", "#6A5E80", "#7A8B7A", "#A05E5E",
   "#5E7A8B",
 ]
-
-const cover_color_count: Int = 8
 
 /// Pick a deterministic cover colour for a book based on its title.
 /// The hash is a simple grapheme-codepoint sum modulo the palette
@@ -251,9 +257,10 @@ pub fn cover_color_for_title(title: String) -> String {
     list.fold(codepoints, 0, fn(acc, cp) {
       acc + string.utf_codepoint_to_int(cp)
     })
-  let index = case cover_color_count {
+  let count = list.length(cover_colors)
+  let index = case count {
     0 -> 0
-    _ -> int.modulo(sum, cover_color_count) |> result.unwrap(0)
+    _ -> int.modulo(sum, count) |> result.unwrap(0)
   }
   case list.drop(cover_colors, index) {
     [color, ..] -> color

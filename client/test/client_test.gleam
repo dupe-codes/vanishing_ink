@@ -4434,13 +4434,12 @@ pub fn cover_color_for_title_is_deterministic_test() {
 }
 
 pub fn cover_color_for_title_returns_a_palette_color_test() {
-  // Every result must be one of the eight pre-baked palette
-  // hexes — the FFI/CSS never has to reason about an unbounded
-  // colour space.
-  let palette = [
-    "#B87A52", "#4A7A8E", "#5A6B50", "#8A7C6E", "#6A5E80", "#7A8B7A", "#A05E5E",
-    "#5E7A8B",
-  ]
+  // Every result must be one of the pre-baked palette hexes — the
+  // FFI/CSS never has to reason about an unbounded colour space.
+  // The palette is read from `client.cover_colors` so a future
+  // palette change updates one source of truth; a duplicated
+  // literal palette would silently drift if the production list
+  // gained or lost a swatch.
   let titles = [
     "Walden", "Meditations", "Crime and Punishment", "The Stranger",
     "Pride and Prejudice", "The Iliad", "Faust", "Ulysses",
@@ -4449,6 +4448,6 @@ pub fn cover_color_for_title_returns_a_palette_color_test() {
   titles
   |> list.each(fn(title) {
     let color = client.cover_color_for_title(title)
-    assert list.contains(palette, color)
+    assert list.contains(client.cover_colors, color)
   })
 }
