@@ -235,6 +235,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       text: Some(first),
       flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
+      total_pages: 1,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -563,6 +564,7 @@ pub fn update_next_page_advances_one_when_not_on_last_page_test() {
         Page(index: 2, paragraphs: []),
       ],
       current_page: 0,
+      total_pages: 3,
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
@@ -580,6 +582,7 @@ pub fn update_next_page_holds_on_last_page_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
@@ -616,6 +619,7 @@ pub fn update_next_page_clears_line_boxes_and_active_line_on_real_turn_test() {
         Page(index: 1, paragraphs: []),
       ],
       current_page: 0,
+      total_pages: 2,
       mode: RealTime,
       engine_state: Running,
       next_word_index: Some(0),
@@ -641,6 +645,7 @@ pub fn update_next_page_preserves_line_boxes_on_no_op_turn_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       mode: RealTime,
       engine_state: Running,
       next_word_index: Some(0),
@@ -673,6 +678,7 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
       text: Some(text),
       flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
+      total_pages: 1,
     )
 
   let #(updated, _effect) = client.update(prior, ViewportResized)
@@ -982,6 +988,7 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       erased: set.from_list([0, 1]),
       undo_stack: [1, 0],
     )
@@ -1002,6 +1009,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([8]),
       undo_stack: [8],
     )
@@ -1020,6 +1028,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([5]),
       undo_stack: [5],
       touch_start: Some(#(300.0, 200.0)),
@@ -1053,6 +1062,7 @@ pub fn update_touch_end_below_threshold_does_nothing_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       touch_start: Some(#(100.0, 200.0)),
     )
 
@@ -1067,6 +1077,7 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       touch_start: Some(#(300.0, 200.0)),
     )
 
@@ -1086,6 +1097,7 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([9]),
       undo_stack: [9],
       touch_start: Some(#(100.0, 200.0)),
@@ -1106,6 +1118,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       touch_start: Some(#(100.0, 200.0)),
     )
 
@@ -1127,6 +1140,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       erased: set.from_list([3]),
       undo_stack: [3],
       touch_start: Some(#(100.0, 200.0)),
@@ -1217,6 +1231,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
       erased: set.from_list([1]),
       undo_stack: [1],
     )
@@ -1323,6 +1338,7 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
     )
 
   let assert Ok(reading_area) =
@@ -1404,6 +1420,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -1516,11 +1533,13 @@ fn vim_pages() -> List(Page) {
 }
 
 fn vim_model_on_page(page_index: Int) -> Model {
+  let pages = vim_pages()
   Model(
     ..empty_model(),
     text: Some(vim_text()),
     flat_paragraphs: pagination.flatten(vim_text()),
-    pages: vim_pages(),
+    pages: pages,
+    total_pages: list.length(pages),
     current_page: page_index,
   )
 }
@@ -3428,6 +3447,7 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3472,6 +3492,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      total_pages: list.length(pages),
       current_chapter_title: "Two",
     )
 
@@ -3498,6 +3519,7 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       total_sentence_count: 3,
     )
 
@@ -3527,6 +3549,7 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       mode: Manual,
       total_sentence_count: 3,
@@ -3555,6 +3578,7 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased_words: set.from_list([0, 1]),
       mode: RealTime,
       total_word_count: 5,
@@ -3587,6 +3611,7 @@ pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
       current_chapter_title: "",
     )
 
@@ -3644,6 +3669,7 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       mode: Manual,
       total_sentence_count: 3,
@@ -3671,6 +3697,7 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       mode: Manual,
     )
 
@@ -3729,6 +3756,7 @@ pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       undo_stack: [],
     )
 
@@ -3762,6 +3790,7 @@ pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       undo_stack: [0],
     )

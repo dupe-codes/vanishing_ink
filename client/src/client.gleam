@@ -1313,8 +1313,12 @@ fn advance_with_current(
 /// the existing forward-only navigation invariant is preserved
 /// and the focused-sentence cursor (if any) follows along.
 fn advance_to_next_page(model: Model) -> #(Model, Effect(Msg)) {
-  let total = list.length(model.pages)
-  advance_to_next_page_loop(model, model.current_page + 1, total)
+  // Read the cached `total_pages` rather than recomputing
+  // `list.length(model.pages)`. The Model invariant guarantees the
+  // two are equal, and reading the cache here matches the pattern
+  // the view path already uses — leaving a single canonical source
+  // of truth for "how many pages does this model have".
+  advance_to_next_page_loop(model, model.current_page + 1, model.total_pages)
 }
 
 fn advance_to_next_page_loop(
@@ -1762,8 +1766,12 @@ fn go_to_page(model: Model, candidate: Int) -> Model {
 /// and pulling the logic into one helper stops the two callers
 /// from drifting apart.
 fn change_page(model: Model, candidate: Int) -> Model {
-  let total = list.length(model.pages)
-  let clamped = pagination.clamp_page_index(candidate, total)
+  // Read the cached `total_pages` — same rationale as
+  // `advance_to_next_page`: the invariant
+  // `total_pages == list.length(pages)` makes the cache the
+  // canonical source, and using it everywhere prevents future
+  // readers from wondering which call site is authoritative.
+  let clamped = pagination.clamp_page_index(candidate, model.total_pages)
   case clamped == model.current_page {
     True -> model
     False -> {
