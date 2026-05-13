@@ -3214,6 +3214,38 @@ pub fn view_renders_active_line_overlay_when_engine_paused_test() {
   assert string.contains(rendered, "top:28.0px")
 }
 
+pub fn view_renders_active_line_overlay_with_fractional_coordinates_test() {
+  // `getBoundingClientRect()` produces fractional pixel values in
+  // practice (sub-pixel layout, font metrics, device-pixel-ratio
+  // rounding); the integer-valued `fade_line_boxes` fixture never
+  // exercises that path on its own. This test pins the actual
+  // rendered format for non-integer floats: `float.to_string`
+  // preserves whatever decimal precision the underlying JS number
+  // carries (it does not round to a fixed number of decimal
+  // places), so a `top` of `42.5` renders as `"top:42.5px"` and a
+  // `height` of `24.5` renders as `"height:24.5px"`. If a future
+  // change adds explicit rounding here, this test pins the
+  // pre-rounding contract and must be updated alongside the
+  // implementation.
+  let fractional_boxes = [
+    LineBox(top: 42.5, height: 24.5, first_word_gi: 0, last_word_gi: 1),
+  ]
+  let model =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fractional_boxes,
+      active_line: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-active-line\"")
+  assert string.contains(rendered, "top:42.5px")
+  assert string.contains(rendered, "height:24.5px")
+}
+
 pub fn view_omits_active_line_overlay_when_line_boxes_empty_test() {
   // Cross-page tick: the engine has a `next_word_index` for the
   // new page but `line_boxes` is empty (LinesMeasured hasn't
