@@ -133,6 +133,7 @@ fn empty_model() -> Model {
     paste_submitting: False,
     paste_error: None,
     add_book_open: False,
+    created_book_segments: None,
   )
 }
 
@@ -4140,11 +4141,14 @@ pub fn update_book_loaded_error_returns_to_library_with_error_message_test() {
 pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
   // The POST response carries the new metadata; the reducer
   // prepends it to `books`, clears the paste form so a quick second
-  // add starts blank, and closes the sheet. The reader stays in the
-  // library — the reader experience is not interrupted by the
-  // upload. Asserting the whole model in one shot also pins "view
-  // stays in `Library`" against the same equality the form-clearing
-  // assertions ride on, instead of a separate `view == Library`.
+  // add starts blank, closes the sheet, and stashes the segmented
+  // payload in `created_book_segments` so an immediate open of the
+  // freshly-created book can skip the duplicate GET. The reader
+  // stays in the library — the reader experience is not interrupted
+  // by the upload. Asserting the whole model in one shot pins
+  // "view stays in `Library`" and "cache slot is populated with the
+  // exact (meta, segments) pair the POST decoded" alongside the
+  // form-clearing assertions.
   let existing = sample_book("a", "Alpha", None)
   let prior =
     Model(
@@ -4164,7 +4168,79 @@ pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
     client.update(prior, BookCreated(Ok(#(new_meta, text))))
 
   assert updated
-    == Model(..empty_model(), view: client.Library, books: [new_meta, existing])
+    == Model(
+      ..empty_model(),
+      view: client.Library,
+      books: [new_meta, existing],
+      created_book_segments: Some(#(new_meta, text)),
+    )
+}
+
+pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
+  // When `BookCreated(Ok(_))` has stashed segments for book id `x`
+  // and the reader immediately opens `x`, the reducer applies the
+  // cached payload directly through `apply_book_loaded` rather than
+  // dispatching `fetch_book(x)`. The cache slot is cleared on
+  // consumption so a later re-open of the same id falls through to
+  // a real fetch (the cache is single-shot, not a persistent
+  // memory). Asserting the whole post-state pins both the
+  // text-loaded fields a real BookLoaded would have stamped
+  // (`text: Some(segments)`, `flat_paragraphs` cached, totals
+  // computed) and the cache-clear in one equality.
+  let meta = sample_book("x", "X", None)
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..library_model(),
+      books: [meta],
+      created_book_segments: Some(#(meta, text)),
+    )
+
+  let #(updated, _effect) = client.update(prior, OpenBook("x"))
+
+  assert updated
+    == Model(
+      ..library_model(),
+      books: [meta],
+      view: client.Reader,
+      active_book_id: Some("x"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_sentence_count: 3,
+      total_word_count: 5,
+      created_book_segments: None,
+    )
+}
+
+pub fn update_open_book_with_mismatched_cache_id_dispatches_fetch_test() {
+  // The cache slot is keyed by id: a stashed payload for book `a`
+  // does not satisfy `OpenBook("b")`. The reducer falls through to
+  // the real-fetch path (flips the view, clears the library error),
+  // and the cache slot is preserved — a subsequent `OpenBook("a")`
+  // would still hit. Pinning this guards against a future
+  // refactor that drops the id comparison and serves the wrong
+  // book's segments.
+  let cached_meta = sample_book("a", "Alpha", None)
+  let other_meta = sample_book("b", "Beta", None)
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..library_model(),
+      books: [other_meta, cached_meta],
+      library_error: Some("stale"),
+      created_book_segments: Some(#(cached_meta, text)),
+    )
+
+  let #(updated, _effect) = client.update(prior, OpenBook("b"))
+
+  assert updated
+    == Model(
+      ..library_model(),
+      books: [other_meta, cached_meta],
+      view: client.Reader,
+      library_error: None,
+      created_book_segments: Some(#(cached_meta, text)),
+    )
 }
 
 pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {

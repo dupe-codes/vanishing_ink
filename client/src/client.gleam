@@ -495,6 +495,14 @@ pub type LineBox {
 /// * `add_book_open` — `True` when the add-book bottom sheet is
 ///   visible. Toggled by the FAB on the library view and by the
 ///   sheet's own close button / overlay tap.
+/// * `created_book_segments` — single-slot cache of the `(meta,
+///   segments)` payload returned by `POST /api/books`. `BookCreated(Ok(_))`
+///   stamps it; `OpenBook(id)` consumes it (skipping the duplicate
+///   `GET /api/books/:id` round trip) when the id matches, then
+///   clears it. `None` between server-backed sessions and after the
+///   slot has been consumed. Holding the meta alongside the segments
+///   means the cache-hit path does not need to walk `books` to
+///   recover the metadata.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -535,6 +543,7 @@ pub type Model {
     paste_submitting: Bool,
     paste_error: Option(String),
     add_book_open: Bool,
+    created_book_segments: Option(#(BookMeta, SegmentedText)),
   )
 }
 
@@ -883,6 +892,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       paste_submitting: False,
       paste_error: None,
       add_book_open: False,
+      created_book_segments: None,
     )
 
   // Boot effects:
@@ -1199,7 +1209,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
-    BookCreated(Ok(#(meta, _segments))) -> #(
+    BookCreated(Ok(#(meta, segments))) -> #(
       Model(
         ..model,
         books: [meta, ..model.books],
@@ -1208,6 +1218,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         paste_submitting: False,
         paste_error: None,
         add_book_open: False,
+        // Stash the segmented payload so an immediate `OpenBook(meta.id)`
+        // can apply it directly instead of round-tripping through
+        // `GET /api/books/:id`. The POST response already decoded the
+        // same segments; dropping them on the floor would force a
+        // second network call for data the client already has.
+        created_book_segments: Some(#(meta, segments)),
       ),
       effect.none(),
     )
@@ -1221,10 +1237,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
-    OpenBook(id) -> #(
-      Model(..model, view: Reader, library_error: None),
-      fetch_book(id),
-    )
+    OpenBook(id) -> apply_open_book(model, id)
 
     GoToLibrary -> apply_go_to_library(model)
 
@@ -1264,6 +1277,32 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 // ---------------------------------------------------------------------------
 // update — library / book navigation helpers
 // ---------------------------------------------------------------------------
+
+/// Open a book by id. The cache-hit path consumes the
+/// `created_book_segments` slot stamped by `BookCreated(Ok(_))`,
+/// applies the cached payload through the same `apply_book_loaded`
+/// pipeline a server response would have, and clears the slot so a
+/// second open of the same id falls through to a real fetch. The
+/// cache-miss path is the original behaviour: flip to the reader and
+/// chain `fetch_book(id)`. A non-matching cache (the user created
+/// book A then tapped book B) is also a miss — the cache is keyed by
+/// id, not just "is anything cached".
+fn apply_open_book(model: Model, id: String) -> #(Model, Effect(Msg)) {
+  case model.created_book_segments {
+    Some(#(meta, segments)) ->
+      case meta.id == id {
+        True -> {
+          let #(loaded, eff) = apply_book_loaded(model, meta, segments)
+          #(Model(..loaded, created_book_segments: None), eff)
+        }
+        False -> #(
+          Model(..model, view: Reader, library_error: None),
+          fetch_book(id),
+        )
+      }
+    None -> #(Model(..model, view: Reader, library_error: None), fetch_book(id))
+  }
+}
 
 /// Stamp a freshly-fetched book onto the reader state. Delegates
 /// every per-text field reset to `apply_text_load` and layers on the
