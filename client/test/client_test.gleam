@@ -4417,18 +4417,25 @@ pub fn view_library_does_not_render_sheet_when_closed_test() {
 
 pub fn view_library_renders_add_book_sheet_when_open_test() {
   let model = Model(..library_model(), add_book_open: True)
-  let rendered = client.view(model) |> element.to_string
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
 
-  assert string.contains(rendered, "class=\"sheet-overlay open\"")
-  assert string.contains(rendered, "class=\"bottom-sheet\"")
-  assert string.contains(rendered, "class=\"add-sheet-title\">Add a Book")
-  assert string.contains(rendered, "class=\"paste-input\"")
-  assert string.contains(rendered, "class=\"paste-area\"")
-  assert string.contains(rendered, "class=\"btn-add-book\"")
-  // Submit starts disabled (empty form).
-  assert string.contains(
-    rendered,
-    "aria-label=\"Add to library\" class=\"btn-add-book\" disabled",
+  assert string.contains(rendered_string, "class=\"sheet-overlay open\"")
+  assert string.contains(rendered_string, "class=\"bottom-sheet\"")
+  assert string.contains(rendered_string, "class=\"add-sheet-title\">Add a Book")
+  assert string.contains(rendered_string, "class=\"paste-input\"")
+  assert string.contains(rendered_string, "class=\"paste-area\"")
+  // Submit starts disabled (empty form). The selector composes
+  // `class="btn-add-book"` with `[disabled]` directly against the
+  // rendered tree rather than asserting a substring like
+  // `aria-label="Add to library" class="btn-add-book" disabled`,
+  // which coupled the test to Lustre's alphabetical attribute
+  // serialisation. `lustre_query.and` traverses the parsed tree and
+  // survives a Lustre upgrade that reorders attributes.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
   )
 }
 
@@ -4440,17 +4447,25 @@ pub fn view_library_add_book_button_enables_when_form_is_filled_test() {
       paste_title: "Walden",
       paste_text: "lorem",
     )
-  let rendered = client.view(model) |> element.to_string
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
 
-  // No `disabled` token between the aria-label and `class` value
-  // — Lustre's attribute sort puts `aria-label` < `class` and
-  // `disabled` would follow `class` alphabetically.
-  assert !string.contains(
-    rendered,
-    "aria-label=\"Add to library\" class=\"btn-add-book\" disabled",
+  // The `.btn-add-book` element is present and *not* disabled. The
+  // tree-walk selector replaces a fragile attribute-order substring
+  // — Lustre's HTML serialiser sorts attributes alphabetically
+  // today, but the structural property the test cares about is
+  // "the button exists and carries no `disabled` attribute,"
+  // independent of how it serialises.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book"),
   )
-  assert string.contains(rendered, "class=\"btn-add-book\"")
-  assert string.contains(rendered, "Add to Library")
+  assert !lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+  assert string.contains(rendered_string, "Add to Library")
 }
 
 pub fn view_library_add_book_button_shows_submitting_label_test() {
@@ -4462,13 +4477,17 @@ pub fn view_library_add_book_button_shows_submitting_label_test() {
       paste_text: "lorem",
       paste_submitting: True,
     )
-  let rendered = client.view(model) |> element.to_string
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
 
-  assert string.contains(rendered, "Adding")
+  assert string.contains(rendered_string, "Adding")
   // Button remains disabled while in flight to block double-submits.
-  assert string.contains(
-    rendered,
-    "aria-label=\"Add to library\" class=\"btn-add-book\" disabled",
+  // The composed selector survives a Lustre upgrade that reorders
+  // attributes, where the prior substring did not.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
   )
 }
 
