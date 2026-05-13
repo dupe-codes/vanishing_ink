@@ -1,9 +1,11 @@
 //// Vanishing Ink server entry point. Opens the SQLite database, runs
 //// the schema migration, configures Wisp logging, starts the Mist HTTP
 //// listener on port 3000, and hands incoming requests to the router
-//// with the database connection baked into the context. The Erlang VM
-//// is parked with `process.sleep_forever` so the server stays up after
-//// `main` returns.
+//// with the database connection and client asset directory baked into
+//// the context. The BEAM server is the single HTTP origin — it serves
+//// both the API and the Lustre client bundle. The Erlang VM is parked
+//// with `process.sleep_forever` so the server stays up after `main`
+//// returns.
 
 import gleam/erlang/process
 import gleam/string
@@ -20,6 +22,10 @@ const port = 3000
 /// development and production runs both end up with a co-located store.
 const database_path = "./vanishing_ink.db"
 
+/// Path to the Lustre client build output, relative to the server's
+/// working directory.
+const static_dir = "../client/dist"
+
 pub fn main() -> Nil {
   wisp.configure_logger()
 
@@ -35,7 +41,7 @@ pub fn main() -> Nil {
       panic as "db.initialize failed; see the logged reason above"
     }
   }
-  let context = web.Context(db: connection)
+  let context = web.Context(db: connection, static_dir: static_dir)
 
   // In a real deployment this would be loaded from the environment so
   // session keys survive restarts. A fresh random key is fine for the

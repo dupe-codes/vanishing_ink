@@ -27,6 +27,7 @@ import server/types.{
 import server/web.{type Context}
 import shared
 import shared/segmenter
+import simplifile
 import sqlight
 import wisp.{type Request, type Response}
 
@@ -38,15 +39,19 @@ const reading_state_modes: List(String) = ["manual", "ghost"]
 /// Top-level dispatcher. Wisp matches paths as a list of segments, so
 /// the routing table is just a literal nested `case`.
 pub fn handle_request(req: Request, ctx: Context) -> Response {
-  use req <- web.middleware(req)
+  use req <- web.middleware(req, ctx)
 
   case wisp.path_segments(req) {
-    [] -> status(req)
+    // API routes
+    ["api", "status"] -> api_status(req)
     ["api", "books"] -> books_collection(req, ctx)
     ["api", "books", id] -> books_item(req, ctx, id)
     ["api", "books", id, "state"] -> reading_state(req, ctx, id)
     ["api", "settings"] -> settings(req, ctx)
-    _ -> wisp.not_found()
+
+    // SPA shell — serve index.html for the root and any non-API,
+    // non-static path so client-side view routing works.
+    _ -> serve_spa_shell(ctx)
   }
 }
 
@@ -54,12 +59,27 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
 // Liveness
 // ---------------------------------------------------------------------------
 
-fn status(req: Request) -> Response {
+fn api_status(req: Request) -> Response {
   use <- wisp.require_method(req, Get)
   let body =
     json.object([#("status", json.string("ok"))])
     |> json.to_string
   wisp.json_response(body, 200)
+}
+
+// ---------------------------------------------------------------------------
+// SPA shell
+// ---------------------------------------------------------------------------
+
+/// SPA fallback — any path that isn't an API route or a static asset
+/// gets the shell, and the Lustre client handles view routing from
+/// there.
+fn serve_spa_shell(ctx: Context) -> Response {
+  let index_path = ctx.static_dir <> "/index.html"
+  case simplifile.read(index_path) {
+    Ok(html) -> wisp.html_response(html, 200)
+    Error(_) -> wisp.internal_server_error()
+  }
 }
 
 // ---------------------------------------------------------------------------

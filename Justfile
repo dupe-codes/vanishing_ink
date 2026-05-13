@@ -12,17 +12,15 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list --unsorted
 
-# Start both the BEAM server and Lustre dev server in parallel.
-# Lustre dev server has built-in hot reload. The BEAM server restarts
-# on file changes via watchexec (install: cargo install watchexec-cli).
-dev:
-    trap 'kill $(jobs -p) 2>/dev/null' EXIT; \
-    watchexec -r -w server/src -w shared/src -- just server-dev & \
-    (cd client && gleam run -m lustre/dev start) & \
-    wait
+# Build the client bundle, then start the BEAM server with file
+# watching. On any source change the client is rebuilt and the
+# server restarted — single process, single origin (port 3000).
+dev: client-build
+    watchexec -r -w server/src -w shared/src -w client/src \
+        -- just client-build server-run
 
-# Start only the BEAM server (no hot reload).
-server-dev:
+# Start only the BEAM server (no file watching).
+server-run:
     cd server && gleam run
 
 # Build the server and the client bundle.

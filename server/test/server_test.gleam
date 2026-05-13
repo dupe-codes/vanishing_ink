@@ -35,7 +35,7 @@ fn with_context(f: fn(web.Context) -> Nil) -> Nil {
   // ":memory:" gives every test an isolated database that disappears
   // when the connection closes — perfect for hermetic testing.
   let assert Ok(conn) = db.initialize(":memory:")
-  f(web.Context(db: conn))
+  f(web.Context(db: conn, static_dir: "../client/dist"))
   let assert Ok(_) = sqlight.close(conn)
   Nil
 }
@@ -210,20 +210,29 @@ const default_user_settings = types.UserSettings(
 pub fn status_route_returns_ok_json_test() {
   use ctx <- with_context
   let response =
-    router.handle_request(simulate.browser_request(http.Get, "/"), ctx)
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/status"),
+      ctx,
+    )
   assert response.status == 200
   assert simulate.read_body(response) == "{\"status\":\"ok\"}"
 }
 
-pub fn unknown_route_returns_404_test() {
+pub fn spa_fallback_serves_index_html_test() {
+  use ctx <- with_context
+  let response =
+    router.handle_request(simulate.browser_request(http.Get, "/"), ctx)
+  assert response.status == 200
+  assert string.contains(simulate.read_body(response), "Vanishing Ink")
+}
+
+pub fn unknown_route_serves_spa_shell_test() {
   use ctx <- with_context
   let response =
     router.handle_request(simulate.browser_request(http.Get, "/nope"), ctx)
-  assert response.status == 404
-  // 404 from `wisp.not_found()` carries an empty body — assert that
-  // explicitly so a future change that starts leaking detail surfaces
-  // as a test failure.
-  assert simulate.read_body(response) == "Not found"
+  // Non-API routes get the SPA shell so client-side view routing works.
+  assert response.status == 200
+  assert string.contains(simulate.read_body(response), "Vanishing Ink")
 }
 
 // ---------------------------------------------------------------------------
