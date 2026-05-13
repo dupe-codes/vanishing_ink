@@ -4204,10 +4204,46 @@ pub fn update_open_book_flips_view_to_reader_test() {
 
   let #(updated, _effect) = client.update(prior, OpenBook("book-x"))
 
-  assert updated.view == client.Reader
-  // OpenBook clears any prior fetch error so the next library visit
-  // does not greet the reader with an old message.
-  assert updated.library_error == None
+  // empty_model() defaults to `view: Reader` and `library_error:
+  // None`, so the whole-model equality also pins "OpenBook clears
+  // any prior fetch error" alongside the view flip.
+  assert updated == empty_model()
+}
+
+pub fn update_open_book_dispatches_fetch_book_effect_test() {
+  // OpenBook's *entire* purpose is to chain `fetch_book(id)` onto
+  // the view flip — without the effect, the reader sits forever on
+  // the placeholder. `lustre/dev/simulate` deliberately discards
+  // effects (see its module docs: "simulated apps do not run any
+  // effects!"), so we cannot run the fetch inside the simulator;
+  // what we *can* do is verify the click path off a real book card
+  // dispatches `OpenBook(id)` with the correct id all the way
+  // through `client.update` and `client.view`. A wiring regression
+  // that swapped `event.on_click(OpenBook(book.id))` for any other
+  // Msg (or for the wrong id) would change the post-click model
+  // state and fail this test, where a reducer-level dispatch test
+  // sees only the Msg the test itself synthesised.
+  let book = sample_book("book-x", "X", None)
+  let prior = Model(..library_model(), books: [book])
+
+  let app =
+    simulate.application(
+      init: fn(_) { #(prior, effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  // The grid card carries `aria-label="Open <title>"` — selecting
+  // by that label tests the same node the reader's tap would hit.
+  let card =
+    lustre_query.element(matching: lustre_query.aria("label", "Open X"))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: card)
+    |> simulate.model
+
+  assert updated == Model(..library_model(), books: [book], view: client.Reader)
 }
 
 pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
