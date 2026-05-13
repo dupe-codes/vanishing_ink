@@ -2127,6 +2127,29 @@ fn fade_model() -> Model {
   )
 }
 
+// Variant of `fade_pages` that packs both paragraphs onto a
+// single page so an `AdvanceWord` tick can cross a paragraph
+// boundary without crossing a page boundary. The default
+// `fade_pages` puts one paragraph per page, which makes the
+// `crosses_paragraph: True` branch of `apply_advance_word`
+// geometrically unreachable — every within-page next-target
+// resolution lives in the same paragraph.
+fn fade_pages_single() -> List(Page) {
+  let flat = pagination.flatten(fade_text())
+  [Page(index: 0, paragraphs: flat)]
+}
+
+fn fade_model_single_page() -> Model {
+  let text = fade_text()
+  Model(
+    ..empty_model(),
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: fade_pages_single(),
+    mode: RealTime,
+  )
+}
+
 // ---------------------------------------------------------------------------
 // update — SetMode
 // ---------------------------------------------------------------------------
@@ -2354,6 +2377,43 @@ pub fn update_advance_word_advances_to_next_page_when_current_page_exhausted_tes
 
   assert updated.engine_state == Running
   assert updated.current_page == 1
+  assert updated.next_word_index == Some(2)
+  assert updated.erased_words == set.from_list([0, 1])
+}
+
+pub fn update_advance_word_crosses_paragraph_boundary_within_same_page_test() {
+  // The `crosses_paragraph: True` branch of `apply_advance_word`
+  // is load-bearing for the Paragraph-pause slider: when the
+  // engine ticks forward from the last word of one paragraph
+  // into the first word of the next paragraph on the *same*
+  // page, the schedule should add `paragraph_delay_ms` on top
+  // of the per-word interval. The single-page fixture packs
+  // both paragraphs onto page 0 so word 1 → word 2 crosses a
+  // paragraph boundary without crossing a page boundary; the
+  // default `fade_pages` puts one paragraph per page, which
+  // makes this branch geometrically unreachable.
+  //
+  // The delay value itself lives inside the scheduled
+  // `schedule_advance_word` Effect and is opaque to tests — the
+  // model-level pin is the next-target selection, which
+  // exercises the cross-paragraph arm of `next_eligible_after`.
+  // A regression that mis-resolves the paragraph boundary
+  // (e.g. treats the page as a single paragraph and skips
+  // straight to `None`, falling through to
+  // `advance_to_next_page`) would fail this pin by reporting
+  // `current_page == 1`.
+  let prior =
+    Model(
+      ..fade_model_single_page(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      erased_words: set.from_list([0]),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.engine_state == Running
+  assert updated.current_page == 0
   assert updated.next_word_index == Some(2)
   assert updated.erased_words == set.from_list([0, 1])
 }
