@@ -41,7 +41,6 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import lustre
@@ -1765,19 +1764,35 @@ fn line_box_from_tuple(tuple: #(Float, Float, Int, Int)) -> LineBox {
 /// is `O(lines)` because the line count per page is small — typically
 /// 20-40 — and the alternative (binary search) would carry more
 /// complexity than it saves at these magnitudes.
+///
+/// Implemented as a single-pass tail-recursive scan with early exit
+/// on first match. The previous `index_map |> find |> result.map`
+/// pipeline materialised an intermediate `List(#(Int, LineBox))`
+/// before searching it — the same logic in one pass with no
+/// intermediate allocation.
 fn line_index_for_word(
   boxes: List(LineBox),
   word_global_index: Int,
 ) -> Option(Int) {
-  boxes
-  |> list.index_map(fn(box, index) { #(index, box) })
-  |> list.find(fn(pair) {
-    let #(_, box) = pair
-    box.first_word_gi <= word_global_index
-    && word_global_index <= box.last_word_gi
-  })
-  |> result.map(fn(pair) { pair.0 })
-  |> option.from_result
+  scan_lines_for_word(boxes, word_global_index, 0)
+}
+
+fn scan_lines_for_word(
+  boxes: List(LineBox),
+  word_global_index: Int,
+  index: Int,
+) -> Option(Int) {
+  case boxes {
+    [] -> None
+    [box, ..rest] ->
+      case
+        box.first_word_gi <= word_global_index
+        && word_global_index <= box.last_word_gi
+      {
+        True -> Some(index)
+        False -> scan_lines_for_word(rest, word_global_index, index + 1)
+      }
+  }
 }
 
 /// Resolve the active line for the current `next_word_index` against
