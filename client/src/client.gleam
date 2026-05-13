@@ -1067,10 +1067,20 @@ fn apply_stop_fade(model: Model) -> #(Model, Effect(Msg)) {
 /// page is exhausted), and schedules the next tick at the
 /// appropriate delay. When no eligible word remains anywhere
 /// after the current page, the engine stops.
+///
+/// `Running, None` is treated as an invariant violation rather
+/// than a silent no-op: the `Model` header at lines 99-103
+/// guarantees that `Running` carries `Some(_)` in
+/// `next_word_index`, and any path that produces the inverse is
+/// a reducer bug that should fail loudly at its source rather
+/// than propagate as a phantom-tick no-op.
 fn apply_advance_word(model: Model) -> #(Model, Effect(Msg)) {
   case model.engine_state, model.next_word_index {
     Running, Some(current_idx) -> advance_with_current(model, current_idx)
-    _, _ -> #(model, effect.none())
+    Running, None ->
+      panic as "apply_advance_word: Running engine must carry Some(next_word_index)"
+    Stopped, _ -> #(model, effect.none())
+    Paused, _ -> #(model, effect.none())
   }
 }
 
