@@ -148,7 +148,7 @@ export function on_vim_keys(
   focus_paragraph_down_callback,
   focus_paragraph_up_callback,
   focus_next_callback,
-  erase_focused_callback,
+  space_callback,
   undo_callback,
 ) {
   window.addEventListener("keydown", (event) => {
@@ -187,7 +187,7 @@ export function on_vim_keys(
         // height per Space — the reader's vertical reading flow
         // would jump out from under the cursor.
         event.preventDefault();
-        erase_focused_callback();
+        space_callback();
         break;
       case "u":
         event.preventDefault();
@@ -262,6 +262,19 @@ export function set_body_class(class_name, enabled) {
  * duplicate (which would let the older one win depending on parser
  * order). When no viewport meta is present we create one.
  */
+export function ensure_viewport_fit_cover() {
+  const desired = "width=device-width, initial-scale=1, viewport-fit=cover";
+  let meta = document.querySelector('meta[name="viewport"]');
+  if (meta === null) {
+    meta = document.createElement("meta");
+    meta.setAttribute("name", "viewport");
+    document.head.appendChild(meta);
+  }
+  if (meta.getAttribute("content") !== desired) {
+    meta.setAttribute("content", desired);
+  }
+}
+
 /**
  * Schedules the fade engine's next word tick. Clears any timer
  * currently in flight so callers don't have to track the handle
@@ -294,18 +307,5 @@ export function clear_word_timer() {
   if (word_timer_id !== null) {
     clearTimeout(word_timer_id);
     word_timer_id = null;
-  }
-}
-
-export function ensure_viewport_fit_cover() {
-  const desired = "width=device-width, initial-scale=1, viewport-fit=cover";
-  let meta = document.querySelector('meta[name="viewport"]');
-  if (meta === null) {
-    meta = document.createElement("meta");
-    meta.setAttribute("name", "viewport");
-    document.head.appendChild(meta);
-  }
-  if (meta.getAttribute("content") !== desired) {
-    meta.setAttribute("content", desired);
   }
 }
