@@ -90,8 +90,10 @@ pub const min_font_size: Int = 14
 pub const max_font_size: Int = 28
 
 /// Default `line_spacing`. Matches the bundled stylesheet's
-/// `--vi-line-height`.
-pub const default_line_spacing: Float = 1.6
+/// `--vi-line-height` (the warm-palette mock pacing is `1.85`,
+/// which gives the prose enough breathing room that the line-
+/// highlight overlay reads as one row rather than wrapping two).
+pub const default_line_spacing: Float = 1.85
 
 pub const min_line_spacing: Float = 1.2
 
@@ -1852,20 +1854,30 @@ fn view_placeholder() -> Element(Msg) {
   html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
 }
 
-/// Build the full reading surface: visible page, control bar (page
-/// indicator + settings gear), and off-screen measurement container.
+/// Build the full reading surface: sticky header, reading-progress
+/// bar, visible page, mode-aware bottom bar, and off-screen
+/// measurement container.
+///
+/// The chrome rows (`view_reader_header`, `view_progress_bar`,
+/// `view_bottom_bar`) flank the central `.reader-page` so the
+/// reading area is the flex-grow child between two `flex: 0 0 auto`
+/// frames. The header carries the back glyph, current book title,
+/// and settings gear; the bottom bar swaps shape with `model.mode`
+/// — Manual gets undo / page indicator / turn-page, RealTime gets
+/// WPM readout / play-pause / spacer.
 ///
 /// The `#vi-measurement` container receives all paragraphs from the
-/// whole book — not just the current page. This lets `measure_after_paint`
-/// read every paragraph height in a single DOM pass after `TextLoaded` or
-/// `ViewportResized`, rather than re-measuring on every page turn.
+/// whole book — not just the current page. This lets
+/// `measure_after_paint` read every paragraph height in a single DOM
+/// pass after `TextLoaded` or `ViewportResized`, rather than
+/// re-measuring on every page turn.
 ///
 /// Touch handlers are placed on `.reader-page` rather than the outer
-/// `.reader-text` so neither the control bar (with its tappable gear
-/// icon) nor the off-screen measurement container can intercept page
-/// swipes. The measurement container is `pointer-events: none`
-/// (see `.reader-measurement` in `styles.css`) so its descendants
-/// cannot receive any touch or click events.
+/// `.reader-text` so neither the chrome rows nor the off-screen
+/// measurement container can intercept page swipes. The measurement
+/// container is `pointer-events: none` (see `.reader-measurement` in
+/// `styles.css`) so its descendants cannot receive any touch or
+/// click events.
 fn view_paginated(model: Model) -> Element(Msg) {
   let total = list.length(model.pages)
   let erased_opacity = erased_opacity_value(model)
@@ -1892,6 +1904,8 @@ fn view_paginated(model: Model) -> Element(Msg) {
   let active_line_overlay = view_active_line_overlay(model)
 
   html.div([attribute.class("reader-text")], [
+    view_reader_header(model),
+    view_progress_bar(model),
     html.div(
       [
         attribute.id(reading_area_id),
@@ -1910,9 +1924,122 @@ fn view_paginated(model: Model) -> Element(Msg) {
         ),
       ],
     ),
-    view_control_bar(total, model.current_page),
+    view_bottom_bar(model, total),
     view_measurement_container(model.flat_paragraphs, erased_opacity),
   ])
+}
+
+/// Sticky top chrome row. Three slots: back glyph (left), book title
+/// (centre, ellipsised), settings gear (right). The back button
+/// dispatches `SetMode(Manual)` — in RealTime mode this stops the
+/// fade engine and returns to the tap-to-erase reader, in Manual
+/// mode it is an idempotent no-op (the model is already in Manual,
+/// and `apply_set_mode(model, Manual)` is safe to call against
+/// a stopped engine). Act 4 will rewire the back button to library
+/// navigation once a library view exists; until then "back" reads
+/// as "exit the active reading mode".
+///
+/// The book title is hardcoded to the bundled sample's chapter and
+/// author for now; the future server-payload path will surface the
+/// real title onto the model.
+fn view_reader_header(_model: Model) -> Element(Msg) {
+  html.div([attribute.class("reader-header")], [
+    html.div([attribute.class("reader-header-inner")], [
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Back to library"),
+          attribute.type_("button"),
+          event.on_click(SetMode(Manual)),
+        ],
+        [html.text("←")],
+      ),
+      html.div([attribute.class("reader-title")], [
+        html.text("Pride and Prejudice · Austen"),
+      ]),
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Open settings"),
+          attribute.type_("button"),
+          event.on_click(ToggleSettings),
+        ],
+        // Unicode gear glyph keeps the asset surface zero. A later
+        // quest can swap this for an inline SVG if iconography
+        // becomes a theme concern.
+        [html.text("⚙")],
+      ),
+    ]),
+  ])
+}
+
+/// Thin reading-progress bar between the header and the reading
+/// area. The fill width is driven inline from the model:
+///
+/// * Manual mode — fraction of sentences erased over the whole text.
+/// * RealTime mode — fraction of words faded over the whole text.
+///
+/// Both denominators are computed from `model.text` rather than
+/// the current page's slice, so the bar reads as "progress through
+/// the book" rather than "progress through this page". When the
+/// model has no text yet, the fill is 0% — the bar renders as an
+/// empty track until `TextLoaded` lands.
+fn view_progress_bar(model: Model) -> Element(Msg) {
+  let percent = progress_percentage(model)
+  let width_value = float.to_string(percent) <> "%"
+  html.div([attribute.class("reader-progress-track")], [
+    html.div(
+      [
+        attribute.class("reader-progress-fill"),
+        attribute.style("width", width_value),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
+    ),
+  ])
+}
+
+fn progress_percentage(model: Model) -> Float {
+  let #(numerator, denominator) = case model.mode {
+    Manual -> #(set.size(model.erased), total_sentence_count(model.text))
+    RealTime -> #(set.size(model.erased_words), total_word_count(model.text))
+  }
+  case denominator {
+    0 -> 0.0
+    _ ->
+      int.to_float(numerator) /. int.to_float(denominator) *. 100.0
+  }
+}
+
+/// Total sentence count across every chapter and paragraph in the
+/// loaded text. Used as the denominator of the manual-mode progress
+/// fraction. Returns `0` when `text` is `None` so the caller's
+/// division falls through to a `0%` fill instead of a divide-by-zero
+/// crash.
+fn total_sentence_count(text: Option(SegmentedText)) -> Int {
+  case text {
+    None -> 0
+    Some(t) ->
+      t.chapters
+      |> list.flat_map(fn(ch) { ch.paragraphs })
+      |> list.flat_map(fn(p) { p.sentences })
+      |> list.length
+  }
+}
+
+/// Total word count across every sentence in the loaded text. Used
+/// as the denominator of the real-time progress fraction. Mirrors
+/// `total_sentence_count`'s shape: `None` → `0`.
+fn total_word_count(text: Option(SegmentedText)) -> Int {
+  case text {
+    None -> 0
+    Some(t) ->
+      t.chapters
+      |> list.flat_map(fn(ch) { ch.paragraphs })
+      |> list.flat_map(fn(p) { p.sentences })
+      |> list.flat_map(fn(s) { s.words })
+      |> list.length
+  }
 }
 
 /// Render the active-line overlay. The overlay is only visible while
@@ -2054,33 +2181,123 @@ fn view_page(
   )
 }
 
-/// Bottom control bar. Holds the page indicator (centred) and the
-/// settings gear button (right-aligned, ≥ 44 × 44 CSS pixels). The
-/// page indicator renders an empty string when no pages are
-/// available yet; the bar's `min-height: var(--vi-tap-target)` rule
-/// (see `.reader-control-bar` in `styles.css`) keeps the row at the
-/// thumb-friendly tap target so the gear is reachable from the first
-/// paint, before pagination has produced its first result.
-fn view_control_bar(total: Int, current: Int) -> Element(Msg) {
-  let indicator_text = case total {
-    0 -> ""
-    _ -> "Page " <> int.to_string(current + 1) <> " of " <> int.to_string(total)
+/// Bottom bar — mode-aware. Manual mode renders the undo / page-
+/// indicator / turn-page trio so the reader can step through the
+/// book with thumb-reachable controls; RealTime mode renders the
+/// WPM readout, the play / pause button, and a balancing spacer so
+/// the play button sits centred between two equal-width siblings.
+///
+/// The outer `.reader-bottom-bar` carries the safe-area-bottom
+/// padding and the warm chrome bg so both branches inherit the
+/// same frame; only the inner row changes shape with `model.mode`.
+fn view_bottom_bar(model: Model, total: Int) -> Element(Msg) {
+  let inner = case model.mode {
+    Manual -> view_bottom_manual(model, total)
+    RealTime -> view_bottom_realtime(model)
   }
-  html.div([attribute.class("reader-control-bar")], [
-    html.div([attribute.class("reader-page-indicator")], [
-      html.text(indicator_text),
+  html.div([attribute.class("reader-bottom-bar")], [inner])
+}
+
+/// Manual-mode bottom bar inner row.
+///
+/// Layout: `[↩ Undo]   Page N of M   [Turn Page →]`.
+///
+/// * Undo button — disabled when the undo stack is empty. Dispatches
+///   `Undo`.
+/// * Page label — same `Page N of M` text the old `view_control_bar`
+///   carried; renders an empty string when no pages are available yet,
+///   so the bar's frame stays the same height before pagination has
+///   produced its first result.
+/// * Turn-page button — primary (inverted) styling so the eye is
+///   drawn to it. Reads "✓ Finished" on the last page and is
+///   disabled there (the reader has nowhere to advance to). Dispatches
+///   `NextPage`.
+fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
+  let on_last_page = total > 0 && model.current_page >= total - 1
+  let next_label = case on_last_page {
+    True -> "✓ Finished"
+    False -> "Turn Page →"
+  }
+  let next_disabled = total == 0 || on_last_page
+  let page_text = case total {
+    0 -> ""
+    _ ->
+      "Page "
+      <> int.to_string(model.current_page + 1)
+      <> " of "
+      <> int.to_string(total)
+  }
+  let undo_disabled = list.is_empty(model.undo_stack)
+
+  html.div([attribute.class("reader-bottom-manual")], [
+    html.button(
+      [
+        attribute.class("btn-bar"),
+        attribute.type_("button"),
+        attribute.disabled(undo_disabled),
+        attribute.aria_label("Undo last erase"),
+        event.on_click(Undo),
+      ],
+      [html.text("↩ Undo")],
+    ),
+    html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
+    html.button(
+      [
+        attribute.class("btn-bar primary"),
+        attribute.type_("button"),
+        attribute.disabled(next_disabled),
+        attribute.aria_label("Turn page"),
+        event.on_click(NextPage),
+      ],
+      [html.text(next_label)],
+    ),
+  ])
+}
+
+/// Real-time mode bottom bar inner row.
+///
+/// Layout: `WPM readout   [▶ / ⏸]   (spacer)`.
+///
+/// The play button cycles through the engine's three states:
+///
+/// * `Stopped` — render `▶` with the `.paused` accent background;
+///   click dispatches `StartFade`.
+/// * `Paused`  — render `▶` with the `.paused` accent background;
+///   click dispatches `ResumeFade`.
+/// * `Running` — render `⏸` with the default inverted background;
+///   click dispatches `PauseFade`.
+///
+/// `event.stop_propagation` keeps the click from bubbling up — the
+/// page-level tap handler routes taps in RealTime mode to
+/// pause/resume too, so without the guard a tap that landed on the
+/// button would fire the engine transition twice (once via the
+/// button click, once via the bubbled-up touch handler).
+fn view_bottom_realtime(model: Model) -> Element(Msg) {
+  let #(button_label, button_class, play_msg) = case model.engine_state {
+    Running -> #("⏸", "btn-play", PauseFade)
+    Paused -> #("▶", "btn-play paused", ResumeFade)
+    Stopped -> #("▶", "btn-play paused", StartFade)
+  }
+
+  html.div([attribute.class("reader-bottom-realtime")], [
+    html.div([attribute.class("wpm-readout")], [
+      html.text(int.to_string(model.wpm) <> " wpm"),
     ]),
     html.button(
       [
-        attribute.class("reader-settings-button"),
-        attribute.attribute("aria-label", "Open settings"),
+        attribute.class(button_class),
         attribute.type_("button"),
-        event.on_click(ToggleSettings),
+        attribute.aria_label("Play or pause reading"),
+        event.on_click(play_msg) |> event.stop_propagation,
       ],
-      // Unicode gear glyph keeps the asset surface zero. A later
-      // quest can swap this for an inline SVG if iconography becomes
-      // a theme concern.
-      [html.text("⚙")],
+      [html.text(button_label)],
+    ),
+    html.div(
+      [
+        attribute.class("btn-play-spacer"),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
     ),
   ])
 }
@@ -2370,16 +2587,40 @@ fn view_settings_panel(model: Model) -> Element(Msg) {
 /// would also close the panel. The propagation guard is encapsulated
 /// in `stop_click_propagation` so the `Msg` ADT doesn't carry a
 /// `NoOp` variant just to satisfy Lustre's "handler required" rule.
+///
+/// Visual structure (matching `mobile-reader-prototype.html`):
+///
+///   .sheet-handle                 — visual drag affordance
+///   .settings-panel-header        — uppercase section title + close
+///   pacing group
+///     mode toggle
+///     WPM / paragraph / page delay sliders
+///   <hr> divider
+///   appearance group
+///     theme toggle
+///     font / line-spacing sliders
+///   <hr> divider
+///   reading-aid group
+///     ghost mode + opacity, dyslexia font
 fn view_settings_sheet(model: Model) -> Element(Msg) {
   html.div([attribute.class("settings-panel"), stop_click_propagation()], [
+    html.div(
+      [
+        attribute.class("settings-sheet-handle"),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
+    ),
     view_settings_header(),
     view_mode_toggle(model),
     view_wpm_slider(model),
     view_paragraph_delay_slider(model),
     view_page_delay_slider(model),
+    html.hr([attribute.class("settings-divider")]),
     view_theme_toggle(model),
     view_font_size_slider(model),
     view_line_spacing_slider(model),
+    html.hr([attribute.class("settings-divider")]),
     view_ghost_mode_toggle(model),
     view_ghost_opacity_slider(model),
     view_dyslexia_font_toggle(model),

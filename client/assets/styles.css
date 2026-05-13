@@ -1,96 +1,127 @@
 /* Vanishing Ink reader styles.
  *
  * Served at `/styles.css` by lustre_dev_tools at dev time and copied
- * into the dist bundle on `gleam run -m lustre/dev build`. Sets the
- * dark-mode reading surface, the paginated page layout, and the
- * word/sentence span primitives the reader-feature quests will
- * animate.
+ * into the dist bundle on `gleam run -m lustre/dev build`. Implements
+ * the warm, literary visual language defined in
+ * `local/design-mocks/vanishing-ink/mobile-reader-prototype.html`:
+ * warm cream/copper light surface, OLED-black dark surface with
+ * warm-white text, Georgia serif for prose, system-ui for chrome.
  *
- * Layout contract (see `client.gleam` view):
- *   .reader-text                              (full-viewport column)
+ * Layout contract (see `client.gleam` `view_paginated`):
+ *
+ *   .reader-text                              (full-viewport flex column)
+ *     .reader-header                          (sticky 52px chrome row:
+ *                                              back glyph, book title,
+ *                                              settings gear)
+ *     .reader-progress-track                  (2px bar; .reader-progress-fill
+ *                                              widens with reading progress)
  *     .reader-page#vi-reading-area            (flex-grows to fill)
  *       .reader-page-content#vi-page-content  (FFI measurement target
  *                                              for available height)
- *     .reader-control-bar                     (thumb-friendly bottom row:
- *                                              page indicator + gear)
+ *     .reader-bottom-bar                      (mode-aware; Manual gets
+ *                                              undo/page/next, RealTime
+ *                                              gets WPM/play/spacer)
  *     .reader-measurement#vi-measurement      (absolute, hidden;
- *                                              same width as content
- *                                              for height-accurate
- *                                              paragraph wrapping)
+ *                                              same content width as
+ *                                              .reader-page so paragraph
+ *                                              wrap heights match)
  *
  * Theme & settings toggles ride on `<body>` classes, not on the Lustre
- * view tree — the rendered HTML is identical regardless of which
- * toggles are active, and the CSS reads body classes to flip rules.
- * The toggles are pushed onto the body by the FFI helpers in
- * `client/ffi.gleam` when the corresponding model field changes.
+ * view tree. Custom properties cascade through the rules.
  *
  * Body classes:
- *   vi-light-mode      — flip --vi-bg / --vi-fg to the light palette
- *   vi-dyslexia-font   — switch font-family to OpenDyslexic (the font
- *                        face itself is loaded via a `<link>` declared
- *                        in `gleam.toml`, not an `@import` here — see
- *                        the comment near `.vi-dyslexia-font` below)
- *   vi-ghost-mode      — gate the `.sentence-erased` opacity variable
- *                        from --vi-ghost-opacity instead of `0`
- *   vi-reduced-motion  — strip the fade transition from `.sentence`
+ *   vi-light-mode      — flip warm-dark palette to warm-cream palette
+ *   vi-dyslexia-font   — switch font-family to OpenDyslexic (loaded
+ *                        via `<link>` declared in `gleam.toml`)
+ *   vi-ghost-mode      — gate `.sentence-erased` opacity from
+ *                        `--vi-ghost-opacity` instead of `0`
+ *   vi-reduced-motion  — collapse every fade/glide to a snap
  */
 
 :root {
+  /* Dark palette (default). OLED-true black so the surface bleeds
+   * into the bezel on AMOLED phones; the rest of the palette warms
+   * outward from there — warm-white text, warm grey for muted
+   * chrome, the shared copper accent. */
   --vi-bg: #000000;
-  --vi-fg: #e8e8e8;
-  --vi-fg-muted: #888888;
-  --vi-surface: rgba(20, 20, 20, 0.92);
-  --vi-surface-border: rgba(255, 255, 255, 0.1);
+  --vi-fg: #e8e0d8;
+  --vi-fg-muted: #665e58;
+  --vi-surface: #111111;
+  --vi-surface-border: #1e1e1e;
+  /* Accent colour is shared across both modes — the copper hue is
+   * the design's signal colour for "interactive" and reads the same
+   * on either background. Tints (`--vi-accent-dim`, `--vi-hover`,
+   * `--vi-accent-line`) vary slightly between modes to compensate
+   * for the difference in perceived alpha against bg vs. cream. */
+  --vi-accent: #c4845a;
+  --vi-accent-dim: rgba(196, 132, 90, 0.10);
+  --vi-accent-line: rgba(196, 132, 90, 0.06);
+  --vi-hover: rgba(196, 132, 90, 0.12);
   --vi-focus-ring: rgba(255, 255, 255, 0.18);
   --vi-base-font-size: 18px;
-  --vi-line-height: 1.6;
+  /* `1.85` matches the prototype's `--lh` and gives the prose enough
+   * breathing room that the line-highlight overlay reads as a band
+   * around one line rather than a stripe wrapping two. */
+  --vi-line-height: 1.85;
   --vi-reading-max-width: 720px;
   --vi-reading-padding-x: 20px;
   --vi-reading-padding-y: 24px;
   /* Ghost mode opacity. Sentence rendering inlines `opacity:0` when
    * `ghost_mode` is off; when it's on, the inline opacity is the
-   * `model.ghost_opacity` float. The custom property is a hook for
-   * future style rules (e.g. a gradient overlay) that need to see the
-   * same value. */
+   * `model.ghost_opacity` float. */
   --vi-ghost-opacity: 0;
-  /* Sentence fade duration. Set to `0s` when reduced motion is on so
-   * the `.sentence` transition becomes a snap rather than a fade. */
-  --vi-transition-duration: 0.3s;
+  /* `0.65s` is the prototype's `--fade-dur` — slow enough to read
+   * as a therapeutic dissolve rather than a UI snap. Collapsed to
+   * `0s` under `vi-reduced-motion`. */
+  --vi-transition-duration: 0.65s;
+  /* Snappy duration for chrome interactions — button presses, body
+   * theme transitions. Separate from `--vi-transition-duration` so
+   * the prose fade can be tuned independently of UI affordances. */
+  --vi-chrome-transition: 120ms;
+  /* Page-content / settings-sheet open/close uses a slightly slower
+   * curve so the eye can track the change. */
+  --vi-theme-transition: 300ms;
   /* Minimum thumb-friendly tap target. Apple HIG says 44pt, which
    * matches 44 CSS pixels on a standard-density display. */
   --vi-tap-target: 44px;
+  --vi-safe-top: env(safe-area-inset-top, 0px);
+  --vi-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --vi-safe-left: env(safe-area-inset-left, 0px);
+  --vi-safe-right: env(safe-area-inset-right, 0px);
 }
 
 body.vi-light-mode {
-  /* Light reading surface override. Off-white background and near-
-   * black text — slightly off the extremes for paper-like contrast
-   * rather than the harsher pure-white-on-pure-black inverse. */
-  --vi-bg: #fafafa;
-  --vi-fg: #1a1a1a;
-  --vi-fg-muted: #666666;
-  --vi-surface: rgba(245, 245, 245, 0.96);
-  --vi-surface-border: rgba(0, 0, 0, 0.12);
+  /* Warm cream reading surface. The palette is intentionally
+   * uncold — the muted greys carry warmth (slight red/brown tint)
+   * so the eye reads it as paper rather than fluorescent-lit
+   * office paper. */
+  --vi-bg: #faf8f4;
+  --vi-fg: #2c2420;
+  --vi-fg-muted: #9a8b84;
+  --vi-surface: #f2ece6;
+  --vi-surface-border: #e4dad2;
+  --vi-accent-dim: rgba(196, 132, 90, 0.09);
+  --vi-accent-line: rgba(196, 132, 90, 0.07);
+  --vi-hover: rgba(196, 132, 90, 0.11);
   --vi-focus-ring: rgba(0, 0, 0, 0.18);
 }
 
 body.vi-reduced-motion {
-  /* Folds the duration into a snap on every rule that reads
-   * `--vi-transition-duration`. `prefers-reduced-motion` is queried
-   * once at boot via FFI and surfaced through this class so the
-   * settings panel can also flip it without going back to the media
-   * list. */
+  /* Folds every duration to a snap. Reading text fades, chrome
+   * transitions, and the active-line overlay glide all read
+   * `--vi-transition-duration` or `--vi-chrome-transition` and
+   * collapse in lock-step. */
   --vi-transition-duration: 0s;
+  --vi-chrome-transition: 0s;
+  --vi-theme-transition: 0s;
 }
 
 /* OpenDyslexic is loaded via a `<link rel="stylesheet">` declared in
  * `gleam.toml` under `[[tools.lustre.html.stylesheets]]`, not an
  * `@import` here. Per the CSS Cascading and Inheritance specification,
  * `@import` must precede every other at-rule and style rule; an
- * `@import` placed after `:root` / `body.vi-light-mode` /
- * `body.vi-reduced-motion` is silently invalidated by the browser,
- * which is what shipped in the previous revision and left the
- * `.vi-dyslexia-font` toggle non-functional. The body opts in via
- * `.vi-dyslexia-font`; default body retains the system stack. */
+ * `@import` placed after `:root` / `body.vi-light-mode` is silently
+ * invalidated. The body opts in via `.vi-dyslexia-font`. */
 
 * {
   box-sizing: border-box;
@@ -102,8 +133,12 @@ body {
   padding: 0;
   background-color: var(--vi-bg);
   color: var(--vi-fg);
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Body font is Georgia for the literary reading surface. Chrome
+   * elements (header titles, buttons, settings rows) opt into
+   * `system-ui, sans-serif` explicitly — those classes have higher
+   * specificity than the body inheritance so the font swap is
+   * one-directional. */
+  font-family: Georgia, "Times New Roman", serif;
   font-size: var(--vi-base-font-size);
   line-height: var(--vi-line-height);
   -webkit-font-smoothing: antialiased;
@@ -113,6 +148,11 @@ body {
    * underneath the reading surface — the reader is a single-screen
    * paginated app, not a scrolling document. */
   overscroll-behavior: none;
+  /* Cross-mode theme transition. Wraps the warm-dark↔warm-cream
+   * palette swap in a soft fade rather than a snap. */
+  transition: background-color var(--vi-theme-transition),
+              color var(--vi-theme-transition);
+  -webkit-text-size-adjust: 100%;
 }
 
 body.vi-dyslexia-font,
@@ -144,39 +184,160 @@ body.vi-dyslexia-font .settings-panel {
 }
 
 .reader-text {
-  /* Full-viewport flex column. Padding-x lives on this container so
-   * the visible page content and the off-screen measurement
-   * container share an identical content-area width — paragraph
-   * line wrapping (and therefore measured heights) are then
-   * accurate.
-   *
-   * Safe-area insets keep the reading surface clear of the iOS
-   * notch / Dynamic Island at the top and the home indicator at the
-   * bottom. `env(safe-area-inset-*)` returns `0` on non-notched
-   * devices, so desktop layout is unaffected. */
+  /* Full-viewport flex column. Safe-area-x lives at this wrapper
+   * level so the header and bottom-bar children span the visible
+   * (non-notched) width without each needing its own inset rule;
+   * safe-area-top/bottom move down to the chrome bars so the
+   * background colour reaches the physical screen edge under the
+   * notch / home indicator. */
   position: relative;
   max-width: var(--vi-reading-max-width);
   margin: 0 auto;
-  padding:
-    env(safe-area-inset-top) calc(var(--vi-reading-padding-x) + env(safe-area-inset-right, 0))
-    env(safe-area-inset-bottom) calc(var(--vi-reading-padding-x) + env(safe-area-inset-left, 0));
+  padding: 0 var(--vi-safe-right) 0 var(--vi-safe-left);
   height: 100vh;
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  background-color: var(--vi-bg);
+  transition: background-color var(--vi-theme-transition);
 }
+
+/* ---------------------------------------------------------------------
+ * Reader header (sticky top chrome row)
+ * --------------------------------------------------------------------- */
+
+.reader-header {
+  /* Flex-shrink: 0 so the 52px row never compresses below the
+   * thumb-friendly tap target. Top safe-area inset lives here so
+   * the bg colour fills the notch strip rather than leaving a
+   * black band on top of the warm surface. */
+  flex: 0 0 auto;
+  padding-top: var(--vi-safe-top);
+  background-color: var(--vi-bg);
+  border-bottom: 1px solid var(--vi-surface-border);
+  z-index: 10;
+  transition: background-color var(--vi-theme-transition),
+              border-color var(--vi-theme-transition);
+}
+
+.reader-header-inner {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 4px;
+  gap: 4px;
+}
+
+.reader-title {
+  /* Centred chrome label — chapter/book/author for the current
+   * read. Truncates with ellipsis so a long title cannot push the
+   * gear icon off-screen on a narrow phone. */
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--vi-fg-muted);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.btn-icon {
+  /* 48px square icon button — sits inside a 52px header row so
+   * the visual height matches the .btn-icon tap target without
+   * leaving the 44px HIG minimum on the table. The :active state
+   * uses `--vi-surface` for a one-frame press flash and scales
+   * the button down by 3% for the press microinteraction. */
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vi-fg-muted);
+  font-size: 20px;
+  line-height: 1;
+  border-radius: 10px;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--vi-chrome-transition),
+              background-color var(--vi-chrome-transition),
+              transform 80ms;
+}
+
+.btn-icon:hover,
+.btn-icon:focus-visible {
+  color: var(--vi-fg);
+  outline: none;
+}
+
+.btn-icon:active {
+  background-color: var(--vi-surface);
+  color: var(--vi-fg);
+  transform: scale(0.97);
+}
+
+body.vi-reduced-motion .btn-icon {
+  transition: color var(--vi-chrome-transition),
+              background-color var(--vi-chrome-transition);
+}
+
+body.vi-reduced-motion .btn-icon:active {
+  transform: none;
+}
+
+/* ---------------------------------------------------------------------
+ * Reading-progress bar
+ * --------------------------------------------------------------------- */
+
+.reader-progress-track {
+  /* Thin band between header and reading area. `flex-shrink: 0`
+   * keeps it visible even when the page is content-heavy. Width
+   * is driven inline from the model — manual mode counts erased
+   * sentences, real-time counts faded words. */
+  flex: 0 0 auto;
+  height: 2px;
+  background-color: var(--vi-surface-border);
+  transition: background-color var(--vi-theme-transition);
+}
+
+.reader-progress-fill {
+  height: 100%;
+  background-color: var(--vi-accent);
+  /* 400ms ease feels deliberate — the progress jump on a sentence
+   * erase or a word fade should register as motion rather than a
+   * snap, but not so slow that a rapid-erase run feels laggy. */
+  transition: width 400ms ease;
+}
+
+body.vi-reduced-motion .reader-progress-fill {
+  /* The width itself still updates — only the animation collapses. */
+  transition: none;
+}
+
+/* ---------------------------------------------------------------------
+ * Reading area (scrollable / paginated page content)
+ * --------------------------------------------------------------------- */
 
 .reader-page {
   /* The reading area takes the remaining vertical space after the
-   * control bar. Padding-y gives the page breathing room without
-   * affecting the measurement-target's content-box height. */
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: var(--vi-reading-padding-y) 0;
-  overflow: hidden;
-  /* `touch-action: pan-y` keeps vertical scrolls native (no purpose
+   * header, progress bar, and bottom bar. Padding-x lives here so
+   * the visible page and the off-screen measurement container
+   * share an identical content-area width — paragraph line
+   * wrapping (and therefore measured heights) are accurate.
+   *
+   * `touch-action: pan-y` keeps vertical scrolls native (no purpose
    * today but ensures the browser doesn't intercept horizontal
    * swipes for back/forward navigation). */
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--vi-reading-padding-y) var(--vi-reading-padding-x);
+  overflow: hidden;
   touch-action: pan-y;
 }
 
@@ -188,9 +349,9 @@ body.vi-dyslexia-font .settings-panel {
    *
    * `position: relative` anchors the absolutely-positioned
    * `.reader-active-line` overlay against this container so its
-   * inline `top` / `height` (in CSS pixels) resolve against the
-   * page's content area — the same coordinate space the FFI
-   * normalises each `LineBox.top` into. */
+   * inline `top` / `height` resolve against the page's content
+   * area — the same coordinate space the FFI normalises each
+   * `LineBox.top` into. */
   position: relative;
   height: 100%;
 }
@@ -201,108 +362,232 @@ body.vi-dyslexia-font .settings-panel {
    * `LineBox`; CSS handles the smooth glide between rows when the
    * engine ticks across a line boundary.
    *
-   * Anchored to the full width of `.reader-page-content` (its
-   * positioned ancestor) so a partial last line on a row still
-   * reads as "this whole row is active" rather than as a band
-   * that ends mid-text. `pointer-events: none` keeps the overlay
-   * from intercepting taps that should reach the words underneath.
+   * Anchored to the full width of `.reader-page-content` so a
+   * partial last line on a row still reads as "this whole row is
+   * active" rather than as a band that ends mid-text.
+   * `pointer-events: none` keeps the overlay from intercepting
+   * taps that should reach the words underneath.
    *
-   * The background colour is a warm low-opacity tint that sits
-   * subtly behind the prose — well below 10% per the design spec.
-   * The exact rgba is independent of the dark/light palette
-   * because the overlay's job is to *suggest* a focus row, not to
-   * carry contrast on its own. */
+   * `--vi-accent-line` is a warm low-opacity tint of the copper
+   * accent so the overlay reads as part of the warm palette
+   * rather than as a generic yellow highlight. */
   position: absolute;
   left: 0;
   right: 0;
-  background-color: rgba(255, 196, 130, 0.06);
-  border-radius: 2px;
+  background-color: var(--vi-accent-line);
+  border-radius: 3px;
   pointer-events: none;
-  transition: top 250ms ease, height 250ms ease;
+  transition: top 250ms ease, height 250ms ease,
+              background-color var(--vi-theme-transition);
 }
 
 body.vi-reduced-motion .reader-active-line {
-  /* Reduced motion: the glide collapses to a snap. The overlay
-   * still appears, but it teleports between rows rather than
-   * sliding — matching the rest of the reader's reduced-motion
-   * behaviour (sentence fades, settings toggles). */
-  transition: none;
+  transition: background-color var(--vi-theme-transition);
 }
 
 .reader-preparing {
   /* Shown inside `.reader-page-content` between `TextLoaded` and the
    * first `ParagraphsMeasured` dispatch, while paragraph heights are
-   * being measured. Replaced by the first rendered page once pages
-   * are available. */
+   * being measured. */
   color: var(--vi-fg-muted);
 }
 
-.reader-control-bar {
-  /* Pinned to the bottom of `.reader-text` with `flex: 0 0 auto`.
-   * Houses the page indicator on the left and a settings gear on the
-   * right. The bar replaces the older `.reader-page-indicator`
-   * placement; touch handlers live on `.reader-page`, not here, so
-   * tapping the gear cannot register as a swipe. */
+/* ---------------------------------------------------------------------
+ * Bottom bar — mode-aware
+ * --------------------------------------------------------------------- */
+
+.reader-bottom-bar {
+  /* Both modes share the outer frame: thin border above, bg colour
+   * to match the rest of the chrome, safe-area-bottom padding so
+   * the home-indicator strip on notched phones doesn't overlap
+   * the buttons. */
   flex: 0 0 auto;
+  background-color: var(--vi-bg);
+  border-top: 1px solid var(--vi-surface-border);
+  padding-bottom: var(--vi-safe-bottom);
+  z-index: 10;
+  transition: background-color var(--vi-theme-transition),
+              border-color var(--vi-theme-transition);
+}
+
+.reader-bottom-manual {
+  /* Manual mode: [↩ Undo]  Page X of Y  [Turn Page →]
+   * The undo button left-aligns, the page label centres in the
+   * remaining space, the turn-page button right-aligns and uses
+   * the inverted (primary) styling so the eye is drawn to it. */
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 0.5rem 0 1rem 0;
-  min-height: var(--vi-tap-target);
-  color: var(--vi-fg-muted);
-  font-size: 0.85rem;
-  letter-spacing: 0.04em;
+  height: 72px;
+  padding: 0 16px;
+  gap: 10px;
 }
 
-.reader-page-indicator {
-  /* Flex child of `.reader-control-bar`. Centred horizontally inside
-   * its half of the bar so the visual centre matches the older
-   * indicator-only layout — the gear sits to the right and the
-   * indicator carries the left/centre weight. */
-  flex: 1 1 auto;
-  text-align: center;
-  color: var(--vi-fg-muted);
-}
-
-.reader-settings-button {
-  /* The gear-icon toggle. ≥ 44 × 44 CSS pixels per Apple HIG so a
-   * thumb can hit it cleanly. The visual icon is a unicode glyph —
-   * good enough for one shot; a later quest can swap it for an
-   * inline SVG if iconography becomes a theme concern. */
+.btn-bar {
+  /* Pill button used on the manual bottom bar. The default state
+   * is muted — same surface as the rest of the chrome. The
+   * `.btn-bar.primary` modifier inverts to draw the eye toward
+   * the page-turn affordance. */
   flex: 0 0 auto;
-  min-width: var(--vi-tap-target);
-  min-height: var(--vi-tap-target);
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  background-color: var(--vi-surface);
   border: 1px solid var(--vi-surface-border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--vi-fg);
-  font-size: 1.2rem;
-  line-height: 1;
+  border-radius: 10px;
+  padding: 0 16px;
+  height: 44px;
+  min-width: 80px;
+  color: var(--vi-fg-muted);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
-  /* Snap rather than a delayed visual feedback. The button is a tap
-   * toggle, not a hover surface. */
-  transition: background-color var(--vi-transition-duration) ease,
-              border-color var(--vi-transition-duration) ease;
+  gap: 5px;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--vi-chrome-transition),
+              background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition),
+              opacity 200ms,
+              transform 80ms;
 }
 
-.reader-settings-button:hover,
-.reader-settings-button:focus-visible {
-  background-color: var(--vi-focus-ring);
+.btn-bar:hover,
+.btn-bar:focus-visible {
+  color: var(--vi-fg);
   outline: none;
 }
+
+.btn-bar:active {
+  background-color: var(--vi-surface-border);
+  color: var(--vi-fg);
+  transform: scale(0.97);
+}
+
+.btn-bar:disabled {
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.btn-bar.primary {
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+  border-color: var(--vi-fg);
+}
+
+.btn-bar.primary:active {
+  opacity: 0.82;
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+}
+
+body.vi-reduced-motion .btn-bar {
+  transition: color var(--vi-chrome-transition),
+              background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition),
+              opacity 200ms;
+}
+
+body.vi-reduced-motion .btn-bar:active {
+  transform: none;
+}
+
+.reader-page-label {
+  /* Centred page indicator on the manual bottom bar. Sans-serif
+   * to read as chrome rather than prose. */
+  flex: 1 1 auto;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--vi-fg-muted);
+  text-align: center;
+}
+
+.reader-bottom-realtime {
+  /* Real-time mode: WPM readout (left), play/pause button (centre,
+   * 56px circle), balancing spacer (right). The spacer's width
+   * mirrors `.wpm-readout` so the play button sits perfectly
+   * centred in the bar. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 72px;
+  padding: 0 20px;
+  gap: 24px;
+}
+
+.wpm-readout {
+  flex: 0 0 auto;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--vi-fg-muted);
+  min-width: 60px;
+  text-align: right;
+}
+
+.btn-play {
+  /* Large 56px circle — the primary affordance in real-time mode.
+   * Inverted (bg = text colour) so it reads as "press me" against
+   * the warm chrome. When the engine is paused or stopped, the
+   * button picks up `.paused` and swaps to the copper accent —
+   * the reader sees a coloured ▶ as "ready to start". */
+  flex: 0 0 auto;
+  font-family: system-ui, sans-serif;
+  background-color: var(--vi-fg);
+  color: var(--vi-bg);
+  border: none;
+  border-radius: 50%;
+  width: 56px;
+  height: 56px;
+  font-size: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--vi-chrome-transition),
+              color var(--vi-chrome-transition),
+              opacity var(--vi-chrome-transition),
+              transform 80ms;
+}
+
+.btn-play.paused {
+  background-color: var(--vi-accent);
+  color: #ffffff;
+}
+
+.btn-play:active {
+  transform: scale(0.91);
+  opacity: 0.84;
+}
+
+body.vi-reduced-motion .btn-play {
+  transition: background-color var(--vi-chrome-transition),
+              color var(--vi-chrome-transition),
+              opacity var(--vi-chrome-transition);
+}
+
+body.vi-reduced-motion .btn-play:active {
+  transform: none;
+}
+
+.btn-play-spacer {
+  /* Mirrors `.wpm-readout` width so the play button sits centred
+   * between two equal-width siblings. */
+  flex: 0 0 auto;
+  min-width: 60px;
+}
+
+/* ---------------------------------------------------------------------
+ * Measurement mirror (off-screen)
+ * --------------------------------------------------------------------- */
 
 .reader-measurement {
   /* Off-screen mirror of `.reader-page-content`. `position: absolute`
    * removes it from the visible flow; `visibility: hidden` keeps it
    * in the layout tree (so heights compute) while making it
-   * invisible and non-interactive. Width matches the visible content
-   * area because the parent `.reader-text` already constrains both
-   * children identically. */
+   * invisible and non-interactive. Left/right insets match
+   * `.reader-page`'s `padding-x` so the measurement column has the
+   * same content-area width as the visible page, and paragraph
+   * wrap heights line up. */
   position: absolute;
   top: 0;
   left: var(--vi-reading-padding-x);
@@ -311,12 +596,15 @@ body.vi-reduced-motion .reader-active-line {
   pointer-events: none;
 }
 
+/* ---------------------------------------------------------------------
+ * Prose primitives
+ * --------------------------------------------------------------------- */
+
 .chapter-title {
   /* Chapter heading rendered as the first child of a `.page-paragraph`
-   * wrapper when `PageParagraph.chapter_title` is `Some(title)`. Because
-   * it lives inside a `flow-root` wrapper, its top/bottom margins are
-   * absorbed into the measured paragraph height and accounted for by the
-   * pagination engine. */
+   * wrapper when `PageParagraph.chapter_title` is `Some(title)`. Lives
+   * inside the `flow-root` wrapper so its top/bottom margins are
+   * absorbed into the measured paragraph height. */
   font-size: 1.4rem;
   font-weight: 600;
   margin: 1.5rem 0 1rem 0;
@@ -328,61 +616,40 @@ body.vi-reduced-motion .reader-active-line {
    * paragraph it precedes so they always page together. `flow-root`
    * establishes a block formatting context so the inner
    * `.chapter-title` and `.paragraph` margins are contained inside
-   * the wrapper rather than escaping through. That makes the
-   * wrapper's `getBoundingClientRect().height` equal to the actual
-   * vertical space the page occupies for this paragraph — including
-   * the 1.2rem trailing gap below the paragraph — which is what the
-   * pagination engine reads via `data-paragraph-global-index`. */
+   * the wrapper rather than escaping through. */
   display: flow-root;
   margin: 0;
 }
 
 .paragraph {
-  /* 1.2rem trailing gap between paragraphs. On `margin-bottom` so
-   * the `.page-paragraph` `flow-root` context absorbs it into the
-   * measured height — the pagination engine includes the gap in each
-   * paragraph's page budget, preventing content from overflowing page
-   * bottoms. */
+  /* 1.2rem trailing gap between paragraphs, included in the
+   * wrapper's measured height so pagination accounts for it. */
   margin: 0 0 1.2rem 0;
 }
 
 .sentence {
   display: inline;
-  /* Opacity is driven by the reducer's `erased` map: an erased
-   * sentence renders with an inline `style="opacity:..."`, an
-   * un-erased one has no inline opacity at all. The transition fades
-   * both directions — erase fades out, undo fades back in — so the
-   * exposure step reads visibly rather than snapping. The duration
-   * comes from `--vi-transition-duration` so the reduced-motion body
-   * class can collapse it to 0s without rewriting the rule. */
+  /* Opacity is driven by the reducer's `erased` map — erased
+   * sentences render with an inline `style="opacity:..."`. The
+   * transition fades both directions, and reduces to a snap under
+   * `vi-reduced-motion`. */
   transition: opacity var(--vi-transition-duration) ease;
 }
 
 .sentence-focused {
   /* Subtle warm tint marking the vim-keys cursor's current
-   * sentence. Kept low-contrast on purpose — this is a therapeutic
-   * reading app, and a hard highlight would compete with the prose
-   * for attention. `box-decoration-break: clone` paints the tint on
-   * every line a multi-line sentence wraps to instead of stretching
-   * one rectangle across the full inline run, so the cursor reads
-   * as "this sentence" rather than "this rectangle of empty space
-   * between the first and last words". */
-  background-color: var(--vi-focus-ring);
+   * sentence. `box-decoration-break: clone` paints the tint on
+   * every line a multi-line sentence wraps to so the cursor reads
+   * as "this sentence" rather than "this rectangle". */
+  background-color: var(--vi-hover);
   border-radius: 2px;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
 }
 
 .word {
-  /* Inline span so the reading flow wraps naturally. */
   display: inline;
-  /* Per-word opacity transition for the real-time fade engine.
-   * Words faded by the engine receive an inline `style="opacity:..."`
-   * (from `view_word` when `erased_words` contains the word's
-   * global_index); the transition turns that style change into a
-   * smooth fade rather than a snap. Same `--vi-transition-duration`
-   * the sentence-level rule reads, so the `vi-reduced-motion` body
-   * class collapses both rules to a snap in lock-step. */
+  /* Per-word opacity transition for the real-time fade engine. */
   transition: opacity var(--vi-transition-duration) ease;
 }
 
@@ -397,37 +664,57 @@ body.vi-reduced-motion .reader-active-line {
    * sliders, so there's no "save" button to miss). */
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 10;
+  background: rgba(0, 0, 0, 0.32);
+  z-index: 50;
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  transition: background-color var(--vi-theme-transition);
 }
 
 .settings-panel {
-  /* Bottom sheet — anchored to the bottom on mobile so the reader's
-   * thumb can reach the controls without stretching to the top of
-   * the screen. On wider viewports the max-width caps the sheet so
-   * it doesn't span the whole window. */
+  /* Bottom sheet styled to match the warm palette of the rest of
+   * the reader. Background reads as the page surface (not a
+   * separate `--vi-surface` chip) so the sheet feels like the
+   * page rising from below rather than a foreign object dropped
+   * on top. The 22px top corner radius is a touch softer than the
+   * older 16px — keeps the sheet from reading as a hard rectangle
+   * against the rounded phone bezel. */
   width: 100%;
   max-width: 520px;
-  background: var(--vi-surface);
+  background-color: var(--vi-bg);
   color: var(--vi-fg);
-  border: 1px solid var(--vi-surface-border);
-  border-radius: 16px 16px 0 0;
-  padding: 20px;
-  padding-bottom: calc(20px + env(safe-area-inset-bottom));
-  /* Backdrop blur so reader can still feel the page underneath the
-   * panel — purely decorative. Falls back gracefully on browsers
-   * without `backdrop-filter` support. */
+  border-top: 1px solid var(--vi-surface-border);
+  border-radius: 22px 22px 0 0;
+  padding: 10px 24px calc(28px + var(--vi-safe-bottom));
+  /* Backdrop blur so the reader can still feel the page underneath
+   * the panel — purely decorative. Falls back gracefully on
+   * browsers without `backdrop-filter` support. */
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  max-height: 80vh;
-  max-height: 80dvh;
+  gap: 18px;
+  max-height: 88vh;
+  max-height: 88dvh;
   overflow-y: auto;
+  transition: background-color var(--vi-theme-transition),
+              border-color var(--vi-theme-transition);
+}
+
+.settings-sheet-handle {
+  /* Small rounded bar at the top of the sheet — visual affordance
+   * that this is a draggable bottom sheet (the drag itself is not
+   * yet implemented; the handle is a hint for future work and a
+   * shape that matches the iOS / Material conventions readers
+   * already recognise). */
+  width: 36px;
+  height: 4px;
+  background-color: var(--vi-surface-border);
+  border-radius: 2px;
+  margin: 4px auto 18px;
+  flex: 0 0 auto;
+  transition: background-color var(--vi-theme-transition);
 }
 
 .settings-panel-header {
@@ -438,13 +725,19 @@ body.vi-reduced-motion .reader-active-line {
 }
 
 .settings-panel-title {
-  font-size: 1.05rem;
-  font-weight: 600;
+  /* Section-style heading — small caps, tracked-out letterspacing.
+   * Reads as "this region is settings" rather than as a page title. */
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 500;
+  color: var(--vi-fg-muted);
   margin: 0;
 }
 
 .settings-panel-close {
-  /* Tap target ≥ 44px. Glyph button — same idea as the gear. */
+  /* Glyph close button. ≥ 44px tap target. */
   min-width: var(--vi-tap-target);
   min-height: var(--vi-tap-target);
   border: 1px solid var(--vi-surface-border);
@@ -457,12 +750,40 @@ body.vi-reduced-motion .reader-active-line {
   align-items: center;
   justify-content: center;
   padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition),
+              transform 80ms;
+}
+
+.settings-panel-close:active {
+  background-color: var(--vi-surface);
+  transform: scale(0.97);
+}
+
+body.vi-reduced-motion .settings-panel-close {
+  transition: background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition);
+}
+
+body.vi-reduced-motion .settings-panel-close:active {
+  transform: none;
+}
+
+.settings-divider {
+  /* Thin warm divider between setting groups. The colour rides on
+   * `--vi-surface-border` so it picks up the right warm grey in
+   * both palettes. */
+  border: none;
+  border-top: 1px solid var(--vi-surface-border);
+  margin: 4px 0 0;
+  transition: border-color var(--vi-theme-transition);
 }
 
 .settings-row {
   /* One setting per row. Labels stack above the control so the
-   * control gets the full row width — critical for sliders that need
-   * a meaningful drag distance on a narrow phone screen. */
+   * control gets the full row width — critical for sliders that
+   * need a meaningful drag distance on a narrow phone screen. */
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -473,8 +794,17 @@ body.vi-reduced-motion .reader-active-line {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 0.9rem;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
+}
+
+.settings-row-header > span:first-child {
+  /* The label half of the row header. Slightly more emphasised
+   * than the muted value readout so the eye anchors on the name
+   * first. */
   color: var(--vi-fg);
+  font-weight: 500;
 }
 
 .settings-row-value {
@@ -485,7 +815,9 @@ body.vi-reduced-motion .reader-active-line {
 .settings-slider {
   /* Native range input. Min/max thumb size is implicit in the user
    * agent stylesheet, but we force a tall track so the tap target
-   * around the thumb reaches the 44px guidance. */
+   * around the thumb reaches the 44px guidance. `accent-color`
+   * tints the native slider in supporting browsers to the copper
+   * accent — no manual track/thumb styling needed. */
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
@@ -493,6 +825,7 @@ body.vi-reduced-motion .reader-active-line {
   background: transparent;
   cursor: pointer;
   margin: 0;
+  accent-color: var(--vi-accent);
 }
 
 .settings-slider:focus-visible {
@@ -502,13 +835,13 @@ body.vi-reduced-motion .reader-active-line {
 
 .settings-slider::-webkit-slider-runnable-track {
   height: 4px;
-  background: var(--vi-surface-border);
+  background-color: var(--vi-surface-border);
   border-radius: 2px;
 }
 
 .settings-slider::-moz-range-track {
   height: 4px;
-  background: var(--vi-surface-border);
+  background-color: var(--vi-surface-border);
   border-radius: 2px;
 }
 
@@ -518,7 +851,7 @@ body.vi-reduced-motion .reader-active-line {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--vi-fg);
+  background-color: var(--vi-accent);
   margin-top: -9px;
   border: none;
 }
@@ -527,13 +860,11 @@ body.vi-reduced-motion .reader-active-line {
   width: 22px;
   height: 22px;
   border-radius: 50%;
-  background: var(--vi-fg);
+  background-color: var(--vi-accent);
   border: none;
 }
 
 .settings-toggle {
-  /* Toggle row with the switch on the right of the label. Targets
-   * the same 44px tap area. */
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -542,25 +873,27 @@ body.vi-reduced-motion .reader-active-line {
 }
 
 .settings-toggle-label {
-  font-size: 0.95rem;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
   color: var(--vi-fg);
 }
 
 .settings-toggle-input {
-  /* Native checkbox styled as a 44 × 26 pill switch. Using the input
-   * directly (rather than a label-wrapping pattern) keeps keyboard
-   * focus and screen-reader semantics native. */
+  /* Native checkbox styled as a 46 × 28 pill switch. The off
+   * state uses `--vi-surface-border`; the on state uses the
+   * copper accent. */
   -webkit-appearance: none;
   appearance: none;
-  width: 44px;
-  height: 26px;
-  border-radius: 13px;
-  background: var(--vi-surface-border);
+  width: 46px;
+  height: 28px;
+  border-radius: 14px;
+  background-color: var(--vi-surface-border);
   position: relative;
   cursor: pointer;
-  transition: background-color var(--vi-transition-duration) ease;
+  transition: background-color 200ms ease;
   flex: 0 0 auto;
   margin: 0;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .settings-toggle-input::after {
@@ -568,15 +901,16 @@ body.vi-reduced-motion .reader-active-line {
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
-  background: var(--vi-fg);
-  transition: transform var(--vi-transition-duration) ease;
+  background-color: #ffffff;
+  transition: transform 200ms ease;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
 }
 
 .settings-toggle-input:checked {
-  background-color: var(--vi-focus-ring);
+  background-color: var(--vi-accent);
 }
 
 .settings-toggle-input:checked::after {
@@ -586,4 +920,9 @@ body.vi-reduced-motion .reader-active-line {
 .settings-toggle-input:focus-visible {
   outline: 2px solid var(--vi-focus-ring);
   outline-offset: 2px;
+}
+
+body.vi-reduced-motion .settings-toggle-input,
+body.vi-reduced-motion .settings-toggle-input::after {
+  transition: none;
 }

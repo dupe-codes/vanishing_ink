@@ -664,11 +664,17 @@ pub fn view_renders_measurement_container_and_preparing_when_pages_empty_test() 
 
 pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   // With pages calculated, the visible reading area renders only
-  // the current page's paragraphs and the page indicator reads the
-  // one-based current page out of the total. The measurement
-  // container is still in the DOM (with every paragraph, not just
-  // the current page's) so a subsequent resize can re-measure
-  // without rebuilding it.
+  // the current page's paragraphs and the manual-mode bottom bar's
+  // page label reads the one-based current page out of the total.
+  // The measurement container is still in the DOM (with every
+  // paragraph, not just the current page's) so a subsequent resize
+  // can re-measure without rebuilding it.
+  //
+  // Pinned alongside the page label: the reader header (with its
+  // back glyph, book title, and settings gear) and the manual
+  // bottom bar's undo / turn-page controls — these chrome surfaces
+  // are part of the visual-polish surface and a refactor that drops
+  // any of them should land here loudly.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   // Build a 3-page slice manually — one paragraph per page.
@@ -684,10 +690,27 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
 
   let rendered = client.view(model) |> element.to_string
 
+  // Header chrome — back button + book title + settings gear all
+  // appear in the top row.
+  assert string.contains(rendered, "class=\"reader-header\"")
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
+  assert string.contains(rendered, "aria-label=\"Open settings\"")
+  assert string.contains(rendered, "class=\"reader-title\"")
+
+  // Progress bar between header and content.
+  assert string.contains(rendered, "class=\"reader-progress-track\"")
+  assert string.contains(rendered, "class=\"reader-progress-fill\"")
+
+  // Page label lives in the manual-mode bottom bar.
   assert string.contains(
     rendered,
-    "<div class=\"reader-page-indicator\">Page 2 of 3</div>",
+    "<div class=\"reader-page-label\">Page 2 of 3</div>",
   )
+  assert string.contains(rendered, "class=\"reader-bottom-bar\"")
+  assert string.contains(rendered, "class=\"reader-bottom-manual\"")
+  assert string.contains(rendered, "Turn Page →")
+  assert string.contains(rendered, "↩ Undo")
+
   assert string.contains(rendered, "<div class=\"page\" data-page-index=\"1\">")
   // The visible page (#1) renders paragraph 1 — but not 0 or 2.
   assert string.contains(rendered, "data-paragraph-global-index=\"1\"")
