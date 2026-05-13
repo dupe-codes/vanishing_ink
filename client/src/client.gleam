@@ -1127,7 +1127,8 @@ fn apply_start_fade(model: Model) -> #(Model, Effect(Msg)) {
       // the first frame after Start, even when no `LinesMeasured`
       // tick has fired yet for this run (the boxes are still valid
       // because the page hasn't reflowed).
-      let started = Model(..with_next, active_line: resolve_active_line(with_next))
+      let started =
+        Model(..with_next, active_line: resolve_active_line(with_next))
       #(started, schedule_advance_word(word_interval_ms(model.wpm)))
     }
   }

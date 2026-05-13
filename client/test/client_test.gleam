@@ -38,12 +38,12 @@ import shared/segmenter.{
 }
 
 import client.{
-  type Model, AdvanceWord, EraseFocused, EraseSentence, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, Manual, Model, NextPage,
-  ParagraphsMeasured, PauseFade, Paused, RealTime, ResumeFade, Running,
-  SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
-  SetParagraphDelay, SetWpm, SpacePressed, StartFade, StopFade, Stopped,
-  TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  type LineBox, type Model, AdvanceWord, EraseFocused, EraseSentence, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, LineBox, LinesMeasured,
+  Manual, Model, NextPage, ParagraphsMeasured, PauseFade, Paused, RealTime,
+  ResumeFade, Running, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, StopFade,
+  Stopped, TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
   ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/gestures
@@ -2758,4 +2758,419 @@ pub fn view_settings_page_delay_slider_carries_bounds_test() {
   )
   assert string.contains(rendered, "value=\"2500\"")
   assert string.contains(rendered, "2500 ms")
+}
+
+// ---------------------------------------------------------------------------
+// Active-line overlay — fixtures
+// ---------------------------------------------------------------------------
+//
+// The overlay-side tests reuse the fade-engine fixtures (two short
+// paragraphs, two words each, word `global_index` 0..3) but populate
+// `line_boxes` directly so the reducer / view contracts can be
+// exercised without going through the JS measurement effect — which is
+// untestable from gleeunit on the JS target. Two boxes that map word
+// `[0, 1]` to line 0 and word `[2, 3]` to line 1 are enough to
+// distinguish "moved to a new line" from "stayed on the same line."
+
+fn fade_line_boxes() -> List(LineBox) {
+  [
+    LineBox(top: 0.0, height: 24.0, first_word_gi: 0, last_word_gi: 1),
+    LineBox(top: 28.0, height: 24.0, first_word_gi: 2, last_word_gi: 3),
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// update — LinesMeasured
+// ---------------------------------------------------------------------------
+
+pub fn update_lines_measured_stores_boxes_on_model_test() {
+  // The FFI has already converted its raw tuples into `LineBox`
+  // records by the time the reducer sees the dispatch, so the
+  // reducer's job is just to land them on the model. With no
+  // `next_word_index` to resolve against, `active_line` stays
+  // `None` — the lookup has no live target.
+  let prior = empty_model()
+
+  let #(updated, _effect) =
+    client.update(prior, LinesMeasured(boxes: fade_line_boxes()))
+
+  assert updated.line_boxes == fade_line_boxes()
+  assert updated.active_line == None
+}
+
+pub fn update_lines_measured_resolves_active_line_against_next_word_test() {
+  // Engine is running and pointing at word 2 — the first word of
+  // line 1 in `fade_line_boxes`. `LinesMeasured` lands the boxes
+  // and recomputes `active_line` against the existing
+  // `next_word_index`; the overlay should then snap to line 1.
+  let prior =
+    Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
+
+  let #(updated, _effect) =
+    client.update(prior, LinesMeasured(boxes: fade_line_boxes()))
+
+  assert updated.active_line == Some(1)
+}
+
+pub fn update_lines_measured_clears_active_line_when_word_not_in_any_line_test() {
+  // The reader manually erased the only sentence whose words land
+  // on the measured page (no word `global_index` matches
+  // `next_word_index`). LinesMeasured must clear `active_line`
+  // rather than guess — without this guard the overlay would
+  // render against a stale line position from a previous layout.
+  let stale_boxes = [
+    LineBox(top: 0.0, height: 24.0, first_word_gi: 10, last_word_gi: 11),
+  ]
+  let prior =
+    Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
+
+  let #(updated, _effect) =
+    client.update(prior, LinesMeasured(boxes: stale_boxes))
+
+  assert updated.line_boxes == stale_boxes
+  assert updated.active_line == None
+}
+
+pub fn update_lines_measured_with_empty_boxes_clears_active_line_test() {
+  // Mid-resize state: the page is reflowing and the measurement
+  // returned an empty box list. `active_line` must clear so the
+  // view's overlay renders nothing in the interim, rather than
+  // attempting to look up a stale index against an empty list.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, LinesMeasured(boxes: []))
+
+  assert updated.line_boxes == []
+  assert updated.active_line == None
+}
+
+// ---------------------------------------------------------------------------
+// update — line tracking through the fade engine
+// ---------------------------------------------------------------------------
+
+pub fn update_start_fade_resolves_active_line_against_measured_boxes_test() {
+  // Engine starts on a model whose `line_boxes` are already
+  // populated (the previous layout pass completed before
+  // `StartFade`). The first eligible word on page 0 is word 0,
+  // which lives on line 0 — that line's index should appear on
+  // `active_line` so the overlay paints on the first frame
+  // without waiting for a separate measurement tick.
+  let prior = Model(..fade_model(), line_boxes: fade_line_boxes())
+
+  let #(updated, _effect) = client.update(prior, StartFade)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(0)
+  assert updated.active_line == Some(0)
+}
+
+pub fn update_advance_word_moves_active_line_when_crossing_line_test() {
+  // Engine fades word 1 (last word of line 0) and the next
+  // eligible word is word 2 (first word of line 1). The reducer
+  // must re-resolve `active_line` against the unchanged
+  // `line_boxes` — the page hasn't reflowed within a page, so
+  // the existing boxes are still valid.
+  //
+  // The `fade_model_single_page` fixture packs both paragraphs
+  // onto one page so word 1 → word 2 is a within-page,
+  // cross-line transition; the boxes are valid for this layout.
+  let prior =
+    Model(
+      ..fade_model_single_page(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      erased_words: set.from_list([0]),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.next_word_index == Some(2)
+  assert updated.active_line == Some(1)
+}
+
+pub fn update_advance_word_clears_active_line_on_page_advance_test() {
+  // When the engine crosses a page boundary, the existing line
+  // geometry is invalidated — the new page's layout hasn't been
+  // measured yet. `active_line` clears (and `line_boxes` empties)
+  // so the overlay disappears for the single frame between the
+  // page render and the follow-up `LinesMeasured` tick.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      erased_words: set.from_list([0]),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, AdvanceWord)
+
+  assert updated.current_page == 1
+  assert updated.next_word_index == Some(2)
+  assert updated.line_boxes == []
+  assert updated.active_line == None
+}
+
+pub fn update_stop_fade_clears_active_line_test() {
+  // Stopping the engine drops the overlay alongside the timer —
+  // there's no target to track when the engine is dormant. The
+  // bitset state (`erased_words`) survives, but `active_line`
+  // resets to `None` so the overlay doesn't ghost on a row the
+  // reader is no longer at.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, StopFade)
+
+  assert updated.engine_state == Stopped
+  assert updated.active_line == None
+}
+
+pub fn update_pause_fade_keeps_active_line_visible_test() {
+  // Pause is the "show where the reader stopped" state — the
+  // overlay must remain visible at the current row so the reader
+  // can re-orient on resume. `active_line` and `next_word_index`
+  // both stay intact across the transition.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(2),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(1),
+    )
+
+  let #(updated, _effect) = client.update(prior, PauseFade)
+
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == Some(2)
+  assert updated.active_line == Some(1)
+}
+
+// ---------------------------------------------------------------------------
+// update — mode switching x active line
+// ---------------------------------------------------------------------------
+
+pub fn update_set_mode_manual_clears_active_line_test() {
+  // Switching back to Manual mode must drop the overlay alongside
+  // the engine — the highlight is a RealTime-only affordance, and
+  // a leftover overlay would mislead the reader about which row
+  // they're meant to focus on in Manual mode.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(1),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+
+  assert updated.mode == Manual
+  assert updated.engine_state == Stopped
+  assert updated.active_line == None
+}
+
+pub fn update_set_mode_manual_preserves_erased_words_and_sentences_test() {
+  // Both bitsets must survive a RealTime → Manual switch — the
+  // fade-engine's word-level erasures stay visible-as-gone, the
+  // sentence-level (manual) erasures coexist alongside. A future
+  // refactor that "tidies up" by clearing one or the other on the
+  // mode change would silently destroy the reader's progress.
+  let prior =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      erased_words: set.from_list([0, 1]),
+      erased: set.from_list([0]),
+    )
+
+  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+
+  assert updated.erased_words == set.from_list([0, 1])
+  assert updated.erased == set.from_list([0])
+}
+
+pub fn update_set_mode_realtime_preserves_erased_words_and_sentences_test() {
+  // Manual → RealTime is the inverse — sentence-level erasures
+  // accumulated via tap/click must remain visible-as-gone when
+  // the reader switches into the engine, and word-level erasures
+  // from a prior engine run (still cached on the model) must
+  // come along too.
+  let prior =
+    Model(
+      ..empty_model(),
+      mode: Manual,
+      erased: set.from_list([0]),
+      erased_words: set.from_list([2]),
+    )
+
+  let #(updated, _effect) = client.update(prior, SetMode(RealTime))
+
+  assert updated.mode == RealTime
+  assert updated.engine_state == Stopped
+  assert updated.erased == set.from_list([0])
+  assert updated.erased_words == set.from_list([2])
+}
+
+// ---------------------------------------------------------------------------
+// view — active-line overlay
+// ---------------------------------------------------------------------------
+
+pub fn view_omits_active_line_overlay_in_manual_mode_test() {
+  // The overlay is a fade-engine affordance — Manual-mode models
+  // must render no `.reader-active-line` markup. Pinning the
+  // class absence catches a regression that, say, forgot to gate
+  // on `mode == RealTime` and rendered the overlay as a phantom
+  // band on the Manual reader.
+  let model =
+    Model(
+      ..fade_model(),
+      mode: Manual,
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "reader-active-line")
+}
+
+pub fn view_omits_active_line_overlay_when_engine_stopped_test() {
+  // Stopped engine ⇒ no live target ⇒ no overlay. Pinning the
+  // class absence catches a regression where `active_line` is
+  // accidentally left populated after a Stop transition and the
+  // view renders a stale overlay.
+  let model =
+    Model(
+      ..fade_model(),
+      engine_state: Stopped,
+      line_boxes: fade_line_boxes(),
+      active_line: None,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "reader-active-line")
+}
+
+pub fn view_renders_active_line_overlay_when_engine_running_test() {
+  // Engine running + matched line ⇒ overlay rendered with the
+  // line's `top` and `height` inlined. The substring assertion
+  // pins both the class and the inline style values so a
+  // regression that drops either fails.
+  let model =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(0),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-active-line\"")
+  assert string.contains(rendered, "top:0.0px")
+  assert string.contains(rendered, "height:24.0px")
+  assert string.contains(rendered, "aria-hidden=\"true\"")
+}
+
+pub fn view_renders_active_line_overlay_when_engine_paused_test() {
+  // Paused engine keeps the overlay visible so the reader can see
+  // where they stopped — Pause is "freeze," not "hide." The
+  // overlay's top/height should still mirror the matched
+  // `LineBox`.
+  let model =
+    Model(
+      ..fade_model(),
+      engine_state: Paused,
+      next_word_index: Some(2),
+      line_boxes: fade_line_boxes(),
+      active_line: Some(1),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-active-line\"")
+  assert string.contains(rendered, "top:28.0px")
+}
+
+pub fn view_omits_active_line_overlay_when_line_boxes_empty_test() {
+  // Cross-page tick: the engine has a `next_word_index` for the
+  // new page but `line_boxes` is empty (LinesMeasured hasn't
+  // landed yet for the new layout). The view must render no
+  // overlay until the geometry comes back — a fallback render
+  // would anchor the band against the old page's `top` and
+  // flash before snapping.
+  let model =
+    Model(
+      ..fade_model(),
+      engine_state: Running,
+      next_word_index: Some(2),
+      line_boxes: [],
+      active_line: None,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "reader-active-line")
+}
+
+// ---------------------------------------------------------------------------
+// view — sentence erase subsumes contained words
+// ---------------------------------------------------------------------------
+
+pub fn view_sentence_level_erase_subsumes_word_level_opacity_test() {
+  // When a sentence is in `erased`, the sentence span carries
+  // `opacity:0` — CSS composes that with every descendant's
+  // opacity, so word spans inside the sentence render invisible
+  // regardless of what `erased_words` says about them
+  // individually. The view contract is therefore: a sentence's
+  // erasure visually covers all of its words, and the mode
+  // switch path can rely on this — a reader who erased a
+  // sentence in Manual mode and then watched the engine fade
+  // its words in RealTime mode sees no ghost flash on the
+  // sentence's words because the sentence's `opacity:0` already
+  // hides them.
+  //
+  // Asserting the sentence-level span carries `opacity:0;` pins
+  // that the sentence wrapper is the layer driving the erasure;
+  // the word-level transition is irrelevant once the parent
+  // collapses to zero opacity.
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      erased: set.from_list([0]),
+      erased_words: set.from_list([0]),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // Sentence 0 is the erased one; its span must carry the
+  // `opacity:0;` inline style. The substring pins the sentence
+  // wrapper as the carrier of the invisibility — the words
+  // inside inherit it through CSS opacity composition.
+  assert string.contains(
+    rendered,
+    "data-sentence-index=\"0\" style=\"opacity:0;\"",
+  )
 }
