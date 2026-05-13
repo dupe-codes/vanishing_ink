@@ -116,13 +116,15 @@ fn ensure_default_settings(
 // ---------------------------------------------------------------------------
 //
 // COLUMN-ORDER CONTRACT: the decoders below address row columns by
-// ordinal (`decode.field(0, ...)` etc.), so the `SELECT` column lists
-// in `list_books`, `get_book`, `get_reading_state`, `get_settings`, and
-// `update_settings` MUST match their corresponding decoders position
-// for position. Adding a column means appending it to both the SELECT
-// list and the decoder in the same order. The test suite covers a
-// round-trip of every field, which catches a mis-ordering as a value
-// mismatch on the changed field.
+// ordinal (`decode.field(0, ...)` etc.), so the `SELECT` (or `INSERT`
+// column-list) sites MUST match their corresponding decoders position
+// for position. Participants today: `list_books`, `get_book`,
+// `get_reading_state`, `get_settings`, `update_settings`,
+// `get_book_settings`, and `upsert_book_settings`. Adding a column
+// means appending it to both the column list and the decoder in the
+// same order. The test suite covers a round-trip of every field,
+// which catches a mis-ordering as a value mismatch on the changed
+// field.
 
 /// Insert a new book row. `uploaded_at` is supplied by the caller so
 /// request handlers can stamp the time once and tests can pass a fixed
