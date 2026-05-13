@@ -661,10 +661,25 @@ body.vi-reduced-motion .btn-play:active {
   /* Full-viewport scrim behind the settings panel. Tapping it closes
    * the panel without committing any settings change beyond what's
    * already happened (settings are applied live as the reader drags
-   * sliders, so there's no "save" button to miss). */
+   * sliders, so there's no "save" button to miss).
+   *
+   * Tint is warmed off neutral black so it leans into the reader's
+   * copper palette rather than reading as a foreign grey wash. The
+   * alpha stays low enough that the `backdrop-filter` blur below is
+   * visible through the tint. */
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.32);
+  background: rgba(28, 18, 12, 0.42);
+  /* Blur the reading surface behind the scrim so the panel feels
+   * like it rises out of the page rather than dropping in from
+   * nowhere. Applied here (and not on `.settings-panel`) because
+   * the panel's opaque `--vi-bg` background would paint over the
+   * blurred region pixel-for-pixel — `backdrop-filter` blurs what
+   * is behind the element, so it only renders against translucent
+   * surfaces. Falls back gracefully on browsers without
+   * `backdrop-filter` support. */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   z-index: 50;
   display: flex;
   align-items: flex-end;
@@ -687,11 +702,6 @@ body.vi-reduced-motion .btn-play:active {
   border-top: 1px solid var(--vi-surface-border);
   border-radius: 22px 22px 0 0;
   padding: 10px 24px calc(28px + var(--vi-safe-bottom));
-  /* Backdrop blur so the reader can still feel the page underneath
-   * the panel — purely decorative. Falls back gracefully on
-   * browsers without `backdrop-filter` support. */
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   display: flex;
   flex-direction: column;
   gap: 18px;
