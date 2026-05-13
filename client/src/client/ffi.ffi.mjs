@@ -10,6 +10,7 @@
  */
 
 import { Ok, Error as GleamError, toList } from "../gleam.mjs";
+import { NetworkError, HttpError } from "./ffi.mjs";
 
 const PARAGRAPH_INDEX_ATTRIBUTE = "data-paragraph-global-index";
 const WORD_INDEX_ATTRIBUTE = "data-global-index";
@@ -394,4 +395,80 @@ export function clear_word_timer() {
     clearTimeout(word_timer_id);
     word_timer_id = null;
   }
+}
+
+/**
+ * Issues a GET request and resolves `on_complete` with either the raw
+ * response body or a typed `FetchError`. The Gleam-side decoder runs
+ * over the returned string; keeping decoding off the FFI seam means
+ * one shape of FFI primitive serves every JSON endpoint regardless of
+ * payload structure.
+ *
+ * The implementation mirrors the `measure_paragraphs` pattern at the
+ * top of this file: every result value is constructed from the Gleam
+ * runtime classes (`Ok`, `GleamError`, and the `FetchError` variants
+ * imported from `./ffi.mjs`) so the value round-trips back into
+ * Gleam's type system without further coercion.
+ *
+ * @param {string} url Absolute or relative URL.
+ * @param {function(Ok<string>|GleamError): void} on_complete
+ */
+export function fetch_json_get(url, on_complete) {
+  do_fetch(url, undefined, on_complete);
+}
+
+/**
+ * POST counterpart to `fetch_json_get`. Sends `body` as the request
+ * payload with `Content-Type: application/json` and otherwise behaves
+ * identically. The caller is responsible for stringifying the body —
+ * we accept a `String` rather than a Gleam `json.Json` so the FFI
+ * stays oblivious to the payload's shape.
+ *
+ * @param {string} url Absolute or relative URL.
+ * @param {string} body JSON-encoded request body.
+ * @param {function(Ok<string>|GleamError): void} on_complete
+ */
+export function fetch_json_post(url, body, on_complete) {
+  do_fetch(
+    url,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body },
+    on_complete,
+  );
+}
+
+/**
+ * Shared implementation for `fetch_json_get` / `fetch_json_post`. The
+ * promise chain has three resolution points and each maps to one
+ * `FetchError` variant:
+ *
+ * 1. `fetch()` rejection → `NetworkError` (TypeError; DNS/CORS/offline).
+ * 2. Non-2xx response → `HttpError(status, body)` so the caller has
+ *    both the numeric code and any server-supplied error body for
+ *    surfacing through a toast or console.
+ * 3. Success → `Ok(body_string)`. Decoding stays in Gleam.
+ *
+ * `response.text()` itself can theoretically reject, but in practice
+ * only for aborted requests; we treat any second-phase rejection as
+ * a `NetworkError` so the caller sees a single failure surface.
+ *
+ * @param {string} url
+ * @param {RequestInit|undefined} init
+ * @param {function(Ok<string>|GleamError): void} on_complete
+ */
+function do_fetch(url, init, on_complete) {
+  window
+    .fetch(url, init)
+    .then((response) => {
+      return response.text().then((body) => {
+        if (!response.ok) {
+          on_complete(new GleamError(new HttpError(response.status, body)));
+          return;
+        }
+        on_complete(new Ok(body));
+      });
+    })
+    .catch((error) => {
+      const message = error && error.message ? String(error.message) : String(error);
+      on_complete(new GleamError(new NetworkError(message)));
+    });
 }

@@ -53,11 +53,11 @@ No doubt I now grew very pale; — but I talked more fluently, and with a height
 \u{201C}Villains!\u{201D} I shrieked, \u{201C}dissemble no more! I admit the deed! — tear up the planks! here, here! — It is the beating of his hideous heart!\u{201D}"
 
 /// Segment the bundled sample prose, encode it through `gleam_json`,
-/// and decode it back — handing back the structured tree that future
-/// HTTP wiring will deliver from the server. Calling at view time
-/// would re-run the segmenter and the JSON round trip on every
-/// render; callers should evaluate this once during application
-/// `init` and store the result on the model.
+/// and decode it back — handing back the structured tree the server
+/// now delivers from `GET /api/books/:id`. Retained as a
+/// well-shaped segmented-text fixture for the reducer tests; not
+/// wired into the production `init` since the library-view quest
+/// switched the client to a real server boot path.
 ///
 /// Panics if the encoder and decoder disagree on the segmented shape.
 /// That round-trip property is also exercised by

@@ -41,17 +41,21 @@ import shared/segmenter.{
 }
 
 import client.{
-  type LineBox, type Model, AdvanceWord, EraseFocused, EraseSentence, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, LineBox, LinesMeasured,
-  Manual, Model, NextPage, ParagraphsMeasured, PauseFade, Paused, RealTime,
-  ResumeFade, Running, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetWpm, SpacePressed, StartFade, Stopped,
-  TextLoaded, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  type LineBox, type Model, AdvanceWord, BookCreated, BookLoaded, BooksLoaded,
+  EraseFocused, EraseSentence, FocusNext, FocusParagraphDown, FocusParagraphUp,
+  FocusPrevious, GoToLibrary, LineBox, LinesMeasured, Manual, Model, NextPage,
+  OpenBook, ParagraphsMeasured, PauseFade, Paused, RealTime, ResumeFade, Running,
+  SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
+  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SpacePressed,
+  StartFade, Stopped, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, ViewportResized,
 }
+import client/ffi
 import client/gestures
 import client/pagination.{type Page, Page}
 import client/sample
+import client/types.{type BookMeta, BookMeta}
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -115,6 +119,22 @@ fn empty_model() -> Model {
     total_word_count: 0,
     current_chapter_title: "",
     total_pages: 0,
+    // Default the fixture to the `Reader` view so the long-standing
+    // reader-tree tests (which built models off this helper before
+    // the library view existed) continue to render the reader.
+    // Library-specific tests opt in by passing `view: client.Library`
+    // explicitly through `Model(..empty_model(), ...)`.
+    view: client.Reader,
+    books: [],
+    books_loading: False,
+    library_error: None,
+    active_book_id: None,
+    paste_title: "",
+    paste_text: "",
+    paste_submitting: False,
+    paste_error: None,
+    add_book_open: False,
+    created_book_segments: None,
   )
 }
 
@@ -691,12 +711,53 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
 // ---------------------------------------------------------------------------
 
 pub fn view_renders_loading_placeholder_when_text_is_none_test() {
-  let rendered = client.view(empty_model()) |> element.to_string
+  // `empty_model()` defaults to `view: Reader` so this test sees the
+  // reader's loading placeholder (rather than the library grid). The
+  // placeholder now carries a back glyph so a hung `fetch_book` does
+  // not strand the reader — verified via `lustre_query.has` instead
+  // of an HTML substring so a Lustre upgrade that reorders attributes
+  // doesn't break the test.
+  let rendered = client.view(empty_model())
 
-  assert rendered
-    == "<div class=\"reader\" id=\"vi-shell\">"
-    <> "<div class=\"reader-placeholder\">Loading...</div>"
-    <> "</div>"
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("reader-placeholder"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.aria("label", "Back to library"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("reader-placeholder-label"),
+  )
+}
+
+pub fn view_placeholder_back_button_dispatches_go_to_library_test() {
+  // Verifies the escape hatch from a hung `fetch_book`: with
+  // `text: None` the reader sits on the placeholder, and the back
+  // glyph must dispatch `GoToLibrary` (same Msg the populated
+  // reader's header back button uses) so the reader can return to
+  // the library without a page refresh. Clicking through `simulate`
+  // pins the click handler's actual Msg wiring — a reducer-level
+  // assertion would have stayed green if the on_click had been
+  // wired to a different Msg.
+  let app =
+    simulate.application(
+      init: fn(_) { #(empty_model(), effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  let back_button =
+    lustre_query.element(matching: lustre_query.aria("label", "Back to library"))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: back_button)
+    |> simulate.model
+
+  assert updated.view == client.Library
 }
 
 // ---------------------------------------------------------------------------
@@ -775,13 +836,9 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
 
   // Header chrome — back button + chapter title slot + settings
   // gear all appear in the top row. The back button's aria-label
-  // describes the action it dispatches today (`SetMode(Manual)`),
-  // not a future library-navigation behaviour.
+  // describes the action it dispatches today (`GoToLibrary`).
   assert string.contains(rendered, "class=\"reader-header\"")
-  assert string.contains(
-    rendered,
-    "aria-label=\"Switch to manual reading mode\"",
-  )
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, "class=\"reader-title\"")
 
@@ -3424,20 +3481,19 @@ pub fn default_line_spacing_matches_warm_palette_mock_test() {
 pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   // The header is rendered for every paginated view, regardless of
   // mode. It carries three slots:
-  // * Back glyph (`←`, aria "Switch to manual reading mode") —
-  //   describes the present handler (`SetMode(Manual)`), not the
-  //   future library navigation that Act 4 will rewire it to.
+  // * Back glyph (`←`, aria "Back to library") — dispatches
+  //   `GoToLibrary`, which stops any in-flight fade engine, clears
+  //   the reader's per-book scratch state, and flips
+  //   `model.view` back to `Library`.
   // * Chapter title slot (`.reader-title`) — driven from the
   //   current chapter's `Option(String)` title on the segmented
-  //   text. The two-chapter fixture's chapter 0 carries
-  //   `title: None`, so the slot renders empty; the sibling test
-  //   pins the populated case using chapter 1's `title: Some("Two")`.
+  //   text, falling back to the active book's title when the
+  //   chapter is untitled. With no `active_book_id` and no books,
+  //   the fallback also resolves to empty and the slot is bare.
+  //   The sibling tests pin the chapter-title case and the
+  //   book-title fallback case.
   // * Settings gear (`⚙`, aria "Open settings") — moved from the
   //   old `.reader-control-bar` into the header row.
-  // Once Act 4 lands library navigation the back button will
-  // dispatch a real back-Msg; until then it routes through
-  // `SetMode(Manual)`, which is idempotent in Manual mode and stops
-  // the fade engine in RealTime mode.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3454,19 +3510,76 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
 
   assert string.contains(rendered, "class=\"reader-header\"")
   assert string.contains(rendered, "class=\"reader-header-inner\"")
-  assert string.contains(
-    rendered,
-    "aria-label=\"Switch to manual reading mode\"",
-  )
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, ">←</button>")
-  // Chapter 0 has no title — the slot renders an empty element
-  // rather than inventing a string.
+  // Chapter 0 has no title; with `active_book_id: None` and empty
+  // `books`, the fallback also resolves to "" and the slot renders
+  // bare.
   assert string.contains(rendered, "<div class=\"reader-title\"></div>")
   // The previous "Pride and Prejudice · Austen" placeholder is
   // gone — the header must not render a hardcoded book title.
   assert !string.contains(rendered, "Pride and Prejudice")
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, ">⚙</button>")
+}
+
+pub fn view_reader_header_falls_back_to_book_title_when_chapter_untitled_test() {
+  // The Tell-Tale Heart bundled fixture (and every other book whose
+  // first chapter has `title: None`) would otherwise render the
+  // reader header with an empty centre slot: the chapter has no
+  // title to surface. The fallback looks up the active book in
+  // `model.books` by `model.active_book_id` and uses its `title`
+  // when the chapter title is empty. This keeps the chrome row
+  // informative on page 0 of every untitled-chapter book.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let meta = sample_book("book-x", "The Tell-Tale Heart", None)
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      // Chapter 0 has `title: None` → `current_chapter_title` is "";
+      // the fallback should pick up `meta.title`.
+      current_chapter_title: "",
+      active_book_id: Some("book-x"),
+      books: [meta],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "<div class=\"reader-title\">The Tell-Tale Heart</div>",
+  )
+}
+
+pub fn view_reader_header_prefers_chapter_title_over_book_title_test() {
+  // Sibling of the fallback test: when the current chapter *does*
+  // carry a title, the chapter title wins over the book title. The
+  // fallback only fires when `current_chapter_title == ""`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let meta = sample_book("book-x", "The Tell-Tale Heart", None)
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+      current_chapter_title: "Two",
+      active_book_id: Some("book-x"),
+      books: [meta],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
+  assert !string.contains(rendered, "The Tell-Tale Heart")
 }
 
 pub fn view_reader_header_renders_chapter_title_when_present_test() {
@@ -3999,21 +4112,17 @@ pub fn view_settings_sheet_carries_handle_and_dividers_test() {
   assert divider_chunks == 3
 }
 
-pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
+pub fn view_back_button_dispatches_go_to_library_when_clicked_test() {
   // Walks the rendered view tree, locates the back-glyph button by
   // its unique `aria-label`, and simulates a click on it. The
   // simulator routes the on_click payload through `client.update`,
   // so the resulting model state reflects whatever Msg the button
   // is *actually* wired to. The post-click assertions pin the
-  // `SetMode(Manual)` postconditions against a Running RealTime
-  // engine — any refactor that rewired the back button to a
-  // different Msg would change the resulting model state and fail
-  // this test, where a reducer-level assertion would have stayed
-  // green and let the regression through.
-  //
-  // The reducer-level postconditions exercised here are also
-  // covered by `apply_set_mode` / mode-switch tests elsewhere; the
-  // point of this test is the wiring, not the reduction.
+  // `GoToLibrary` postconditions against a Running RealTime engine —
+  // any refactor that rewired the back button to a different Msg
+  // would change the resulting model state and fail this test,
+  // where a reducer-level assertion would have stayed green and let
+  // the regression through.
   let prior =
     Model(
       ..fade_model_single_page(),
@@ -4030,17 +4139,752 @@ pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
     )
 
   let back_button =
-    lustre_query.element(matching: lustre_query.aria(
-      "label",
-      "Switch to manual reading mode",
-    ))
+    lustre_query.element(matching: lustre_query.aria("label", "Back to library"))
 
   let updated =
     simulate.start(app, Nil)
     |> simulate.click(on: back_button)
     |> simulate.model
 
-  assert updated.mode == Manual
+  assert updated.view == client.Library
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
+  assert updated.text == None
+}
+
+// ---------------------------------------------------------------------------
+// library — wire-format decoders
+// ---------------------------------------------------------------------------
+
+pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
+  // The wire shape mirrors `server/types.gleam:book_meta_to_json`
+  // field-for-field; a client decoder that silently dropped one of
+  // those fields would surface here as a decode failure.
+  let payload =
+    "{\"id\":\"book-1\",\"title\":\"Walden\",\"author\":\"Henry David Thoreau\","
+    <> "\"word_count\":7421,\"sentence_count\":523,"
+    <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
+    <> "\"last_read_at\":\"2026-04-02T08:14:00Z\"}"
+
+  let decoded = json.parse(payload, types.book_meta_decoder())
+
+  assert decoded
+    == Ok(BookMeta(
+      id: "book-1",
+      title: "Walden",
+      author: Some("Henry David Thoreau"),
+      word_count: 7421,
+      sentence_count: 523,
+      uploaded_at: "2026-04-01T12:00:00Z",
+      last_read_at: Some("2026-04-02T08:14:00Z"),
+    ))
+}
+
+pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
+  // Both `author` and `last_read_at` are `Option(String)` on the
+  // server. A freshly-uploaded book emits `null` for `last_read_at`,
+  // and the prompt input optionally carries the author; both must
+  // round-trip into `None`.
+  let payload =
+    "{\"id\":\"book-2\",\"title\":\"Untitled\",\"author\":null,"
+    <> "\"word_count\":0,\"sentence_count\":0,"
+    <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
+    <> "\"last_read_at\":null}"
+
+  let decoded = json.parse(payload, types.book_meta_decoder())
+
+  assert decoded
+    == Ok(BookMeta(
+      id: "book-2",
+      title: "Untitled",
+      author: None,
+      word_count: 0,
+      sentence_count: 0,
+      uploaded_at: "2026-04-01T12:00:00Z",
+      last_read_at: None,
+    ))
+}
+
+pub fn book_with_segments_decoder_decodes_a_get_by_id_payload_test() {
+  // `GET /api/books/:id` returns the full Book row plus the parsed
+  // segmenter tree. The decoder collapses both into a single
+  // `#(BookMeta, SegmentedText)` so the reducer can stamp the
+  // metadata and run the existing pagination chain off the segments
+  // in one arm.
+  let segments_json =
+    "{\"chapters\":[{\"index\":0,\"title\":null,\"paragraphs\":["
+    <> "{\"index\":0,\"sentences\":[{\"index\":0,\"global_index\":0,"
+    <> "\"words\":[{\"index\":0,\"global_index\":0,\"text\":\"Hi.\"}]}]}]}]}"
+
+  let payload =
+    "{\"id\":\"book-3\",\"title\":\"Hi\",\"author\":null,"
+    <> "\"word_count\":1,\"sentence_count\":1,"
+    <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
+    <> "\"last_read_at\":null,"
+    <> "\"raw_text\":\"Hi.\","
+    <> "\"segments\":"
+    <> segments_json
+    <> "}"
+
+  let decoded = json.parse(payload, types.book_with_segments_decoder())
+
+  let assert Ok(#(meta, segments)) = decoded
+  assert meta.id == "book-3"
+  assert meta.title == "Hi"
+  assert meta.word_count == 1
+  assert meta.author == None
+  // Segments round-trip exactly to what the server would have
+  // emitted via `segmenter.to_json` — the decoder reuses
+  // `segmenter.decoder()` so any change to the wire shape would
+  // surface as a failure in `shared/test/segmenter_test.gleam`
+  // before it reached here.
+  let assert SegmentedText(chapters: [chapter, ..]) = segments
+  let assert Chapter(paragraphs: [paragraph, ..], ..) = chapter
+  let assert Paragraph(sentences: [sentence, ..], ..) = paragraph
+  let assert Sentence(words: [word, ..], ..) = sentence
+  assert word.text == "Hi."
+}
+
+pub fn create_book_response_decoder_decodes_a_201_payload_test() {
+  // `POST /api/books` returns `{ "book", "segments" }`. The decoder
+  // peels both out together so the reducer can prepend to `books`
+  // and (in a future flow) jump straight into the reader without
+  // re-issuing a GET.
+  let segments_json =
+    "{\"chapters\":[{\"index\":0,\"title\":null,\"paragraphs\":["
+    <> "{\"index\":0,\"sentences\":[{\"index\":0,\"global_index\":0,"
+    <> "\"words\":[{\"index\":0,\"global_index\":0,\"text\":\"Ok.\"}]}]}]}]}"
+
+  let payload =
+    "{\"book\":{\"id\":\"book-4\",\"title\":\"New\",\"author\":null,"
+    <> "\"word_count\":1,\"sentence_count\":1,"
+    <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
+    <> "\"last_read_at\":null},"
+    <> "\"segments\":"
+    <> segments_json
+    <> "}"
+
+  let decoded = json.parse(payload, types.create_book_response_decoder())
+
+  let assert Ok(#(meta, segments)) = decoded
+  assert meta.id == "book-4"
+  assert meta.title == "New"
+  let assert SegmentedText(chapters: [_, ..]) = segments
+}
+
+// ---------------------------------------------------------------------------
+// library — describe_fetch_error
+// ---------------------------------------------------------------------------
+
+pub fn describe_fetch_error_renders_each_variant_as_a_sentence_test() {
+  // Each `FetchError` variant gets a human-readable rendering that
+  // can be dropped straight onto an error banner. Pinning these
+  // strings catches a refactor that accidentally exposes
+  // `string.inspect`-style structured output instead.
+  assert client.describe_fetch_error(ffi.NetworkError("offline"))
+    == "Could not reach the server: offline"
+  assert client.describe_fetch_error(ffi.NetworkError(""))
+    == "Could not reach the server."
+  assert client.describe_fetch_error(ffi.HttpError(404, "Not found"))
+    == "Server returned 404: Not found"
+  assert client.describe_fetch_error(ffi.HttpError(500, ""))
+    == "Server returned 500."
+  assert client.describe_fetch_error(ffi.DecodeError("bad shape"))
+    == "bad shape"
+}
+
+// ---------------------------------------------------------------------------
+// library — reducer (books)
+// ---------------------------------------------------------------------------
+
+fn sample_book(
+  id: String,
+  title: String,
+  last_read_at: option.Option(String),
+) -> BookMeta {
+  BookMeta(
+    id: id,
+    title: title,
+    author: None,
+    word_count: 100,
+    sentence_count: 10,
+    uploaded_at: "2026-04-01T12:00:00Z",
+    last_read_at: last_read_at,
+  )
+}
+
+pub fn update_books_loaded_ok_stores_books_and_clears_loading_flag_test() {
+  let prior =
+    Model(..empty_model(), books_loading: True, library_error: Some("stale"))
+  let books = [sample_book("a", "Alpha", None), sample_book("b", "Beta", None)]
+
+  let #(updated, _effect) = client.update(prior, BooksLoaded(Ok(books)))
+
+  // Asserting the whole model pins all three reducer-driven
+  // transitions in one place (books landed, `books_loading` cleared,
+  // `library_error` cleared) and also catches the regression class
+  // field-level assertions miss — any field the reducer is *not*
+  // meant to touch but starts touching would surface here.
+  assert updated == Model(..empty_model(), books: books)
+}
+
+pub fn update_books_loaded_error_unsets_loading_and_surfaces_error_test() {
+  let prior = Model(..empty_model(), books_loading: True)
+
+  let #(updated, _effect) =
+    client.update(prior, BooksLoaded(Error(ffi.NetworkError("offline"))))
+
+  assert updated
+    == Model(
+      ..empty_model(),
+      library_error: Some("Could not reach the server: offline"),
+    )
+}
+
+pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
+  // BookLoaded success delegates the per-text reset to the same
+  // `apply_text_load` helper TextLoaded uses (flat_paragraphs cache,
+  // total counts, reset undo / focus / line boxes / bitsets) and
+  // additionally flips `view` to `Reader`, records the active book
+  // id, clears `library_error`, and resets the fade engine.
+  //
+  // `two_chapter_text()` carries exactly 3 sentences and 5 words —
+  // pinning the totals to the literal integers (rather than `> 0`)
+  // would catch a regression where `total_counts` started counting
+  // chapters or paragraphs instead, which an inequality cannot.
+  // `books_loading: True` is preserved (the reducer does not touch
+  // it), so the whole-model assertion carries it through too.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Library,
+      books_loading: True,
+      library_error: Some("old"),
+    )
+  let text = two_chapter_text()
+  let meta = sample_book("book-x", "X", None)
+
+  let #(updated, _effect) = client.update(prior, BookLoaded(Ok(#(meta, text))))
+
+  assert updated
+    == Model(
+      ..empty_model(),
+      books_loading: True,
+      active_book_id: Some("book-x"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_sentence_count: 3,
+      total_word_count: 5,
+    )
+}
+
+pub fn update_book_loaded_error_returns_to_library_with_error_message_test() {
+  let prior = Model(..empty_model(), view: client.Reader)
+
+  let #(updated, _effect) =
+    client.update(prior, BookLoaded(Error(ffi.HttpError(404, "missing"))))
+
+  assert updated
+    == Model(
+      ..empty_model(),
+      view: client.Library,
+      library_error: Some("Server returned 404: missing"),
+    )
+}
+
+pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
+  // The POST response carries the new metadata; the reducer
+  // prepends it to `books`, clears the paste form so a quick second
+  // add starts blank, closes the sheet, and stashes the segmented
+  // payload in `created_book_segments` so an immediate open of the
+  // freshly-created book can skip the duplicate GET. The reader
+  // stays in the library — the reader experience is not interrupted
+  // by the upload. Asserting the whole model in one shot pins
+  // "view stays in `Library`" and "cache slot is populated with the
+  // exact (meta, segments) pair the POST decoded" alongside the
+  // form-clearing assertions.
+  let existing = sample_book("a", "Alpha", None)
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Library,
+      books: [existing],
+      paste_title: "Beta",
+      paste_text: "lorem",
+      paste_submitting: True,
+      paste_error: Some("stale"),
+      add_book_open: True,
+    )
+  let new_meta = sample_book("b", "Beta", None)
+  let text = two_chapter_text()
+
+  let #(updated, _effect) =
+    client.update(prior, BookCreated(Ok(#(new_meta, text))))
+
+  assert updated
+    == Model(
+      ..empty_model(),
+      view: client.Library,
+      books: [new_meta, existing],
+      created_book_segments: Some(#(new_meta, text)),
+    )
+}
+
+pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
+  // When `BookCreated(Ok(_))` has stashed segments for book id `x`
+  // and the reader immediately opens `x`, the reducer applies the
+  // cached payload directly through `apply_book_loaded` rather than
+  // dispatching `fetch_book(x)`. The cache slot is cleared on
+  // consumption so a later re-open of the same id falls through to
+  // a real fetch (the cache is single-shot, not a persistent
+  // memory). Asserting the whole post-state pins both the
+  // text-loaded fields a real BookLoaded would have stamped
+  // (`text: Some(segments)`, `flat_paragraphs` cached, totals
+  // computed) and the cache-clear in one equality.
+  let meta = sample_book("x", "X", None)
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..library_model(),
+      books: [meta],
+      created_book_segments: Some(#(meta, text)),
+    )
+
+  let #(updated, _effect) = client.update(prior, OpenBook("x"))
+
+  assert updated
+    == Model(
+      ..library_model(),
+      books: [meta],
+      view: client.Reader,
+      active_book_id: Some("x"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_sentence_count: 3,
+      total_word_count: 5,
+      created_book_segments: None,
+    )
+}
+
+pub fn update_open_book_with_mismatched_cache_id_dispatches_fetch_test() {
+  // The cache slot is keyed by id: a stashed payload for book `a`
+  // does not satisfy `OpenBook("b")`. The reducer falls through to
+  // the real-fetch path (flips the view, clears the library error),
+  // and the cache slot is preserved — a subsequent `OpenBook("a")`
+  // would still hit. Pinning this guards against a future
+  // refactor that drops the id comparison and serves the wrong
+  // book's segments.
+  let cached_meta = sample_book("a", "Alpha", None)
+  let other_meta = sample_book("b", "Beta", None)
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..library_model(),
+      books: [other_meta, cached_meta],
+      library_error: Some("stale"),
+      created_book_segments: Some(#(cached_meta, text)),
+    )
+
+  let #(updated, _effect) = client.update(prior, OpenBook("b"))
+
+  assert updated
+    == Model(
+      ..library_model(),
+      books: [other_meta, cached_meta],
+      view: client.Reader,
+      library_error: None,
+      created_book_segments: Some(#(cached_meta, text)),
+    )
+}
+
+pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_title: "Beta",
+      paste_text: "lorem",
+      paste_submitting: True,
+    )
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      BookCreated(Error(ffi.HttpError(400, "title must not be empty"))),
+    )
+
+  // The form is left populated (`paste_title` / `paste_text` carry
+  // through) so the reader can correct and retry; submission is
+  // cleared and the error is surfaced.
+  assert updated
+    == Model(
+      ..empty_model(),
+      paste_title: "Beta",
+      paste_text: "lorem",
+      paste_error: Some("Server returned 400: title must not be empty"),
+    )
+}
+
+pub fn update_open_book_flips_view_to_reader_test() {
+  let prior =
+    Model(..empty_model(), view: client.Library, library_error: Some("stale"))
+
+  let #(updated, _effect) = client.update(prior, OpenBook("book-x"))
+
+  // empty_model() defaults to `view: Reader` and `library_error:
+  // None`, so the whole-model equality also pins "OpenBook clears
+  // any prior fetch error" alongside the view flip.
+  assert updated == empty_model()
+}
+
+pub fn update_open_book_dispatches_fetch_book_effect_test() {
+  // OpenBook's *entire* purpose is to chain `fetch_book(id)` onto
+  // the view flip — without the effect, the reader sits forever on
+  // the placeholder. `lustre/dev/simulate` deliberately discards
+  // effects (see its module docs: "simulated apps do not run any
+  // effects!"), so we cannot run the fetch inside the simulator;
+  // what we *can* do is verify the click path off a real book card
+  // dispatches `OpenBook(id)` with the correct id all the way
+  // through `client.update` and `client.view`. A wiring regression
+  // that swapped `event.on_click(OpenBook(book.id))` for any other
+  // Msg (or for the wrong id) would change the post-click model
+  // state and fail this test, where a reducer-level dispatch test
+  // sees only the Msg the test itself synthesised.
+  let book = sample_book("book-x", "X", None)
+  let prior = Model(..library_model(), books: [book])
+
+  let app =
+    simulate.application(
+      init: fn(_) { #(prior, effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  // The grid card carries `aria-label="Open <title>"` — selecting
+  // by that label tests the same node the reader's tap would hit.
+  let card =
+    lustre_query.element(matching: lustre_query.aria("label", "Open X"))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: card)
+    |> simulate.model
+
+  assert updated == Model(..library_model(), books: [book], view: client.Reader)
+}
+
+pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+      text: Some(text),
+      pages: [Page(index: 0, paragraphs: [])],
+      current_page: 0,
+      erased: set.from_list([1]),
+      erased_words: set.from_list([1]),
+      focused_sentence: Some(0),
+      active_book_id: Some("book-x"),
+      total_sentence_count: 12,
+      total_word_count: 99,
+    )
+
+  let #(updated, _effect) = client.update(prior, GoToLibrary)
+
+  // GoToLibrary returns to a fully cleared reader state with only
+  // the user's `mode` preference preserved — every other field on
+  // the prior model is reset to its `empty_model()` default.
+  // Asserting the whole model in one shot catches a regression that
+  // forgot to clear any field (the exact class of bug field-level
+  // assertions invite) and also pins "mode preserved" against the
+  // same equality the per-field clears ride on.
+  assert updated == Model(..empty_model(), view: client.Library, mode: RealTime)
+}
+
+pub fn update_toggle_add_book_flips_sheet_and_clears_error_on_open_test() {
+  let prior =
+    Model(..empty_model(), add_book_open: False, paste_error: Some("old"))
+
+  let #(updated, _effect) = client.update(prior, ToggleAddBook)
+
+  assert updated.add_book_open == True
+  // Opening the sheet should clear the prior error so the form
+  // starts fresh.
+  assert updated.paste_error == None
+}
+
+pub fn update_toggle_add_book_closes_sheet_without_clearing_error_test() {
+  let prior =
+    Model(..empty_model(), add_book_open: True, paste_error: Some("keep"))
+
+  let #(updated, _effect) = client.update(prior, ToggleAddBook)
+
+  assert updated.add_book_open == False
+  // Closing leaves the prior error untouched — the user is
+  // dismissing the surface, not acknowledging the message.
+  assert updated.paste_error == Some("keep")
+}
+
+pub fn update_set_paste_title_writes_value_and_clears_error_test() {
+  let prior = Model(..empty_model(), paste_error: Some("old"))
+
+  let #(updated, _effect) = client.update(prior, SetPasteTitle("My Book"))
+
+  assert updated.paste_title == "My Book"
+  assert updated.paste_error == None
+}
+
+pub fn update_set_paste_text_writes_value_and_clears_error_test() {
+  let prior = Model(..empty_model(), paste_error: Some("old"))
+
+  let #(updated, _effect) = client.update(prior, SetPasteText("hello world"))
+
+  assert updated.paste_text == "hello world"
+  assert updated.paste_error == None
+}
+
+pub fn update_submit_paste_with_empty_title_sets_error_and_does_not_submit_test() {
+  let prior =
+    Model(..empty_model(), paste_title: "   ", paste_text: "lorem ipsum")
+
+  let #(updated, _effect) = client.update(prior, SubmitPaste)
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error == Some("Please add a title.")
+}
+
+pub fn update_submit_paste_with_empty_text_sets_error_and_does_not_submit_test() {
+  let prior = Model(..empty_model(), paste_title: "Walden", paste_text: "   ")
+
+  let #(updated, _effect) = client.update(prior, SubmitPaste)
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error == Some("Please paste some text.")
+}
+
+pub fn update_submit_paste_with_valid_input_marks_submitting_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_title: "Walden",
+      paste_text: "lorem ipsum",
+      paste_error: Some("stale"),
+    )
+
+  let #(updated, _effect) = client.update(prior, SubmitPaste)
+
+  assert updated.paste_submitting == True
+  assert updated.paste_error == None
+}
+
+// ---------------------------------------------------------------------------
+// library — view rendering
+// ---------------------------------------------------------------------------
+
+fn library_model() -> Model {
+  Model(..empty_model(), view: client.Library)
+}
+
+pub fn view_library_renders_appbar_with_wordmark_test() {
+  let rendered = client.view(library_model()) |> element.to_string
+
+  assert string.contains(rendered, "class=\"lib-appbar\"")
+  assert string.contains(rendered, "class=\"app-wordmark\"")
+  assert string.contains(rendered, "Vanishing Ink")
+}
+
+pub fn view_library_renders_empty_state_when_no_books_test() {
+  // `books: []` + `books_loading: False` → the empty-state copy is
+  // the only thing in the body (beyond the hero, which is hidden
+  // when there is no read book). The FAB is still rendered so the
+  // user can open the sheet.
+  let rendered = client.view(library_model()) |> element.to_string
+
+  assert string.contains(rendered, "class=\"lib-empty\"")
+  assert string.contains(rendered, "Your library is empty.")
+  assert string.contains(rendered, "class=\"fab\"")
+  assert string.contains(rendered, "aria-label=\"Add book\"")
+  // Hero is absent.
+  assert !string.contains(rendered, "class=\"hero-card")
+}
+
+pub fn view_library_renders_loading_state_when_loading_test() {
+  let model = Model(..library_model(), books_loading: True)
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"lib-loading\"")
+  assert string.contains(rendered, "Loading your library")
+  // No grid / empty-state competes for the slot.
+  assert !string.contains(rendered, "class=\"lib-empty\"")
+  assert !string.contains(rendered, "class=\"book-grid\"")
+}
+
+pub fn view_library_renders_grid_when_books_present_test() {
+  let model =
+    Model(..library_model(), books: [
+      sample_book("a", "Alpha", None),
+      sample_book("b", "Beta", None),
+    ])
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"book-grid\"")
+  assert string.contains(rendered, "class=\"book-card\"")
+  assert string.contains(rendered, "aria-label=\"Open Alpha\"")
+  assert string.contains(rendered, "aria-label=\"Open Beta\"")
+  assert string.contains(rendered, "Your Library")
+  // No hero — none of the books have a `last_read_at`.
+  assert !string.contains(rendered, "class=\"hero-card")
+}
+
+pub fn view_library_renders_hero_for_most_recently_read_book_test() {
+  // Three books — one read recently, one read longer ago, one
+  // never read. The hero pulls the most-recent reader; the grid
+  // shows the remaining two so the same card never appears twice.
+  let recent = sample_book("a", "Recent", Some("2026-04-10T00:00:00Z"))
+  let older = sample_book("b", "Older", Some("2026-04-01T00:00:00Z"))
+  let unread = sample_book("c", "Unread", None)
+  let model = Model(..library_model(), books: [unread, older, recent])
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"hero-card\"")
+  assert string.contains(rendered, "aria-label=\"Continue reading Recent\"")
+  assert string.contains(rendered, "class=\"hero-title\">Recent")
+  // The grid below carries the remaining titles but not the hero.
+  assert string.contains(rendered, "aria-label=\"Open Older\"")
+  assert string.contains(rendered, "aria-label=\"Open Unread\"")
+  // Recent only appears once (in the hero card) — not duplicated
+  // into the grid.
+  let recent_chunks = string.split(rendered, "aria-label=\"Open Recent\"")
+  assert list.length(recent_chunks) == 1
+}
+
+pub fn view_library_renders_error_banner_when_library_error_present_test() {
+  let model =
+    Model(..library_model(), library_error: Some("Could not reach the server."))
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"lib-error\"")
+  assert string.contains(rendered, "Could not reach the server.")
+}
+
+pub fn view_library_does_not_render_sheet_when_closed_test() {
+  let rendered = client.view(library_model()) |> element.to_string
+
+  assert !string.contains(rendered, "class=\"sheet-overlay open\"")
+  assert !string.contains(rendered, "class=\"bottom-sheet\"")
+}
+
+pub fn view_library_renders_add_book_sheet_when_open_test() {
+  let model = Model(..library_model(), add_book_open: True)
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
+
+  assert string.contains(rendered_string, "class=\"sheet-overlay open\"")
+  assert string.contains(rendered_string, "class=\"bottom-sheet\"")
+  assert string.contains(
+    rendered_string,
+    "class=\"add-sheet-title\">Add a Book",
+  )
+  assert string.contains(rendered_string, "class=\"paste-input\"")
+  assert string.contains(rendered_string, "class=\"paste-area\"")
+  // Submit starts disabled (empty form). The selector composes
+  // `class="btn-add-book"` with `[disabled]` directly against the
+  // rendered tree rather than asserting a substring like
+  // `aria-label="Add to library" class="btn-add-book" disabled`,
+  // which coupled the test to Lustre's alphabetical attribute
+  // serialisation. `lustre_query.and` traverses the parsed tree and
+  // survives a Lustre upgrade that reorders attributes.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+pub fn view_library_add_book_button_enables_when_form_is_filled_test() {
+  let model =
+    Model(
+      ..library_model(),
+      add_book_open: True,
+      paste_title: "Walden",
+      paste_text: "lorem",
+    )
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
+
+  // The `.btn-add-book` element is present and *not* disabled. The
+  // tree-walk selector replaces a fragile attribute-order substring
+  // — Lustre's HTML serialiser sorts attributes alphabetically
+  // today, but the structural property the test cares about is
+  // "the button exists and carries no `disabled` attribute,"
+  // independent of how it serialises.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book"),
+  )
+  assert !lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+  assert string.contains(rendered_string, "Add to Library")
+}
+
+pub fn view_library_add_book_button_shows_submitting_label_test() {
+  let model =
+    Model(
+      ..library_model(),
+      add_book_open: True,
+      paste_title: "Walden",
+      paste_text: "lorem",
+      paste_submitting: True,
+    )
+  let rendered_string = client.view(model) |> element.to_string
+  let rendered_tree = client.view(model)
+
+  assert string.contains(rendered_string, "Adding")
+  // Button remains disabled while in flight to block double-submits.
+  // The composed selector survives a Lustre upgrade that reorders
+  // attributes, where the prior substring did not.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// library — cover colour palette
+// ---------------------------------------------------------------------------
+
+pub fn cover_color_for_title_is_deterministic_test() {
+  // The colour is a stable hash of the title — two calls with the
+  // same input always return the same hex. Pinning this keeps a
+  // future refactor that introduced randomness or wall-clock
+  // dependency from making the library re-paint every render.
+  let one = client.cover_color_for_title("The Tell-Tale Heart")
+  let two = client.cover_color_for_title("The Tell-Tale Heart")
+  assert one == two
+}
+
+pub fn cover_color_for_title_returns_a_palette_color_test() {
+  // Every result must be one of the pre-baked palette hexes — the
+  // FFI/CSS never has to reason about an unbounded colour space.
+  // The palette is read from `client.cover_colors` so a future
+  // palette change updates one source of truth; a duplicated
+  // literal palette would silently drift if the production list
+  // gained or lost a swatch.
+  let titles = [
+    "Walden", "Meditations", "Crime and Punishment", "The Stranger",
+    "Pride and Prejudice", "The Iliad", "Faust", "Ulysses",
+  ]
+
+  titles
+  |> list.each(fn(title) {
+    let color = client.cover_color_for_title(title)
+    assert list.contains(client.cover_colors, color)
+  })
 }

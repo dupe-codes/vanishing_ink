@@ -3,10 +3,13 @@
 //// of a `SegmentedText` at a time, paginated against actual DOM
 //// dimensions instead of character-count estimates.
 ////
-//// The scaffold loads a hardcoded sample text at init — the HTTP
-//// client is intentionally absent (see the `gleam.toml` note on
-//// `lustre_http`) so a later quest will replace the sample wiring
-//// with a real server request without changing the message shape.
+//// The app boots into the library view: `init` dispatches
+//// `fetch_books()` to populate the grid from `GET /api/books`, and
+//// the reader is reached by tapping a book card, which dispatches
+//// `OpenBook(id)` and chains `fetch_book(id)` to land a
+//// `BookLoaded` payload. The HTTP primitives live in
+//// `client/ffi.gleam` (bespoke FFI rather than `lustre_http`; see
+//// the `gleam.toml` note for the version-pin context).
 ////
 //// Pagination flow on first paint and on every viewport resize:
 ////
@@ -39,8 +42,11 @@ import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/io
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
+import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import lustre
@@ -54,7 +60,7 @@ import client/ffi
 import client/gestures
 import client/navigation
 import client/pagination.{type Page, type PageParagraph}
-import client/sample
+import client/types.{type BookMeta}
 import shared/segmenter.{
   type Paragraph, type SegmentedText, type Sentence, type Word,
 }
@@ -213,8 +219,75 @@ const body_class_dyslexia_font: String = "vi-dyslexia-font"
 const body_class_reduced_motion: String = "vi-reduced-motion"
 
 // ---------------------------------------------------------------------------
+// Library view — book-cover palette
+// ---------------------------------------------------------------------------
+//
+// The grid and hero card render each book onto a flat colour block —
+// the source texts have no embedded cover art, so the affordance is
+// deterministic colour-by-title. The palette below mirrors the warm
+// literary palette in the design mock (warm copper, slate blue, sage
+// green, dusk lavender, ink grey). The selection is a stable hash of
+// the title so re-renders on the same book always paint the same
+// colour, and two books with adjacent titles spread across the
+// palette instead of clumping on one swatch.
+/// The palette is the single source of truth for both the per-title
+/// hash modulus (read via `list.length` in `cover_color_for_title`)
+/// and the test's "every result is one of these" pin (read via
+/// `cover_palette()` from the test module). Keeping the modulus
+/// derived rather than hard-coded prevents the lock-step drift a
+/// hard-coded `cover_color_count` invites — `gleam/list` is a
+/// pure-Gleam list so `list.length` is O(n) but `n = 8`, and the
+/// helper is called once per book per render.
+pub const cover_colors: List(String) = [
+  "#B87A52", "#4A7A8E", "#5A6B50", "#8A7C6E", "#6A5E80", "#7A8B7A", "#A05E5E",
+  "#5E7A8B",
+]
+
+/// Pick a deterministic cover colour for a book based on its title.
+/// The hash is a simple grapheme-codepoint sum modulo the palette
+/// length — collisions are acceptable because the palette is a
+/// visual rhythm cue, not a unique identifier.
+///
+/// Exposed so the library tests can pin the colour-for-title
+/// contract without having to walk the rendered HTML for the inline
+/// `style` value.
+///
+/// The two `let assert` rails state the invariants directly:
+/// `cover_colors` is a non-empty `pub const`, so `int.modulo` is
+/// always `Ok(_)`; `index` is always `< count`, so `list.drop`
+/// always leaves a non-empty tail. If the palette were ever
+/// shortened to empty, or `int.modulo`'s contract changed, the
+/// assertion would crash at the violation rather than survive in
+/// a degraded state. The previous revision carried three
+/// fallback branches for these impossibilities; per the operative
+/// standard, fallbacks for cases that cannot happen are dead code.
+pub fn cover_color_for_title(title: String) -> String {
+  let codepoints = string.to_utf_codepoints(title)
+  let sum =
+    list.fold(codepoints, 0, fn(acc, cp) {
+      acc + string.utf_codepoint_to_int(cp)
+    })
+  let count = list.length(cover_colors)
+  let assert Ok(index) = int.modulo(sum, count)
+  let assert [color, ..] = list.drop(cover_colors, index)
+  color
+}
+
+// ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
+
+/// Active top-level view. `Library` renders the book grid plus the
+/// add-book bottom sheet; `Reader` renders the paginated reading
+/// surface against `model.text`. The reducer flips this field on
+/// `OpenBook(_)` (library → reader) and `GoToLibrary` (reader →
+/// library). No URL routing is involved — `modem`/`lustre_routed`
+/// would add machinery that a two-view app cannot justify; a plain
+/// enum on the model is sufficient and keeps the test surface flat.
+pub type View {
+  Library
+  Reader
+}
 
 /// Reading mode. `Manual` is the original tap/click + vim-key
 /// reader: erasure happens on explicit user input. `RealTime` is
@@ -399,6 +472,48 @@ pub type LineBox {
 ///   page count (`advance_to_next_page`, `change_page`) read the
 ///   cache for the same reason: a single canonical source of
 ///   truth across view and reducer call sites.
+/// * `view` — current top-level view. Default `Library` at boot.
+///   `init` fires `fetch_books()` so the grid populates from the
+///   server; `OpenBook(_)` flips to `Reader` and chains a
+///   `fetch_book(id)` to load the segmented payload.
+/// * `books` — library contents (lightweight `BookMeta` records,
+///   no segmented payload). Populated by `BooksLoaded(Ok(_))` and
+///   appended to by `BookCreated(Ok(_))`. The library renders the
+///   list directly; sort order is computed at render time from
+///   `last_read_at`.
+/// * `books_loading` — `True` between boot and the first
+///   `BooksLoaded` dispatch, then `False` for the lifetime of the
+///   session. The library view shows a skeleton state while loading
+///   and an empty state when loading finishes with no books.
+/// * `library_error` — `Some(message)` when the most recent library
+///   fetch failed; `None` otherwise. Surfaced to the reader so a
+///   network outage produces a clear message rather than a silent
+///   empty grid. Cleared on the next successful load.
+/// * `active_book_id` — `Some(id)` when a server-backed book is
+///   loaded into the reader, `None` before any book has been
+///   opened. Used by the reader header to badge the visible book
+///   and (in a future quest) by the reading-state save path.
+/// * `paste_title` / `paste_text` — controlled inputs for the
+///   add-book bottom sheet. Cleared on `BookCreated(Ok(_))` so
+///   the form returns to empty after a successful upload.
+/// * `paste_submitting` — `True` while the POST is in flight so
+///   the submit button can disable itself and avoid a duplicate
+///   create-book on a double-tap.
+/// * `paste_error` — `Some(message)` when validation or the
+///   server's response rejected the most recent submission;
+///   `None` otherwise. Cleared on the next successful POST or on
+///   any form-field change.
+/// * `add_book_open` — `True` when the add-book bottom sheet is
+///   visible. Toggled by the FAB on the library view and by the
+///   sheet's own close button / overlay tap.
+/// * `created_book_segments` — single-slot cache of the `(meta,
+///   segments)` payload returned by `POST /api/books`. `BookCreated(Ok(_))`
+///   stamps it; `OpenBook(id)` consumes it (skipping the duplicate
+///   `GET /api/books/:id` round trip) when the id matches, then
+///   clears it. `None` between server-backed sessions and after the
+///   slot has been consumed. Holding the meta alongside the segments
+///   means the cache-hit path does not need to walk `books` to
+///   recover the metadata.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -429,23 +544,30 @@ pub type Model {
     total_sentence_count: Int,
     total_word_count: Int,
     current_chapter_title: String,
-    /// Cached `list.length(pages)`. Maintained in the two arms that
-    /// write `pages` — `TextLoaded` resets to `0` alongside
-    /// `pages: []`, and `ParagraphsMeasured` writes the count
-    /// produced by `calculate_pages`. Both view-path and
-    /// reducer-path call sites read this field rather than calling
-    /// `list.length(model.pages)`; `list.length` is O(n) and the
-    /// invariant `total_pages == list.length(pages)` makes the
-    /// cache the canonical source of truth.
     total_pages: Int,
+    view: View,
+    books: List(BookMeta),
+    books_loading: Bool,
+    library_error: Option(String),
+    active_book_id: Option(String),
+    paste_title: String,
+    paste_text: String,
+    paste_submitting: Bool,
+    paste_error: Option(String),
+    add_book_open: Bool,
+    created_book_segments: Option(#(BookMeta, SegmentedText)),
   )
 }
 
 /// Application messages.
 pub type Msg {
-  /// A book has been segmented and is ready to render. Fired from
-  /// `init` with the hardcoded sample today; a future quest will
-  /// dispatch the same message with a server payload.
+  /// A book has been segmented and is ready to render. Production
+  /// flows route through `BookLoaded` (server response from
+  /// `fetch_book`), which delegates the per-text reset to the same
+  /// `apply_text_load` helper this arm uses; `TextLoaded` itself is
+  /// retained as a direct entry point for the reducer tests that
+  /// pin the per-text reset surface in isolation from the library
+  /// bookkeeping `BookLoaded` layers on top.
   TextLoaded(SegmentedText)
 
   /// Browser paragraph heights have been read via FFI. Carries the
@@ -644,6 +766,65 @@ pub type Msg {
   /// `[min_page_delay_ms, max_page_delay_ms]`. Same
   /// take-effect-on-next-tick semantics as `SetWpm`.
   SetPageDelay(Int)
+
+  /// `GET /api/books` resolved. `Ok(books)` lands the library
+  /// contents on the model and unsets `books_loading`; `Error(_)`
+  /// surfaces a human-readable message into `library_error` and
+  /// also unsets `books_loading` so the view does not stay on the
+  /// skeleton state.
+  BooksLoaded(Result(List(BookMeta), ffi.FetchError))
+
+  /// `GET /api/books/:id` resolved. The success arm routes through
+  /// `apply_book_loaded`, which delegates the per-text reset
+  /// (segmented payload, flat-paragraph cache, totals, per-book
+  /// scratch bitsets) to the shared `apply_text_load` helper that
+  /// `TextLoaded` also calls, then layers on the library
+  /// bookkeeping fields (view flip to `Reader`, `active_book_id`,
+  /// `library_error: None`, engine reset). The error arm flips the
+  /// view back to `Library` and stores the message in
+  /// `library_error` so the reader sees what went wrong.
+  BookLoaded(Result(#(BookMeta, SegmentedText), ffi.FetchError))
+
+  /// `POST /api/books` resolved. The success arm prepends the new
+  /// metadata to `books`, clears the paste form, and closes the
+  /// bottom sheet — the reader stays in the library so they can
+  /// see their new book on the grid before they decide to open it.
+  /// The error arm leaves the form populated and surfaces the
+  /// failure in `paste_error`.
+  BookCreated(Result(#(BookMeta, SegmentedText), ffi.FetchError))
+
+  /// Library card tapped. Flips `view` to `Reader`, kicks off
+  /// `fetch_book(id)`, and resets the reader scratch state so the
+  /// previous book's erasures don't bleed into the new session.
+  OpenBook(id: String)
+
+  /// Reader back-arrow pressed. Flips `view` to `Library`, stops
+  /// any running fade engine, clears the in-flight word timer,
+  /// and resets the reader's per-book state (`text`, `pages`,
+  /// erasures, focus, line geometry) so re-opening the same book
+  /// boots from a clean slate.
+  GoToLibrary
+
+  /// FAB tapped (open) or sheet overlay / close button tapped
+  /// (close). Flips `add_book_open` and clears `paste_error` when
+  /// the sheet opens so a previously surfaced validation message
+  /// doesn't greet the next attempt.
+  ToggleAddBook
+
+  /// Controlled title input change. Stores the new value and clears
+  /// `paste_error` so the error message disappears as soon as the
+  /// reader starts typing again.
+  SetPasteTitle(value: String)
+
+  /// Controlled paste-textarea change. Same shape as `SetPasteTitle`
+  /// — stores the new value and clears any prior error.
+  SetPasteText(value: String)
+
+  /// "Add to Library" button pressed. Validates that both fields
+  /// are non-empty; on success, marks `paste_submitting: True` and
+  /// fires `create_book`. The submit button's `disabled` reflects
+  /// `paste_submitting` so a double-tap cannot fire two POSTs.
+  SubmitPaste
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +895,17 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       total_word_count: 0,
       current_chapter_title: "",
       total_pages: 0,
+      view: Library,
+      books: [],
+      books_loading: True,
+      library_error: None,
+      active_book_id: None,
+      paste_title: "",
+      paste_text: "",
+      paste_submitting: False,
+      paste_error: None,
+      add_book_open: False,
+      created_book_segments: None,
     )
 
   // Boot effects:
@@ -730,7 +922,12 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   //   wrong theme. `vi-light-mode` is applied when `dark_mode` is
   //   *False* — the dark palette is the default, so the class only
   //   fires the light override.
-  // - `load` injects the sample text through the update loop.
+  // - `fetch_books` issues `GET /api/books` so the library populates
+  //   from the server. The previous boot path injected a bundled
+  //   sample text directly through `TextLoaded`; the server is now
+  //   the source of truth and the sample fixture is no longer wired
+  //   into production code (it stays around for tests as a
+  //   well-shaped segmented-text fixture).
   // - The four listener effects (`resize`, `arrow`, `undo`, `vim`)
   //   wire keyboard navigation and the debounced resize handler.
   let viewport_meta =
@@ -740,7 +937,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       ffi.set_body_class(body_class_light_mode, !dark_mode)
       ffi.set_body_class(body_class_reduced_motion, reduced_motion)
     })
-  let load = effect.from(fn(dispatch) { dispatch(TextLoaded(sample.text())) })
   let resize_listener =
     effect.from(fn(dispatch) {
       ffi.on_resize(fn() { dispatch(ViewportResized) })
@@ -766,7 +962,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
     effect.batch([
       viewport_meta,
       body_classes,
-      load,
+      fetch_books(),
       resize_listener,
       arrow_listener,
       undo_listener,
@@ -792,40 +988,15 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
 ///    `touchend` classification.
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    TextLoaded(text) -> {
-      let #(sentences, words) = total_counts(text)
-      // `pages` is reset to `[]` here, so the cached chapter title
-      // is empty until `ParagraphsMeasured` lands the first page
-      // list. Setting it explicitly (rather than leaving the prior
-      // value in place) avoids the cache lagging across a fresh
-      // book load — the header would otherwise briefly carry the
-      // previous book's title. `total_pages` follows the same rule
-      // for the same reason: the field's invariant is
-      // `total_pages == list.length(pages)`, so resetting `pages` to
-      // `[]` without resetting `total_pages` to `0` would leave the
-      // page-indicator briefly rendering against the previous book's
-      // page count between this dispatch and `ParagraphsMeasured`.
-      #(
-        Model(
-          ..model,
-          text: Some(text),
-          flat_paragraphs: pagination.flatten(text),
-          pages: [],
-          current_page: 0,
-          erased: set.new(),
-          undo_stack: [],
-          touch_start: None,
-          focused_sentence: None,
-          line_boxes: [],
-          active_line: None,
-          total_sentence_count: sentences,
-          total_word_count: words,
-          current_chapter_title: "",
-          total_pages: 0,
-        ),
-        measure_after_paint(),
-      )
-    }
+    TextLoaded(text) ->
+      // `pages` is reset to `[]` by `apply_text_load`, so the cached
+      // chapter title and `total_pages` are empty/zero until
+      // `ParagraphsMeasured` lands the first page list. Resetting
+      // them explicitly (rather than leaving the prior values in
+      // place) avoids the cache lagging across a fresh book load —
+      // the header would otherwise briefly carry the previous book's
+      // title and page count.
+      #(apply_text_load(model, text), measure_after_paint())
 
     ParagraphsMeasured(heights, available_height) -> {
       let pages = case model.text {
@@ -1026,6 +1197,335 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+
+    BooksLoaded(Ok(books)) -> #(
+      Model(..model, books: books, books_loading: False, library_error: None),
+      effect.none(),
+    )
+
+    BooksLoaded(Error(error)) -> #(
+      Model(
+        ..model,
+        books_loading: False,
+        library_error: Some(describe_fetch_error(error)),
+      ),
+      effect.none(),
+    )
+
+    BookLoaded(Ok(#(meta, segments))) ->
+      apply_book_loaded(model, meta, segments)
+
+    BookLoaded(Error(error)) -> #(
+      Model(
+        ..model,
+        view: Library,
+        library_error: Some(describe_fetch_error(error)),
+      ),
+      effect.none(),
+    )
+
+    BookCreated(Ok(#(meta, segments))) -> #(
+      Model(
+        ..model,
+        books: [meta, ..model.books],
+        paste_title: "",
+        paste_text: "",
+        paste_submitting: False,
+        paste_error: None,
+        add_book_open: False,
+        // Stash the segmented payload so an immediate `OpenBook(meta.id)`
+        // can apply it directly instead of round-tripping through
+        // `GET /api/books/:id`. The POST response already decoded the
+        // same segments; dropping them on the floor would force a
+        // second network call for data the client already has.
+        created_book_segments: Some(#(meta, segments)),
+      ),
+      effect.none(),
+    )
+
+    BookCreated(Error(error)) -> #(
+      Model(
+        ..model,
+        paste_submitting: False,
+        paste_error: Some(describe_fetch_error(error)),
+      ),
+      effect.none(),
+    )
+
+    OpenBook(id) -> apply_open_book(model, id)
+
+    GoToLibrary -> apply_go_to_library(model)
+
+    ToggleAddBook -> {
+      let opening = !model.add_book_open
+      #(
+        Model(
+          ..model,
+          add_book_open: opening,
+          // Opening the sheet clears any prior error so the form
+          // starts clean; closing it leaves whatever error was last
+          // shown intact (the reader is dismissing the surface, not
+          // acknowledging the message).
+          paste_error: case opening {
+            True -> None
+            False -> model.paste_error
+          },
+        ),
+        effect.none(),
+      )
+    }
+
+    SetPasteTitle(value) -> #(
+      Model(..model, paste_title: value, paste_error: None),
+      effect.none(),
+    )
+
+    SetPasteText(value) -> #(
+      Model(..model, paste_text: value, paste_error: None),
+      effect.none(),
+    )
+
+    SubmitPaste -> apply_submit_paste(model)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// update — library / book navigation helpers
+// ---------------------------------------------------------------------------
+
+/// Open a book by id. The cache-hit path consumes the
+/// `created_book_segments` slot stamped by `BookCreated(Ok(_))`,
+/// applies the cached payload through the same `apply_book_loaded`
+/// pipeline a server response would have, and clears the slot so a
+/// second open of the same id falls through to a real fetch. The
+/// cache-miss path is the original behaviour: flip to the reader and
+/// chain `fetch_book(id)`. A non-matching cache (the user created
+/// book A then tapped book B) is also a miss — the cache is keyed by
+/// id, not just "is anything cached".
+fn apply_open_book(model: Model, id: String) -> #(Model, Effect(Msg)) {
+  case model.created_book_segments {
+    Some(#(meta, segments)) ->
+      case meta.id == id {
+        True -> {
+          let #(loaded, eff) = apply_book_loaded(model, meta, segments)
+          #(Model(..loaded, created_book_segments: None), eff)
+        }
+        False -> #(
+          Model(..model, view: Reader, library_error: None),
+          fetch_book(id),
+        )
+      }
+    None -> #(Model(..model, view: Reader, library_error: None), fetch_book(id))
+  }
+}
+
+/// Stamp a freshly-fetched book onto the reader state. Delegates
+/// every per-text field reset to `apply_text_load` and layers on the
+/// library-bookkeeping fields the test-only `TextLoaded` entry point
+/// has no opinion on: flip the view to `Reader`, record the active
+/// book id, clear any stale `library_error`, and force the fade
+/// engine back to its rest state so a previous book's
+/// `Running`/`Paused` cursor cannot follow into the new book. The
+/// follow-up `ParagraphsMeasured` from the `measure_after_paint`
+/// effect is what fills `pages` in.
+fn apply_book_loaded(
+  model: Model,
+  meta: BookMeta,
+  text: SegmentedText,
+) -> #(Model, Effect(Msg)) {
+  let loaded = apply_text_load(model, text)
+  #(
+    Model(
+      ..loaded,
+      view: Reader,
+      active_book_id: Some(meta.id),
+      library_error: None,
+      engine_state: Stopped,
+      next_word_index: None,
+    ),
+    measure_after_paint(),
+  )
+}
+
+/// Per-text reset surface shared by `TextLoaded` and
+/// `apply_book_loaded`. Every field cleared / refreshed here is part
+/// of "the book the reader is currently reading" — the segmented
+/// payload, the flat-paragraph cache that view + pagination read,
+/// the paginated state (`pages` / `current_page`), every per-book
+/// scratch field (`erased` sentence bitset, `erased_words` word
+/// bitset, undo stack, touch origin, vim focus, measured line
+/// boxes, active-line index), and the cached totals + chapter
+/// title. Callers layer on view / library bookkeeping on top of the
+/// returned `Model`.
+fn apply_text_load(model: Model, text: SegmentedText) -> Model {
+  let #(sentences, words) = total_counts(text)
+  Model(
+    ..model,
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: [],
+    current_page: 0,
+    erased: set.new(),
+    erased_words: set.new(),
+    undo_stack: [],
+    touch_start: None,
+    focused_sentence: None,
+    line_boxes: [],
+    active_line: None,
+    total_sentence_count: sentences,
+    total_word_count: words,
+    current_chapter_title: "",
+    total_pages: 0,
+  )
+}
+
+/// Tear down the reader and return to the library. Stops any
+/// in-flight fade engine (clear the FFI timer, drop the engine to
+/// `Stopped`) and resets every per-book scratch field so reopening
+/// the same — or a different — book starts from a clean slate.
+/// `mode` is preserved because it is a user preference, not a
+/// per-book setting; `books` / `books_loading` are untouched so
+/// the library renders immediately on the swap.
+fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
+  let cleared =
+    Model(
+      ..model,
+      view: Library,
+      text: None,
+      flat_paragraphs: [],
+      pages: [],
+      current_page: 0,
+      erased: set.new(),
+      erased_words: set.new(),
+      undo_stack: [],
+      touch_start: None,
+      focused_sentence: None,
+      line_boxes: [],
+      active_line: None,
+      total_sentence_count: 0,
+      total_word_count: 0,
+      current_chapter_title: "",
+      active_book_id: None,
+      engine_state: Stopped,
+      next_word_index: None,
+      settings_open: False,
+    )
+  #(cleared, effect.from(fn(_dispatch) { ffi.clear_word_timer() }))
+}
+
+/// Validate the paste form and fire `create_book`. Empty title or
+/// empty body short-circuits with a `paste_error`; the server's
+/// own validation would catch the same case, but checking client-
+/// side saves a round trip and surfaces the message instantly.
+fn apply_submit_paste(model: Model) -> #(Model, Effect(Msg)) {
+  let title = string.trim(model.paste_title)
+  let text = string.trim(model.paste_text)
+  case title, text {
+    "", _ -> #(
+      Model(..model, paste_error: Some("Please add a title.")),
+      effect.none(),
+    )
+    _, "" -> #(
+      Model(..model, paste_error: Some("Please paste some text.")),
+      effect.none(),
+    )
+    _, _ -> #(
+      Model(..model, paste_submitting: True, paste_error: None),
+      create_book(title, text),
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
+// update — fetch effects
+// ---------------------------------------------------------------------------
+//
+// Three thin wrappers around the FFI fetch primitives. Each one
+// stringifies the response body, applies a decoder, and routes the
+// result through one Msg variant. Decode failures collapse into the
+// matching `FetchError.DecodeError` so callers see one error shape
+// regardless of where the failure originated.
+
+/// `GET /api/books` and dispatch `BooksLoaded`.
+fn fetch_books() -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/books", fn(result) {
+      let decoded =
+        result
+        |> result.try(fn(body) {
+          json.parse(body, decode.list(types.book_meta_decoder()))
+          |> result.map_error(fn(_) {
+            ffi.DecodeError("Failed to decode book list")
+          })
+        })
+      dispatch(BooksLoaded(decoded))
+    })
+  })
+}
+
+/// `GET /api/books/:id` and dispatch `BookLoaded`. The decoder
+/// produces a `#(BookMeta, SegmentedText)` so the reducer can stamp
+/// both onto the model in one arm.
+fn fetch_book(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/books/" <> id, fn(result) {
+      let decoded =
+        result
+        |> result.try(fn(body) {
+          json.parse(body, types.book_with_segments_decoder())
+          |> result.map_error(fn(_) { ffi.DecodeError("Failed to decode book") })
+        })
+      dispatch(BookLoaded(decoded))
+    })
+  })
+}
+
+/// `POST /api/books` with the JSON body `{ "title", "text" }` and
+/// dispatch `BookCreated`. The server segments and stores the text;
+/// the response carries both the new metadata and the parsed
+/// segments so the client could open the reader directly — today
+/// we stay in the library so the reader can see the new card
+/// appear before deciding to open it.
+fn create_book(title: String, text: String) -> Effect(Msg) {
+  let body =
+    json.object([#("title", json.string(title)), #("text", json.string(text))])
+    |> json.to_string
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_post("/api/books", body, fn(result) {
+      let decoded =
+        result
+        |> result.try(fn(body) {
+          json.parse(body, types.create_book_response_decoder())
+          |> result.map_error(fn(_) {
+            ffi.DecodeError("Failed to decode create response")
+          })
+        })
+      dispatch(BookCreated(decoded))
+    })
+  })
+}
+
+/// Project a `FetchError` to a human-readable string suitable for a
+/// toast / error banner. Pulled out so the three failure-path arms
+/// share one rendering — drift between them would otherwise
+/// produce inconsistent UX for the same underlying failure.
+///
+/// Exposed for tests that pin the error-message surface — every
+/// `FetchError` arm should produce a non-empty, user-readable
+/// sentence rather than a `string.inspect` of the raw record.
+pub fn describe_fetch_error(error: ffi.FetchError) -> String {
+  case error {
+    ffi.NetworkError(message) ->
+      case message {
+        "" -> "Could not reach the server."
+        _ -> "Could not reach the server: " <> message
+      }
+    ffi.HttpError(status, body) ->
+      case body {
+        "" -> "Server returned " <> int.to_string(status) <> "."
+        _ -> "Server returned " <> int.to_string(status) <> ": " <> body
+      }
+    ffi.DecodeError(detail) -> detail
   }
 }
 
@@ -1925,16 +2425,22 @@ fn repaginate_after_paint() -> Effect(Msg) {
 // View
 // ---------------------------------------------------------------------------
 
-/// Top-level view. Renders a loading placeholder until `TextLoaded`
-/// delivers text, then delegates to `view_paginated`. The settings
+/// Top-level view. Dispatches on `model.view`: `Library` renders the
+/// book grid plus the add-book bottom sheet; `Reader` renders the
+/// paginated reading surface against `model.text`. The settings
 /// panel rides as a sibling overlay rendered conditionally on
-/// `model.settings_open` — it is only ever in the DOM when the panel
-/// is open, so the empty/loading rendering is unaffected by settings
-/// state.
+/// `model.settings_open` — it is only ever in the DOM when the
+/// panel is open, so the surrounding rendering is unaffected by
+/// settings state.
+///
+/// The shell `<div>` carries `class="vi-app"` rather than the older
+/// `"reader"` because the surface now hosts both views; the CSS
+/// rule it anchors (`#vi-shell` height) is selector-based and
+/// unaffected by the class rename.
 pub fn view(model: Model) -> Element(Msg) {
-  let body = case model.text {
-    None -> view_placeholder()
-    Some(_) -> view_paginated(model)
+  let body = case model.view {
+    Library -> view_library(model)
+    Reader -> view_reader(model)
   }
 
   let overlay = case model.settings_open {
@@ -1942,14 +2448,44 @@ pub fn view(model: Model) -> Element(Msg) {
     False -> element.none()
   }
 
-  html.div([attribute.id("vi-shell"), attribute.class("reader")], [
+  html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
     body,
     overlay,
   ])
 }
 
+/// Reader-view body. Renders a loading placeholder until a
+/// `BookLoaded` (or, in tests, a `TextLoaded`) lands on the model,
+/// then delegates to `view_paginated`.
+fn view_reader(model: Model) -> Element(Msg) {
+  case model.text {
+    None -> view_placeholder()
+    Some(_) -> view_paginated(model)
+  }
+}
+
+/// Reader-view loading state. `BookLoaded(Error)` auto-routes back
+/// to the library, but a `fetch_book` that simply hangs (slow
+/// connection, server-side stall) leaves the reader stuck on this
+/// surface unless an escape hatch is offered. The back glyph
+/// dispatches `GoToLibrary` — the same Msg the populated reader's
+/// header button uses — so the reader can always abandon a stuck
+/// load without refreshing the page.
 fn view_placeholder() -> Element(Msg) {
-  html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
+  html.div([attribute.class("reader-placeholder")], [
+    html.button(
+      [
+        attribute.class("btn-icon reader-placeholder-back"),
+        attribute.aria_label("Back to library"),
+        attribute.type_("button"),
+        event.on_click(GoToLibrary),
+      ],
+      [html.text("←")],
+    ),
+    html.div([attribute.class("reader-placeholder-label")], [
+      html.text("Loading..."),
+    ]),
+  ])
 }
 
 /// Build the full reading surface: sticky header, reading-progress
@@ -2029,37 +2565,41 @@ fn view_paginated(model: Model) -> Element(Msg) {
 
 /// Sticky top chrome row. Three slots: back glyph (left), chapter
 /// title (centre, ellipsised), settings gear (right). The back button
-/// dispatches `SetMode(Manual)` — in RealTime mode this stops the
-/// fade engine and returns to the tap-to-erase reader, in Manual
-/// mode it is an idempotent no-op (the model is already in Manual,
-/// and `apply_set_mode(model, Manual)` is safe to call against
-/// a stopped engine). Act 4 will rewire the back button to library
-/// navigation once a library view exists.
+/// dispatches `GoToLibrary`, which stops any in-flight fade engine,
+/// clears the reader's per-book scratch state, and flips
+/// `model.view` back to `Library`. Pre-library-view the button
+/// dispatched `SetMode(Manual)` so the reader could escape the
+/// RealTime engine without a dedicated library — Act 4 now has a
+/// real library view to return to.
 ///
 /// The title slot is driven from the model: the chapter currently
 /// being read carries an `Option(String)` title on `SegmentedText`,
 /// and `current_chapter_title` looks it up by `chapter_index` on the
 /// visible page's first paragraph. When the chapter has no title —
 /// or the page list is still empty between `TextLoaded` and the
-/// first measurement pass — the slot renders an empty string rather
-/// than fabricating one. The bundled sample fixture has no chapter
-/// headings, so today's render carries an empty slot; the future
-/// server-payload path will land titled chapters that populate it
-/// without further view changes.
+/// first measurement pass — the slot falls back to the active
+/// book's title (looked up in `model.books` by `active_book_id`)
+/// so an untitled-chapter book still has a name in the chrome.
+/// The slot only renders an empty string when neither the chapter
+/// nor the active book can supply a title (the test-only
+/// `TextLoaded` entry point, which never stamps `active_book_id`).
 fn view_reader_header(model: Model) -> Element(Msg) {
   // The title is read from the cached `current_chapter_title` field
   // on the model rather than walking the page → paragraph → chapter
   // chain on every render. The field is refreshed in the reducer
   // arms that mutate any of `text` / `pages` / `current_page`.
-  let title = model.current_chapter_title
+  let title = case model.current_chapter_title {
+    "" -> active_book_title(model)
+    chapter_title -> chapter_title
+  }
   html.div([attribute.class("reader-header")], [
     html.div([attribute.class("reader-header-inner")], [
       html.button(
         [
           attribute.class("btn-icon"),
-          attribute.aria_label("Switch to manual reading mode"),
+          attribute.aria_label("Back to library"),
           attribute.type_("button"),
-          event.on_click(SetMode(Manual)),
+          event.on_click(GoToLibrary),
         ],
         [html.text("←")],
       ),
@@ -2078,6 +2618,31 @@ fn view_reader_header(model: Model) -> Element(Msg) {
       ),
     ]),
   ])
+}
+
+/// Resolve the title of the active book — the `BookMeta` in
+/// `model.books` whose `id` matches `model.active_book_id`. Used
+/// by the reader header as a fallback when the visible chapter
+/// carries no title of its own (every chapter in the bundled
+/// Tell-Tale Heart fixture, for instance, has `title: None`, so
+/// the reader header would otherwise show an empty centre slot).
+///
+/// Falls through to `""` when there is no active book id (the
+/// test-only `TextLoaded` entry point never stamps it) or when
+/// the book is not in `model.books` (a path that does not occur
+/// in production today — `BookCreated` prepends and `BooksLoaded`
+/// supplies the meta before `OpenBook` fires — but the helper
+/// stays total so a future direct-load entry point cannot crash
+/// the header).
+fn active_book_title(model: Model) -> String {
+  case model.active_book_id {
+    None -> ""
+    Some(id) ->
+      case list.find(model.books, fn(meta) { meta.id == id }) {
+        Ok(meta) -> meta.title
+        Error(_) -> ""
+      }
+  }
 }
 
 /// Look up the title of the chapter the current page sits in.
@@ -3098,6 +3663,400 @@ fn view_ghost_opacity_slider(model: Model) -> Element(Msg) {
           Error(_) -> SetGhostOpacity(model.ghost_opacity)
         }
       }),
+    ]),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// View — library
+// ---------------------------------------------------------------------------
+//
+// Mirrors the mobile prototype at
+// `local/design-mocks/vanishing-ink/mobile-library-prototype.html` —
+// the warm app bar with the Vanishing Ink wordmark, a "Continue
+// Reading" hero card for the most-recently-read book, a 2-column
+// grid for the remaining titles, and a floating action button that
+// opens the add-book bottom sheet. The empty state and the
+// fetch-error state both surface inside the same `.lib-body`
+// container so the chrome never reshuffles between states.
+
+/// Render the library view: app bar + scrollable body (hero card,
+/// grid or empty state, error banner) + FAB + add-book sheet.
+fn view_library(model: Model) -> Element(Msg) {
+  html.div([attribute.class("view-library")], [
+    view_library_appbar(),
+    html.div([attribute.class("lib-scroll")], [view_library_body(model)]),
+    view_add_book_fab(),
+    view_add_book_sheet(model),
+  ])
+}
+
+fn view_library_appbar() -> Element(Msg) {
+  html.div([attribute.class("lib-appbar")], [
+    html.div([attribute.class("lib-appbar-inner")], [
+      html.div([attribute.class("app-wordmark")], [
+        html.div(
+          [
+            attribute.class("wordmark-dot"),
+            attribute.attribute("aria-hidden", "true"),
+          ],
+          [],
+        ),
+        html.span([], [html.text("Vanishing Ink")]),
+      ]),
+    ]),
+  ])
+}
+
+/// Library body. Surface order — fetch error (if any) → hero card →
+/// grid header + grid (or empty state). Keeps the chrome stable so
+/// loading / error / populated states all use the same column.
+fn view_library_body(model: Model) -> Element(Msg) {
+  let error_banner = case model.library_error {
+    None -> element.none()
+    Some(message) -> view_library_error(message)
+  }
+
+  let sorted = sort_books_by_recency(model.books)
+  let hero_book = hero_candidate(sorted)
+  let grid_books = grid_candidates(sorted, hero_book)
+
+  let hero = case hero_book {
+    None -> element.none()
+    Some(book) -> view_hero_card(book)
+  }
+
+  let body_main = case model.books_loading, model.books {
+    True, _ -> view_library_loading()
+    False, [] -> view_library_empty()
+    False, _ -> view_library_grid(grid_books)
+  }
+
+  html.div([attribute.class("lib-body")], [error_banner, hero, body_main])
+}
+
+/// Sort by `last_read_at` descending, with unread books (None)
+/// falling to the end. Books with equal timestamps fall back to
+/// `uploaded_at` descending so the order is total — equal-keyed
+/// inputs would otherwise rely on `list.sort`'s stability for
+/// readable output.
+fn sort_books_by_recency(books: List(BookMeta)) -> List(BookMeta) {
+  list.sort(books, compare_by_recency)
+}
+
+fn compare_by_recency(a: BookMeta, b: BookMeta) -> order.Order {
+  case a.last_read_at, b.last_read_at {
+    Some(a_ts), Some(b_ts) ->
+      case string.compare(b_ts, a_ts) {
+        order.Eq -> string.compare(b.uploaded_at, a.uploaded_at)
+        ord -> ord
+      }
+    Some(_), None -> order.Lt
+    None, Some(_) -> order.Gt
+    None, None -> string.compare(b.uploaded_at, a.uploaded_at)
+  }
+}
+
+/// The "Continue Reading" hero is the most-recently-read book; it
+/// is only surfaced when at least one book has a non-None
+/// `last_read_at`. A brand-new account (every book unread) skips
+/// the hero entirely so the reader is not encouraged to "continue"
+/// reading something they never started.
+fn hero_candidate(sorted: List(BookMeta)) -> Option(BookMeta) {
+  case sorted {
+    [first, ..] ->
+      case first.last_read_at {
+        Some(_) -> Some(first)
+        None -> None
+      }
+    [] -> None
+  }
+}
+
+/// Books shown in the grid. The hero book is filtered out of the
+/// grid so the same card never appears twice; when there is no
+/// hero, every book lands on the grid.
+fn grid_candidates(
+  sorted: List(BookMeta),
+  hero: Option(BookMeta),
+) -> List(BookMeta) {
+  case hero {
+    None -> sorted
+    Some(hero_book) -> list.filter(sorted, fn(book) { book.id != hero_book.id })
+  }
+}
+
+fn view_library_error(message: String) -> Element(Msg) {
+  html.div(
+    [attribute.class("lib-error"), attribute.attribute("role", "alert")],
+    [html.text(message)],
+  )
+}
+
+fn view_library_loading() -> Element(Msg) {
+  html.div([attribute.class("lib-loading")], [
+    html.text("Loading your library…"),
+  ])
+}
+
+/// Empty state copy doubles as the only call-to-action the reader
+/// gets on a fresh account — the FAB also opens the same sheet,
+/// but the empty state plants the affordance front-and-centre so
+/// a first-time user knows where to start.
+fn view_library_empty() -> Element(Msg) {
+  html.div([attribute.class("lib-empty")], [
+    html.div([attribute.class("lib-empty-title")], [
+      html.text("Your library is empty."),
+    ]),
+    html.div([attribute.class("lib-empty-subtitle")], [
+      html.text("Tap the + button to add a book by pasting text."),
+    ]),
+  ])
+}
+
+fn view_hero_card(book: BookMeta) -> Element(Msg) {
+  let color = cover_color_for_title(book.title)
+  let author = option.unwrap(book.author, "")
+  html.button(
+    [
+      attribute.class("hero-card"),
+      attribute.type_("button"),
+      attribute.aria_label("Continue reading " <> book.title),
+      event.on_click(OpenBook(book.id)),
+    ],
+    [
+      html.div([attribute.class("section-label")], [
+        html.text("Continue Reading"),
+      ]),
+      html.div(
+        [
+          attribute.class("hero-cover"),
+          attribute.style("background", color),
+        ],
+        [
+          html.div(
+            [
+              attribute.class("hero-cover-gradient"),
+              attribute.attribute("aria-hidden", "true"),
+            ],
+            [],
+          ),
+          html.div([attribute.class("hero-cover-text")], [
+            html.div([attribute.class("hero-title")], [html.text(book.title)]),
+            html.div([attribute.class("hero-author")], [html.text(author)]),
+          ]),
+        ],
+      ),
+      html.div([attribute.class("hero-meta")], [
+        html.div([attribute.class("hero-meta-line")], [
+          html.text(format_word_count(book.word_count) <> " words"),
+        ]),
+        html.div([attribute.class("hero-cta")], [
+          html.text("Continue Reading"),
+        ]),
+      ]),
+    ],
+  )
+}
+
+/// Render the 2-column book grid. The wrapping container carries
+/// the section label so the empty-grid case (a library with only
+/// a hero book) collapses cleanly without leaving a dangling
+/// header.
+fn view_library_grid(books: List(BookMeta)) -> Element(Msg) {
+  case books {
+    [] -> element.none()
+    _ ->
+      html.div([attribute.class("lib-grid-section")], [
+        html.div([attribute.class("section-label")], [
+          html.text("Your Library"),
+        ]),
+        html.div(
+          [attribute.class("book-grid")],
+          list.map(books, view_book_card),
+        ),
+      ])
+  }
+}
+
+fn view_book_card(book: BookMeta) -> Element(Msg) {
+  let color = cover_color_for_title(book.title)
+  let author = option.unwrap(book.author, "")
+  html.button(
+    [
+      attribute.class("book-card"),
+      attribute.type_("button"),
+      attribute.aria_label("Open " <> book.title),
+      event.on_click(OpenBook(book.id)),
+    ],
+    [
+      html.div(
+        [attribute.class("book-cover"), attribute.style("background", color)],
+        [
+          html.div([attribute.class("book-cover-title")], [
+            html.text(book.title),
+          ]),
+        ],
+      ),
+      html.div([attribute.class("book-info")], [
+        html.div([attribute.class("book-title")], [html.text(book.title)]),
+        html.div([attribute.class("book-author")], [html.text(author)]),
+        html.div([attribute.class("book-meta")], [
+          html.text(format_word_count(book.word_count) <> " words"),
+        ]),
+      ]),
+    ],
+  )
+}
+
+/// Format a word count with thousands separators. The prototype's
+/// `(122189).toLocaleString()` is what we're mirroring here —
+/// `gleam_stdlib` has no localised number formatter, so we
+/// hand-roll the comma every three digits.
+fn format_word_count(count: Int) -> String {
+  count
+  |> int.to_string
+  |> insert_thousands_separators
+}
+
+fn insert_thousands_separators(digits: String) -> String {
+  digits
+  |> string.to_graphemes
+  |> list.reverse
+  |> chunk_every_three([])
+  |> list.map(fn(chunk) {
+    chunk
+    |> list.reverse
+    |> string.concat
+  })
+  |> list.reverse
+  |> string.join(",")
+}
+
+fn chunk_every_three(
+  digits: List(String),
+  acc: List(List(String)),
+) -> List(List(String)) {
+  case digits {
+    [] -> list.reverse(acc)
+    _ -> {
+      let #(chunk, rest) = take_split(digits, 3, [])
+      chunk_every_three(rest, [chunk, ..acc])
+    }
+  }
+}
+
+fn take_split(
+  source: List(String),
+  remaining: Int,
+  acc: List(String),
+) -> #(List(String), List(String)) {
+  case remaining, source {
+    0, _ -> #(list.reverse(acc), source)
+    _, [] -> #(list.reverse(acc), [])
+    _, [head, ..tail] -> take_split(tail, remaining - 1, [head, ..acc])
+  }
+}
+
+fn view_add_book_fab() -> Element(Msg) {
+  html.button(
+    [
+      attribute.class("fab"),
+      attribute.type_("button"),
+      attribute.aria_label("Add book"),
+      event.on_click(ToggleAddBook),
+    ],
+    [html.text("+")],
+  )
+}
+
+/// Add-book bottom sheet. Rendered as an overlay that catches taps
+/// outside the sheet to close it (mirroring the settings panel's
+/// scrim semantics). When `add_book_open` is `False`, the overlay
+/// is absent from the DOM rather than hidden via CSS — keeps the
+/// rendered tree small and the closed-state tests trivial.
+fn view_add_book_sheet(model: Model) -> Element(Msg) {
+  case model.add_book_open {
+    False -> element.none()
+    True ->
+      html.div(
+        [
+          attribute.class("sheet-overlay open"),
+          attribute.attribute("role", "dialog"),
+          attribute.attribute("aria-modal", "true"),
+          attribute.attribute("aria-label", "Add a book"),
+          event.on_click(ToggleAddBook),
+        ],
+        [view_add_book_sheet_inner(model)],
+      )
+  }
+}
+
+fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
+  let submit_disabled =
+    model.paste_submitting
+    || string.trim(model.paste_title) == ""
+    || string.trim(model.paste_text) == ""
+
+  let error_banner = case model.paste_error {
+    None -> element.none()
+    Some(message) ->
+      html.div(
+        [attribute.class("paste-error"), attribute.attribute("role", "alert")],
+        [html.text(message)],
+      )
+  }
+
+  html.div([attribute.class("bottom-sheet"), stop_click_propagation()], [
+    html.div(
+      [
+        attribute.class("sheet-handle"),
+        attribute.attribute("aria-hidden", "true"),
+      ],
+      [],
+    ),
+    html.div([attribute.class("add-sheet-body")], [
+      html.div([attribute.class("add-sheet-title")], [html.text("Add a Book")]),
+      html.div([attribute.class("add-sheet-sub")], [
+        html.text("Paste text from anywhere to start reading."),
+      ]),
+      html.label([attribute.class("paste-label")], [html.text("Title")]),
+      html.input([
+        attribute.class("paste-input"),
+        attribute.type_("text"),
+        attribute.value(model.paste_title),
+        attribute.attribute("placeholder", "Book title"),
+        attribute.attribute("aria-label", "Book title"),
+        event.on_input(SetPasteTitle),
+      ]),
+      html.label([attribute.class("paste-label")], [
+        html.text("Paste your text"),
+      ]),
+      html.textarea(
+        [
+          attribute.class("paste-area"),
+          attribute.attribute("placeholder", "Paste the text you want to read…"),
+          attribute.attribute("aria-label", "Book text"),
+          event.on_input(SetPasteText),
+        ],
+        model.paste_text,
+      ),
+      error_banner,
+      html.button(
+        [
+          attribute.class("btn-add-book"),
+          attribute.type_("button"),
+          attribute.disabled(submit_disabled),
+          attribute.aria_label("Add to library"),
+          event.on_click(SubmitPaste),
+        ],
+        [
+          html.text(case model.paste_submitting {
+            True -> "Adding…"
+            False -> "Add to Library"
+          }),
+        ],
+      ),
     ]),
   ])
 }
