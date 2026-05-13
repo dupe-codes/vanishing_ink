@@ -377,6 +377,17 @@ pub type LineBox {
 ///   100k-word book. The totals are immutable for the lifetime of
 ///   the loaded text — caching them is a design-phase decision,
 ///   not a hot-path optimisation.
+/// * `current_chapter_title` — cached title for the chapter that
+///   the visible page sits in, used by `view_reader_header` to
+///   populate the centre slot of the chrome row. Computed via
+///   `compute_current_chapter_title` and refreshed in the three
+///   reducer arms that mutate any of `text` / `pages` /
+///   `current_page` (`TextLoaded`, `ParagraphsMeasured`,
+///   `change_page`). The view reads the cached field directly so
+///   each render avoids re-walking `pagination.nth` and
+///   `chapter_title_at` — the same caching pattern as the
+///   sentence/word totals above. Empty string when no text is
+///   loaded or the resolved chapter has no title.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -406,6 +417,7 @@ pub type Model {
     active_line: Option(Int),
     total_sentence_count: Int,
     total_word_count: Int,
+    current_chapter_title: String,
   )
 }
 
@@ -686,6 +698,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       active_line: None,
       total_sentence_count: 0,
       total_word_count: 0,
+      current_chapter_title: "",
     )
 
   // Boot effects:
@@ -766,6 +779,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
     TextLoaded(text) -> {
       let #(sentences, words) = total_counts(text)
+      // `pages` is reset to `[]` here, so the cached chapter title
+      // is empty until `ParagraphsMeasured` lands the first page
+      // list. Setting it explicitly (rather than leaving the prior
+      // value in place) avoids the cache lagging across a fresh
+      // book load — the header would otherwise briefly carry the
+      // previous book's title.
       #(
         Model(
           ..model,
@@ -781,6 +800,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           active_line: None,
           total_sentence_count: sentences,
           total_word_count: words,
+          current_chapter_title: "",
         ),
         measure_after_paint(),
       )
@@ -825,6 +845,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           }
         }
       }
+      // Refresh the cached chapter title against the post-clamp
+      // page list — the visible page's chapter may have shifted if
+      // pagination repacked paragraphs or the clamp moved the
+      // current page.
+      let chapter_title =
+        compute_current_chapter_title(model.text, pages, clamped)
       #(
         Model(
           ..model,
@@ -843,6 +869,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           // settings-slider drag where each tick re-paginates.
           line_boxes: [],
           active_line: None,
+          current_chapter_title: chapter_title,
         ),
         // Pagination ran — chain a line measurement so the active-line
         // overlay re-anchors to the post-repagination geometry. The
@@ -1722,7 +1749,20 @@ fn change_page(model: Model, candidate: Int) -> Model {
   let clamped = pagination.clamp_page_index(candidate, total)
   case clamped == model.current_page {
     True -> model
-    False -> Model(..model, current_page: clamped, undo_stack: [])
+    False -> {
+      // Refresh the cached chapter title against the new page —
+      // crossing chapter boundaries on `NextPage` (or the
+      // navigation paths) is the routine cache-invalidation
+      // trigger.
+      let chapter_title =
+        compute_current_chapter_title(model.text, model.pages, clamped)
+      Model(
+        ..model,
+        current_page: clamped,
+        undo_stack: [],
+        current_chapter_title: chapter_title,
+      )
+    }
   }
 }
 
@@ -1968,7 +2008,11 @@ fn view_paginated(model: Model) -> Element(Msg) {
 /// server-payload path will land titled chapters that populate it
 /// without further view changes.
 fn view_reader_header(model: Model) -> Element(Msg) {
-  let title = current_chapter_title(model)
+  // The title is read from the cached `current_chapter_title` field
+  // on the model rather than walking the page → paragraph → chapter
+  // chain on every render. The field is refreshed in the reducer
+  // arms that mutate any of `text` / `pages` / `current_page`.
+  let title = model.current_chapter_title
   html.div([attribute.class("reader-header")], [
     html.div([attribute.class("reader-header-inner")], [
       html.button(
@@ -1998,10 +2042,12 @@ fn view_reader_header(model: Model) -> Element(Msg) {
 }
 
 /// Look up the title of the chapter the current page sits in.
-/// Returns the chapter's title when one is present on the model, an
-/// empty string otherwise. Used by `view_reader_header` to populate
-/// the centre slot of the chrome row without inventing a title when
-/// the segmented text carries none.
+/// Returns the chapter's title when one is present, an empty
+/// string otherwise. Called from the three reducer arms that
+/// mutate any of `text` / `pages` / `current_page` to refresh
+/// the cached `Model.current_chapter_title` field; the view
+/// reads the cached field rather than calling this helper on
+/// every render.
 ///
 /// The lookup walks the page → first paragraph → `chapter_index`
 /// chain so the slot tracks the reader as they cross chapter
@@ -2009,21 +2055,25 @@ fn view_reader_header(model: Model) -> Element(Msg) {
 /// title even when the previous page belonged to chapter 0.
 ///
 /// Falls through to `""` rather than crashing when:
-/// * `model.text` is `None` (pre-`TextLoaded` — header is not
-///   rendered today, but the helper stays total),
-/// * `model.pages` is empty (the pagination-pending window after
+/// * `text` is `None` (pre-`TextLoaded` — header is not rendered
+///   today, but the helper stays total),
+/// * `pages` is empty (the pagination-pending window after
 ///   `TextLoaded` and before the first `ParagraphsMeasured`),
 /// * the resolved chapter carries `title: None`.
-fn current_chapter_title(model: Model) -> String {
-  case model.text {
+fn compute_current_chapter_title(
+  text: Option(SegmentedText),
+  pages: List(Page),
+  current_page: Int,
+) -> String {
+  case text {
     None -> ""
-    Some(text) ->
-      case pagination.nth(model.pages, model.current_page) {
+    Some(t) ->
+      case pagination.nth(pages, current_page) {
         None -> ""
         Some(page) ->
           case page.paragraphs {
             [] -> ""
-            [first, ..] -> chapter_title_at(text, first.chapter_index)
+            [first, ..] -> chapter_title_at(t, first.chapter_index)
           }
       }
   }

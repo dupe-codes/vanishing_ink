@@ -113,6 +113,7 @@ fn empty_model() -> Model {
     active_line: None,
     total_sentence_count: 0,
     total_word_count: 0,
+    current_chapter_title: "",
   )
 }
 
@@ -3427,6 +3428,12 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
   // declares `title: Some("Two")`, and `current_page: 2` puts the
   // reader on the page whose paragraph belongs to chapter 1, so
   // the rendered title must read "Two".
+  //
+  // `current_chapter_title` is a cached field on the model — the
+  // view reads it directly rather than walking the page chain on
+  // every render. The reducer arms keep the field in sync; this
+  // test seeds it directly because it constructs the model via
+  // `..empty_model()` rather than through `client.update`.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -3437,6 +3444,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      current_chapter_title: "Two",
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3527,6 +3535,50 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
   let rendered = client.view(model) |> element.to_string
 
   assert string.contains(rendered, "style=\"width:40.0%;\"")
+}
+
+pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
+  // The `current_chapter_title` field is cached on the model so
+  // the view does not re-walk the page chain on every render.
+  // The cache is refreshed in the reducer arms that mutate any
+  // of `text` / `pages` / `current_page` — this test exercises
+  // the `NextPage` path, which calls `change_page` and lands on
+  // a page whose first paragraph belongs to a different chapter.
+  //
+  // The two-chapter fixture pages 0 and 1 sit inside chapter 0
+  // (untitled), and page 2 sits inside chapter 1 (`title:
+  // Some("Two")`). Dispatching `NextPage` from page 1 should
+  // refresh the cached title from `""` to `"Two"`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 1,
+      current_chapter_title: "",
+    )
+
+  let #(updated, _effect) = client.update(prior, NextPage)
+
+  assert updated.current_page == 2
+  assert updated.current_chapter_title == "Two"
+}
+
+pub fn text_loaded_resets_cached_chapter_title_test() {
+  // `TextLoaded` resets `pages` to `[]` and `current_page` to
+  // `0` because pagination has not run yet for the new book. The
+  // cached chapter title is reset to `""` in the same arm so the
+  // header does not briefly carry the previous book's title.
+  let prior =
+    Model(..empty_model(), current_chapter_title: "Lingering Old Chapter")
+
+  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+
+  assert updated.current_chapter_title == ""
 }
 
 pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
