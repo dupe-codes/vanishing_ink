@@ -2396,8 +2396,28 @@ fn view_reader(model: Model) -> Element(Msg) {
   }
 }
 
+/// Reader-view loading state. `BookLoaded(Error)` auto-routes back
+/// to the library, but a `fetch_book` that simply hangs (slow
+/// connection, server-side stall) leaves the reader stuck on this
+/// surface unless an escape hatch is offered. The back glyph
+/// dispatches `GoToLibrary` — the same Msg the populated reader's
+/// header button uses — so the reader can always abandon a stuck
+/// load without refreshing the page.
 fn view_placeholder() -> Element(Msg) {
-  html.div([attribute.class("reader-placeholder")], [html.text("Loading...")])
+  html.div([attribute.class("reader-placeholder")], [
+    html.button(
+      [
+        attribute.class("btn-icon reader-placeholder-back"),
+        attribute.aria_label("Back to library"),
+        attribute.type_("button"),
+        event.on_click(GoToLibrary),
+      ],
+      [html.text("←")],
+    ),
+    html.div([attribute.class("reader-placeholder-label")], [
+      html.text("Loading..."),
+    ]),
+  ])
 }
 
 /// Build the full reading surface: sticky header, reading-progress

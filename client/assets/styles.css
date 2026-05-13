@@ -178,9 +178,30 @@ body.vi-dyslexia-font .settings-panel {
   width: 100%;
 }
 
+/* The placeholder doubles as the loading state for `fetch_book`.
+ * `BookLoaded(Error)` auto-returns to the library, but a fetch that
+ * hangs would otherwise strand the reader here — the back glyph
+ * (sticky top-left, same icon as the populated reader header) is
+ * the manual escape hatch that survives a never-resolving request.
+ */
 .reader-placeholder {
+  position: relative;
   padding: var(--vi-reading-padding-y) var(--vi-reading-padding-x);
   color: var(--vi-fg-muted);
+}
+
+.reader-placeholder-back {
+  position: absolute;
+  top: var(--vi-safe-top, 0);
+  left: var(--vi-safe-left, 0);
+  margin: 0.5rem;
+}
+
+.reader-placeholder-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
 }
 
 .reader-text {

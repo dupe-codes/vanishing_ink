@@ -642,17 +642,53 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
 // ---------------------------------------------------------------------------
 
 pub fn view_renders_loading_placeholder_when_text_is_none_test() {
-  let rendered = client.view(empty_model()) |> element.to_string
-
   // `empty_model()` defaults to `view: Reader` so this test sees the
   // reader's loading placeholder (rather than the library grid). The
-  // shell class is now `vi-app` because the same `<div>` hosts both
-  // views — the `reader` class previously implied the surface was
-  // always the reading view.
-  assert rendered
-    == "<div class=\"vi-app\" id=\"vi-shell\">"
-    <> "<div class=\"reader-placeholder\">Loading...</div>"
-    <> "</div>"
+  // placeholder now carries a back glyph so a hung `fetch_book` does
+  // not strand the reader — verified via `lustre_query.has` instead
+  // of an HTML substring so a Lustre upgrade that reorders attributes
+  // doesn't break the test.
+  let rendered = client.view(empty_model())
+
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("reader-placeholder"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.aria("label", "Back to library"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("reader-placeholder-label"),
+  )
+}
+
+pub fn view_placeholder_back_button_dispatches_go_to_library_test() {
+  // Verifies the escape hatch from a hung `fetch_book`: with
+  // `text: None` the reader sits on the placeholder, and the back
+  // glyph must dispatch `GoToLibrary` (same Msg the populated
+  // reader's header back button uses) so the reader can return to
+  // the library without a page refresh. Clicking through `simulate`
+  // pins the click handler's actual Msg wiring — a reducer-level
+  // assertion would have stayed green if the on_click had been
+  // wired to a different Msg.
+  let app =
+    simulate.application(
+      init: fn(_) { #(empty_model(), effect.none()) },
+      update: client.update,
+      view: client.view,
+    )
+
+  let back_button =
+    lustre_query.element(matching: lustre_query.aria("label", "Back to library"))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: back_button)
+    |> simulate.model
+
+  assert updated.view == client.Library
 }
 
 // ---------------------------------------------------------------------------
