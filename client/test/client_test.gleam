@@ -3921,6 +3921,10 @@ pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test()
   // Engine state `Paused`: reading was in progress and the reader
   // paused it. The button press resumes from where it left off —
   // announce "Resume reading", not "Start reading".
+  // Mirror the negation pattern the Stopped / Running sibling tests
+  // use: pin both absent labels so a future refactor that emits
+  // "Pause reading" on a Paused-state DOM is caught here, not at
+  // runtime by a screen-reader user.
   let model =
     Model(
       ..fade_model_single_page(),
@@ -3933,6 +3937,7 @@ pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test()
 
   assert string.contains(rendered, "aria-label=\"Resume reading\"")
   assert !string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Pause reading\"")
 }
 
 pub fn view_realtime_play_button_aria_label_is_pause_reading_when_running_test() {
