@@ -3,10 +3,13 @@
 //// of a `SegmentedText` at a time, paginated against actual DOM
 //// dimensions instead of character-count estimates.
 ////
-//// The scaffold loads a hardcoded sample text at init — the HTTP
-//// client is intentionally absent (see the `gleam.toml` note on
-//// `lustre_http`) so a later quest will replace the sample wiring
-//// with a real server request without changing the message shape.
+//// The app boots into the library view: `init` dispatches
+//// `fetch_books()` to populate the grid from `GET /api/books`, and
+//// the reader is reached by tapping a book card, which dispatches
+//// `OpenBook(id)` and chains `fetch_book(id)` to land a
+//// `BookLoaded` payload. The HTTP primitives live in
+//// `client/ffi.gleam` (bespoke FFI rather than `lustre_http`; see
+//// the `gleam.toml` note for the version-pin context).
 ////
 //// Pagination flow on first paint and on every viewport resize:
 ////
@@ -525,9 +528,13 @@ pub type Model {
 
 /// Application messages.
 pub type Msg {
-  /// A book has been segmented and is ready to render. Fired from
-  /// `init` with the hardcoded sample today; a future quest will
-  /// dispatch the same message with a server payload.
+  /// A book has been segmented and is ready to render. Production
+  /// flows route through `BookLoaded` (server response from
+  /// `fetch_book`), which delegates the per-text reset to the same
+  /// `apply_text_load` helper this arm uses; `TextLoaded` itself is
+  /// retained as a direct entry point for the reducer tests that
+  /// pin the per-text reset surface in isolation from the library
+  /// bookkeeping `BookLoaded` layers on top.
   TextLoaded(SegmentedText)
 
   /// Browser paragraph heights have been read via FFI. Carries the
