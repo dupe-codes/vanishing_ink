@@ -239,6 +239,24 @@ pub type EngineState {
   Paused
 }
 
+/// One visual line of the current page, measured against the live
+/// DOM. The line spans the rendered word spans whose
+/// `getBoundingClientRect().top` rounds to the same y-coordinate;
+/// `first_word_gi` and `last_word_gi` are the lowest and highest
+/// `Word.global_index` to land on that line. `top` is the line's
+/// distance from the page-content container's top edge (already
+/// converted from viewport-relative on the FFI side) and `height`
+/// is the per-line maximum bounding-box height — both in CSS
+/// pixels.
+///
+/// The active-line overlay reads `top` and `height` directly off
+/// the matching box to position itself; the engine's per-tick
+/// `next_word_index` is looked up against `first_word_gi` /
+/// `last_word_gi` to figure out which box to highlight.
+pub type LineBox {
+  LineBox(top: Float, height: Float, first_word_gi: Int, last_word_gi: Int)
+}
+
 /// Top-level reader state.
 ///
 /// * `text` — `None` before the sample (or a future server payload)
@@ -332,6 +350,21 @@ pub type EngineState {
 /// * `page_delay_ms` — extra delay inserted on a page boundary
 ///   when the engine advances pages automatically. Clamped into
 ///   `[min_page_delay_ms, max_page_delay_ms]`.
+/// * `line_boxes` — visual line geometry for the current page,
+///   measured against the live DOM after every layout-affecting
+///   event (`ParagraphsMeasured`, `NextPage`, viewport / settings
+///   changes that re-flow text). Empty between layout and the
+///   first `LinesMeasured` dispatch, and during a resize while the
+///   measurement effect is in flight. Read by the active-line
+///   overlay in `view_paginated` to position itself; the engine
+///   reducer treats `[]` as "no overlay" so a transient empty
+///   state simply skips rendering rather than crashing.
+/// * `active_line` — `Some(index)` into `line_boxes` identifying
+///   the line that contains the engine's `next_word_index`, or
+///   `None` when the engine has no live target (Stopped, or
+///   `line_boxes` empty, or `next_word_index` not contained in
+///   any measured line). Recomputed on every event that moves
+///   `next_word_index` or replaces `line_boxes`.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -357,6 +390,8 @@ pub type Model {
     erased_words: Set(Int),
     paragraph_delay_ms: Int,
     page_delay_ms: Int,
+    line_boxes: List(LineBox),
+    active_line: Option(Int),
   )
 }
 
@@ -372,6 +407,14 @@ pub type Msg {
   /// content-area height the pagination algorithm should fit pages
   /// into.
   ParagraphsMeasured(heights: List(#(Int, Float)), available_height: Float)
+
+  /// Visual line geometry for the current page has been read via
+  /// FFI. The reducer stores the boxes on the model and recomputes
+  /// `active_line` against the in-flight `next_word_index`. Fired
+  /// from `measure_lines_after_paint` after every event that can
+  /// re-flow the visible page (pagination completion, page turn,
+  /// font / spacing changes, fade-engine page advance).
+  LinesMeasured(boxes: List(LineBox))
 
   /// Reader requested the next page (`ArrowRight` or swipe-left
   /// gesture). Clears the undo stack — erases on the page being
@@ -625,6 +668,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       erased_words: set.new(),
       paragraph_delay_ms: default_paragraph_delay_ms,
       page_delay_ms: default_page_delay_ms,
+      line_boxes: [],
+      active_line: None,
     )
 
   // Boot effects:
@@ -714,6 +759,8 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         undo_stack: [],
         touch_start: None,
         focused_sentence: None,
+        line_boxes: [],
+        active_line: None,
       ),
       measure_after_paint(),
     )
@@ -763,12 +810,58 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           pages: pages,
           current_page: clamped,
           focused_sentence: focused,
+          // Re-pagination invalidates the cached line geometry: the
+          // new `pages` may wrap differently and the previous
+          // `line_boxes` no longer describe what the view is about
+          // to render. Clear both fields synchronously in the same
+          // model update that schedules the re-measure so the view
+          // never paints the new page against stale overlay
+          // coordinates — without this, the 250ms `top` transition
+          // glides the overlay from the old position to the new one
+          // once `LinesMeasured` lands, which reads as drift on a
+          // settings-slider drag where each tick re-paginates.
+          line_boxes: [],
+          active_line: None,
         ),
+        // Pagination ran — chain a line measurement so the active-line
+        // overlay re-anchors to the post-repagination geometry. The
+        // chain is necessary because line tops depend on the rendered
+        // page, which only exists after the view re-renders with the
+        // new `pages` value; `effect.after_paint` waits for that paint
+        // before reading `getBoundingClientRect()`.
+        measure_lines_after_paint(),
+      )
+    }
+
+    LinesMeasured(boxes) -> {
+      let new_model = Model(..model, line_boxes: boxes)
+      #(
+        Model(..new_model, active_line: resolve_active_line(new_model)),
         effect.none(),
       )
     }
 
-    NextPage -> #(go_to_page(model, model.current_page + 1), effect.none())
+    NextPage -> {
+      let updated = go_to_page(model, model.current_page + 1)
+      case updated.current_page == model.current_page {
+        // A no-op page turn (already on the last page) doesn't change
+        // the rendered DOM, so re-measuring would only churn the
+        // overlay position without effect. Skipping the measurement
+        // here also keeps the no-page-change test pin in place.
+        True -> #(updated, effect.none())
+        // A real page turn invalidates the cached line geometry. Clear
+        // `line_boxes` and `active_line` synchronously in the same
+        // model update that schedules the re-measure — otherwise the
+        // view paints the new page with the old overlay coordinates
+        // and the 250ms `top` CSS transition glides the band into
+        // place once `LinesMeasured` lands. The cleared state mirrors
+        // the engine's own cross-page tick in `advance_to_next_page_loop`.
+        False -> #(
+          Model(..updated, line_boxes: [], active_line: None),
+          measure_lines_after_paint(),
+        )
+      }
+    }
 
     ViewportResized -> #(model, measure_after_paint())
 
@@ -1010,12 +1103,16 @@ fn apply_set_mode(model: Model, mode: Mode) -> #(Model, Effect(Msg)) {
       // Leaving RealTime: kill any in-flight timer and reset the
       // engine to a fully-dormant state. The bitsets persist —
       // fade-engine erasures remain visible-as-gone in Manual mode.
+      // `active_line` clears alongside the engine: the overlay is a
+      // RealTime-only affordance and would otherwise linger as a
+      // ghost rectangle on the page after the toggle flipped.
       let cleared =
         Model(
           ..model,
           mode: Manual,
           engine_state: Stopped,
           next_word_index: None,
+          active_line: None,
         )
       #(cleared, effect.from(fn(_dispatch) { ffi.clear_word_timer() }))
     }
@@ -1039,12 +1136,19 @@ fn apply_start_fade(model: Model) -> #(Model, Effect(Msg)) {
   case first_eligible_word_on_current_page(model) {
     None -> #(model, effect.none())
     Some(ctx) -> {
-      let started =
+      let with_next =
         Model(
           ..model,
           engine_state: Running,
           next_word_index: Some(ctx.word_global_index),
         )
+      // Resolve the active line against the in-memory boxes from the
+      // last layout pass. The overlay therefore renders correctly on
+      // the first frame after Start, even when no `LinesMeasured`
+      // tick has fired yet for this run (the boxes are still valid
+      // because the page hasn't reflowed).
+      let started =
+        Model(..with_next, active_line: resolve_active_line(with_next))
       #(started, schedule_advance_word(word_interval_ms(model.wpm)))
     }
   }
@@ -1072,7 +1176,16 @@ fn apply_resume_fade(model: Model) -> #(Model, Effect(Msg)) {
 
 fn apply_stop_fade(model: Model) -> #(Model, Effect(Msg)) {
   #(
-    Model(..model, engine_state: Stopped, next_word_index: None),
+    // `active_line: None` so the overlay disappears when the engine
+    // halts — there's no active word for it to track. Keeping the
+    // last position visible across a Stop would mislead the reader
+    // about where the engine is (which is "nowhere").
+    Model(
+      ..model,
+      engine_state: Stopped,
+      next_word_index: None,
+      active_line: None,
+    ),
     effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
   )
 }
@@ -1114,8 +1227,14 @@ fn advance_with_current(
         True -> word_interval_ms(faded.wpm) + faded.paragraph_delay_ms
         False -> word_interval_ms(faded.wpm)
       }
-      let scheduled =
+      let with_next =
         Model(..faded, next_word_index: Some(next_ctx.word_global_index))
+      // The line boxes don't shift on a within-page tick (the page
+      // hasn't reflowed), so the existing `line_boxes` is still
+      // valid — re-resolving the active line against them moves
+      // the overlay between rows as the engine crosses lines.
+      let scheduled =
+        Model(..with_next, active_line: resolve_active_line(with_next))
       #(scheduled, schedule_advance_word(delay))
     }
     None -> advance_to_next_page(faded)
@@ -1144,9 +1263,28 @@ fn advance_to_next_page_loop(
       let on_page = go_to_page(model, candidate)
       case first_eligible_word_on_current_page(on_page) {
         Some(ctx) -> {
+          // Cross-page tick: the page reflow means the existing
+          // `line_boxes` no longer describe the visible page.
+          // Clear them and clear `active_line` so the overlay
+          // disappears for the one frame between the page render
+          // and the next `LinesMeasured`. `measure_lines_after_paint`
+          // is batched into the effect chain so the overlay
+          // re-emerges on the new line as soon as the fresh
+          // geometry lands.
           let scheduled =
-            Model(..on_page, next_word_index: Some(ctx.word_global_index))
-          #(scheduled, schedule_advance_word(on_page.page_delay_ms))
+            Model(
+              ..on_page,
+              next_word_index: Some(ctx.word_global_index),
+              line_boxes: [],
+              active_line: None,
+            )
+          #(
+            scheduled,
+            effect.batch([
+              schedule_advance_word(on_page.page_delay_ms),
+              measure_lines_after_paint(),
+            ]),
+          )
         }
         None -> advance_to_next_page_loop(on_page, candidate + 1, total)
       }
@@ -1586,6 +1724,91 @@ fn measure_after_paint() -> Effect(Msg) {
   })
 }
 
+/// Schedule an `after_paint` effect that walks the visible page's
+/// `[data-global-index]` word spans and dispatches `LinesMeasured`
+/// with one `LineBox` per visual line. The FFI returns four-tuples
+/// (top, height, first_gi, last_gi); this helper converts each to a
+/// `LineBox` record before dispatching so the rest of the reducer
+/// surface speaks in the domain type rather than raw geometry.
+///
+/// Read against `#vi-page-content` (the visible page container) — not
+/// the off-screen measurement mirror — because the visible page is
+/// what the overlay anchors into. The measurement mirror has the same
+/// width and word-wrap behaviour but lives at a different y-offset, so
+/// reading its line tops would point the overlay at the wrong rows.
+fn measure_lines_after_paint() -> Effect(Msg) {
+  effect.after_paint(fn(dispatch, _root) {
+    let tuples = ffi.measure_word_lines("#" <> page_content_id)
+    let boxes = list.map(tuples, line_box_from_tuple)
+    dispatch(LinesMeasured(boxes: boxes))
+  })
+}
+
+/// Convert one FFI four-tuple into a `LineBox`. Pulled out so the
+/// measurement effect reads as one `list.map` rather than carrying
+/// an inline `fn(tuple) { ... }` literal.
+fn line_box_from_tuple(tuple: #(Float, Float, Int, Int)) -> LineBox {
+  let #(top, height, first_gi, last_gi) = tuple
+  LineBox(
+    top: top,
+    height: height,
+    first_word_gi: first_gi,
+    last_word_gi: last_gi,
+  )
+}
+
+/// Resolve the line index whose word range contains `word_global_index`.
+/// Returns `None` when the boxes list is empty (mid-measurement) or
+/// when the word index falls outside every measured range (a manual
+/// erasure or page turn between measurement and lookup). The lookup
+/// is `O(lines)` because the line count per page is small — typically
+/// 20-40 — and the alternative (binary search) would carry more
+/// complexity than it saves at these magnitudes.
+///
+/// Implemented as a single-pass tail-recursive scan with early exit
+/// on first match. The previous `index_map |> find |> result.map`
+/// pipeline materialised an intermediate `List(#(Int, LineBox))`
+/// before searching it — the same logic in one pass with no
+/// intermediate allocation.
+fn line_index_for_word(
+  boxes: List(LineBox),
+  word_global_index: Int,
+) -> Option(Int) {
+  scan_lines_for_word(boxes, word_global_index, 0)
+}
+
+fn scan_lines_for_word(
+  boxes: List(LineBox),
+  word_global_index: Int,
+  index: Int,
+) -> Option(Int) {
+  case boxes {
+    [] -> None
+    [box, ..rest] ->
+      case
+        box.first_word_gi <= word_global_index
+        && word_global_index <= box.last_word_gi
+      {
+        True -> Some(index)
+        False -> scan_lines_for_word(rest, word_global_index, index + 1)
+      }
+  }
+}
+
+/// Resolve the active line for the current `next_word_index` against
+/// the current `line_boxes`. Returns `None` when the engine has no
+/// target or no boxes are available; otherwise returns the index of
+/// the line that contains the target word. Pulled out so every
+/// reducer arm that touches `next_word_index` or `line_boxes` reads
+/// the same lookup and the two fields stay in lock-step.
+fn resolve_active_line(model: Model) -> Option(Int) {
+  case model.next_word_index, model.line_boxes {
+    None, _ -> None
+    _, [] -> None
+    Some(idx), boxes -> line_index_for_word(boxes, idx)
+  }
+}
+
 /// Re-trigger pagination by dispatching `ViewportResized`. Used after
 /// settings changes that alter paragraph wrap heights (font size,
 /// line spacing, dyslexia font). Going through the existing message
@@ -1660,6 +1883,14 @@ fn view_paginated(model: Model) -> Element(Msg) {
     None -> view_preparing()
   }
 
+  // The active-line overlay rides as a sibling of `visible` inside
+  // `#vi-page-content` so it inherits the same containing block.
+  // CSS makes `.reader-page-content` `position: relative`, which
+  // anchors the overlay's absolute top/height to the rendered
+  // page area — exactly the coordinate space the FFI normalises
+  // each `LineBox.top` into.
+  let active_line_overlay = view_active_line_overlay(model)
+
   html.div([attribute.class("reader-text")], [
     html.div(
       [
@@ -1675,13 +1906,98 @@ fn view_paginated(model: Model) -> Element(Msg) {
             attribute.id(page_content_id),
             attribute.class("reader-page-content"),
           ],
-          [visible],
+          [visible, active_line_overlay],
         ),
       ],
     ),
     view_control_bar(total, model.current_page),
     view_measurement_container(model.flat_paragraphs, erased_opacity),
   ])
+}
+
+/// Render the active-line overlay. The overlay is only visible while
+/// the engine has a live target on a measured line:
+///
+/// * `mode == RealTime` — the overlay is a fade-engine affordance;
+///   Manual-mode readers see no overlay.
+/// * `engine_state` is `Running` or `Paused` — Stopped means no
+///   target. Paused keeps the overlay so the reader can see where
+///   they stopped.
+/// * `active_line` is `Some(_)` — there is a resolved line.
+/// * The matching `LineBox` exists in `model.line_boxes`.
+///
+/// Returns `element.none()` when any guard fails, so the overlay is
+/// fully absent from the DOM rather than rendering a zero-sized
+/// rectangle. Skipping the element entirely also keeps the
+/// rendered-HTML tests for Manual-mode views stable — no overlay
+/// markup ever appears in the no-engine baseline.
+fn view_active_line_overlay(model: Model) -> Element(Msg) {
+  let should_render = case model.mode, model.engine_state {
+    RealTime, Running -> True
+    RealTime, Paused -> True
+    _, _ -> False
+  }
+  case should_render {
+    False -> element.none()
+    True ->
+      case model.active_line {
+        None -> element.none()
+        Some(index) ->
+          case nth_line_box(model.line_boxes, index) {
+            None -> element.none()
+            Some(box) -> render_active_line_overlay(box)
+          }
+      }
+  }
+}
+
+/// `List(LineBox)` analogue of `pagination.nth`. The pagination
+/// helper is monomorphic in `List(Page)`, and the overlay's lookup
+/// against `line_boxes` is the only second caller in the program —
+/// generalising the pagination function would force every other
+/// caller to thread the type, so a local helper is the smaller
+/// change.
+fn nth_line_box(boxes: List(LineBox), index: Int) -> Option(LineBox) {
+  case index < 0 {
+    True -> None
+    False ->
+      case list.drop(boxes, index) {
+        [box, ..] -> Some(box)
+        [] -> None
+      }
+  }
+}
+
+/// Build the overlay `<div>` for a resolved `LineBox`. The element
+/// is absolutely positioned by inline `top` / `height` styles so a
+/// single `transition` on the CSS rule glides the overlay between
+/// lines when `active_line` changes; the rendered HTML doesn't
+/// re-mount, it just receives new style values.
+///
+/// `float.to_string` is used unmodified — no rounding is applied.
+/// Render stability across re-measurements relies on
+/// `getBoundingClientRect` being deterministic for an unchanged
+/// layout (the W3C CSSOM View spec requires it), so a re-measure
+/// against the same DOM produces byte-identical inline styles and
+/// Lustre's vdom diff sees no change. When the layout *does*
+/// change (page turn, re-pagination, settings drag), the new
+/// coordinates differ enough that any decimal jitter is dwarfed by
+/// the actual position delta. If a future genuine sub-pixel-jitter
+/// source surfaces, switch to `float.to_precision(_, 1)` here and
+/// add a test that pins the rounded format — do not rely on the
+/// rounding implicitly.
+fn render_active_line_overlay(box: LineBox) -> Element(Msg) {
+  let top_value = float.to_string(box.top) <> "px"
+  let height_value = float.to_string(box.height) <> "px"
+  html.div(
+    [
+      attribute.class("reader-active-line"),
+      attribute.attribute("aria-hidden", "true"),
+      attribute.style("top", top_value),
+      attribute.style("height", height_value),
+    ],
+    [],
+  )
 }
 
 /// Resolve the opacity string applied to erased sentences. Returns

@@ -12,6 +12,7 @@
 import { Ok, Error as GleamError, toList } from "../gleam.mjs";
 
 const PARAGRAPH_INDEX_ATTRIBUTE = "data-paragraph-global-index";
+const WORD_INDEX_ATTRIBUTE = "data-global-index";
 const RESIZE_DEBOUNCE_MS = 250;
 
 // Single-slot module-level handle for the real-time fade engine's
@@ -75,6 +76,90 @@ export function measure_paragraphs(container_selector) {
     pairs.push([index, node.getBoundingClientRect().height]);
   }
   return toList(pairs);
+}
+
+/**
+ * Walks every descendant of `container_selector` that carries a
+ * `data-global-index` attribute, groups them by the y-coordinate of
+ * their `getBoundingClientRect().top` (rounded to one CSS pixel), and
+ * returns one `[top, height, first_gi, last_gi]` tuple per visual line
+ * in document order. The `top` value is normalised to be relative to
+ * the container — every entry's `top` equals the line's distance from
+ * the container's top edge, so the caller can drop the tuple straight
+ * onto an absolutely-positioned overlay anchored inside the container
+ * without re-measuring.
+ *
+ * "Line" here means "set of word spans whose box tops align after
+ * line-wrapping," which is what the reader visually perceives as one
+ * row of text. Words that wrap across multiple visual lines are
+ * impossible at the segmentation layer (one Word maps to one inline
+ * span), so the per-word `getBoundingClientRect().top` is a faithful
+ * proxy for line identity.
+ *
+ * Heights take the per-line maximum so a line that mixes a tall glyph
+ * (e.g. ascender + descender) with shorter neighbours still reports a
+ * pixel-accurate height for the active-line overlay.
+ *
+ * Returns an empty list when the selector matches no element or when
+ * the container has no `data-global-index` descendants — the caller
+ * treats both as "no lines to highlight."
+ *
+ * @param {string} container_selector CSS selector for the measurement container
+ * @returns {List} Gleam-encoded list of `[top, height, first_gi, last_gi]` tuples
+ */
+export function measure_word_lines(container_selector) {
+  const container = document.querySelector(container_selector);
+  if (container === null) {
+    return toList([]);
+  }
+
+  const container_top = container.getBoundingClientRect().top;
+  const nodes = container.querySelectorAll(`[${WORD_INDEX_ATTRIBUTE}]`);
+
+  // Group by integer-rounded viewport y so floating-point jitter at
+  // sub-pixel widths cannot split a single line into two near-duplicate
+  // bands. The Map keys the rounded viewport-relative y; each entry
+  // carries the unrounded relative `top` (so the overlay reads a
+  // crisp value, not the rounded one), the running max height, and
+  // the lowest / highest word global index seen so far on this line.
+  const lines = new Map();
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect();
+    const key = Math.round(rect.top);
+    const relative_top = rect.top - container_top;
+    // `data-global-index` is produced by `int.to_string` in the Gleam
+    // view, so every attribute value is a base-10 integer string —
+    // no defensive `Number.isFinite` branch needed.
+    const gi = Number.parseInt(node.getAttribute(WORD_INDEX_ATTRIBUTE), 10);
+
+    const existing = lines.get(key);
+    if (existing === undefined) {
+      lines.set(key, {
+        top: relative_top,
+        height: rect.height,
+        first_gi: gi,
+        last_gi: gi,
+      });
+    } else {
+      // Words inside the same line always arrive in document order
+      // because `querySelectorAll` returns descendants in document
+      // order — so `last_gi` is always the newest visit and
+      // `first_gi` never needs updating after the line is first
+      // seen. The `Math.max` on height handles a mixed-glyph line
+      // where the first word reports a shorter bounding box than a
+      // later one with a descender.
+      existing.height = Math.max(existing.height, rect.height);
+      existing.last_gi = gi;
+    }
+  }
+
+  // Sort by viewport y so the returned list is in reading order. The
+  // `Map` already preserves insertion order, but a defensive sort
+  // keeps the contract independent of querySelectorAll's traversal
+  // promise (which is the spec-defined "document order", but a future
+  // shadow-DOM refactor could reshuffle).
+  const sorted = [...lines.values()].sort((a, b) => a.top - b.top);
+  return toList(sorted.map((l) => [l.top, l.height, l.first_gi, l.last_gi]));
 }
 
 /**
