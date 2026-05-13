@@ -707,10 +707,10 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
 }
 
 pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
-  // A right swipe with a non-empty undo stack must call Undo, not
-  // PreviousPage. The reader has unfinished erase work on the
-  // current page — going back would commit it via the page
-  // boundary clear, which the user did not ask for.
+  // A right swipe with a non-empty undo stack must call Undo. The
+  // reader has unfinished erase work on the current page — losing
+  // it via any other backward action would not be what the user
+  // asked for.
   let prior =
     Model(
       ..empty_model(),

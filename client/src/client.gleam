@@ -162,8 +162,8 @@ const body_class_reduced_motion: String = "vi-reduced-motion"
 ///   both `ParagraphsMeasured` (to feed `calculate_pages`) and
 ///   `view_paginated` (to populate the off-screen measurement
 ///   container). Recomputing it per render would walk the whole
-///   `SegmentedText` on every `NextPage` / `PreviousPage` keystroke
-///   for no semantic reason.
+///   `SegmentedText` on every `NextPage` keystroke for no semantic
+///   reason.
 /// * `pages` — pre-calculated page boundaries. Empty between
 ///   `TextLoaded` and the first `ParagraphsMeasured`, and during a
 ///   resize while measurement is in flight.
