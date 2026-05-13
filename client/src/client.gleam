@@ -2266,6 +2266,25 @@ fn apply_set_page_delay(model: Model, value: Int) -> #(Model, Effect(Msg)) {
   }
 }
 
+/// Toggle the OpenDyslexic body class. Unlike every other control on
+/// the settings panel (`ToggleDarkMode`, `SetFontSize`,
+/// `SetLineSpacing`, `ToggleGhostMode`, `SetGhostOpacity`, the four
+/// pacing fields), `dyslexia_font` is **deliberately not persisted**:
+/// it is not part of the wire-form `UserSettings` record and there is
+/// no `user_settings.dyslexia_font` column on the server. The toggle
+/// only modifies the in-memory `Model.dyslexia_font` and pushes the
+/// body class through FFI; a page reload reverts to the compiled-in
+/// default (`False`).
+///
+/// This divergence is intentional for the settings-persistence quest
+/// (the original done-when did not enumerate dyslexia), but surfacing
+/// it here so that a future operative does not copy this handler as a
+/// precedent for a new persistable setting. Adding persistence later
+/// requires extending `UserSettings` (server + client mirrors), the
+/// `user_settings` schema (with an ALTER TABLE migration), the
+/// JSON encoders / decoders, and routing this handler through
+/// `save_global_settings` after the toggle — same shape as any other
+/// `apply_set_*` arm in this file.
 fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
   let new_font = !model.dyslexia_font
   #(
