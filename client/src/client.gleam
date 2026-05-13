@@ -785,7 +785,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       // list. Setting it explicitly (rather than leaving the prior
       // value in place) avoids the cache lagging across a fresh
       // book load — the header would otherwise briefly carry the
-      // previous book's title.
+      // previous book's title. `total_pages` follows the same rule
+      // for the same reason: the field's invariant is
+      // `total_pages == list.length(pages)`, so resetting `pages` to
+      // `[]` without resetting `total_pages` to `0` would leave the
+      // page-indicator briefly rendering against the previous book's
+      // page count between this dispatch and `ParagraphsMeasured`.
       #(
         Model(
           ..model,
@@ -802,6 +807,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           total_sentence_count: sentences,
           total_word_count: words,
           current_chapter_title: "",
+          total_pages: 0,
         ),
         measure_after_paint(),
       )

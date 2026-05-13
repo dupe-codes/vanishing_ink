@@ -3605,6 +3605,22 @@ pub fn text_loaded_resets_cached_chapter_title_test() {
   assert updated.current_chapter_title == ""
 }
 
+pub fn text_loaded_resets_cached_total_pages_test() {
+  // The Model invariant is `total_pages == list.length(pages)`.
+  // `TextLoaded` resets `pages` to `[]` for a fresh book load, so
+  // the cache must reset to `0` in the same arm. Without this the
+  // page indicator briefly renders against the previous book's
+  // page count between `TextLoaded` and `ParagraphsMeasured` —
+  // exactly the cache-lag the sibling `current_chapter_title`
+  // reset is designed to prevent.
+  let prior = Model(..empty_model(), total_pages: 7)
+
+  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+
+  assert updated.total_pages == 0
+  assert updated.total_pages == list.length(updated.pages)
+}
+
 pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
   // ARIA progressbar semantics let screen reader users hear where
   // they are in the book — the app's central affordance. The track
