@@ -135,6 +135,17 @@ fn empty_model() -> Model {
     paste_error: None,
     add_book_open: False,
     created_book_segments: None,
+    global_defaults: types.UserSettings(
+      font_size: client.default_font_size,
+      line_spacing: client.default_line_spacing,
+      dark_mode: True,
+      ghost_mode: False,
+      ghost_opacity: client.default_ghost_opacity,
+      default_wpm: client.default_wpm,
+      default_paragraph_delay_ms: client.default_paragraph_delay_ms,
+      default_page_delay_ms: client.default_page_delay_ms,
+    ),
+    book_settings: None,
   )
 }
 
@@ -2025,11 +2036,20 @@ pub fn update_toggle_dark_mode_flips_dark_field_test() {
   // Starting from the dark default, one toggle moves us to light.
   // The body-class FFI side effect is observable in production but
   // not in this test environment; the reducer's job is to surface
-  // the new model field, which is what we pin.
+  // the new model field — and the persisted `global_defaults` mirror
+  // — which is what we pin.
   let initial = empty_model()
 
   let #(light, _) = client.update(initial, ToggleDarkMode)
-  assert light == Model(..initial, dark_mode: False)
+  assert light
+    == Model(
+      ..initial,
+      dark_mode: False,
+      global_defaults: types.UserSettings(
+        ..initial.global_defaults,
+        dark_mode: False,
+      ),
+    )
 
   let #(dark_again, _) = client.update(light, ToggleDarkMode)
   assert dark_again == initial
@@ -2042,22 +2062,34 @@ pub fn update_toggle_dark_mode_flips_dark_field_test() {
 pub fn update_set_font_size_clamps_below_min_test() {
   // The reducer clamps regardless of slider attributes — a programmatic
   // call (or a malformed event) bypassing the `min=14` HTML attribute
-  // must not poison the model. Clamps at the lo rail.
+  // must not poison the model. Clamps at the lo rail and stamps the
+  // global defaults so the next round-trip persists the clamped value.
   let #(updated, _) = client.update(empty_model(), SetFontSize(8))
-  assert updated == Model(..empty_model(), font_size: client.min_font_size)
+  assert updated == with_global_font_size(empty_model(), client.min_font_size)
 }
 
 pub fn update_set_font_size_clamps_above_max_test() {
   // Same clamp invariant at the hi rail.
   let #(updated, _) = client.update(empty_model(), SetFontSize(48))
-  assert updated == Model(..empty_model(), font_size: client.max_font_size)
+  assert updated == with_global_font_size(empty_model(), client.max_font_size)
 }
 
 pub fn update_set_font_size_stores_in_range_value_test() {
   // A mid-range value is written verbatim — the clamp is a guard,
   // not a quantiser.
   let #(updated, _) = client.update(empty_model(), SetFontSize(22))
-  assert updated == Model(..empty_model(), font_size: 22)
+  assert updated == with_global_font_size(empty_model(), 22)
+}
+
+fn with_global_font_size(model: Model, size: Int) -> Model {
+  Model(
+    ..model,
+    font_size: size,
+    global_defaults: types.UserSettings(
+      ..model.global_defaults,
+      font_size: size,
+    ),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2067,18 +2099,29 @@ pub fn update_set_font_size_stores_in_range_value_test() {
 pub fn update_set_line_spacing_clamps_below_min_test() {
   let #(updated, _) = client.update(empty_model(), SetLineSpacing(0.5))
   assert updated
-    == Model(..empty_model(), line_spacing: client.min_line_spacing)
+    == with_global_line_spacing(empty_model(), client.min_line_spacing)
 }
 
 pub fn update_set_line_spacing_clamps_above_max_test() {
   let #(updated, _) = client.update(empty_model(), SetLineSpacing(3.5))
   assert updated
-    == Model(..empty_model(), line_spacing: client.max_line_spacing)
+    == with_global_line_spacing(empty_model(), client.max_line_spacing)
 }
 
 pub fn update_set_line_spacing_stores_in_range_value_test() {
   let #(updated, _) = client.update(empty_model(), SetLineSpacing(1.8))
-  assert updated == Model(..empty_model(), line_spacing: 1.8)
+  assert updated == with_global_line_spacing(empty_model(), 1.8)
+}
+
+fn with_global_line_spacing(model: Model, value: Float) -> Model {
+  Model(
+    ..model,
+    line_spacing: value,
+    global_defaults: types.UserSettings(
+      ..model.global_defaults,
+      line_spacing: value,
+    ),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2089,7 +2132,15 @@ pub fn update_toggle_ghost_mode_flips_field_test() {
   let initial = empty_model()
 
   let #(on, _) = client.update(initial, ToggleGhostMode)
-  assert on == Model(..initial, ghost_mode: True)
+  assert on
+    == Model(
+      ..initial,
+      ghost_mode: True,
+      global_defaults: types.UserSettings(
+        ..initial.global_defaults,
+        ghost_mode: True,
+      ),
+    )
 
   let #(off, _) = client.update(on, ToggleGhostMode)
   assert off == initial
@@ -2098,20 +2149,33 @@ pub fn update_toggle_ghost_mode_flips_field_test() {
 pub fn update_set_ghost_opacity_clamps_below_min_test() {
   // `min_ghost_opacity` is 0.0, but a negative slider value is still
   // clamped — the lo-rail guard is the same shape as the int case.
+  // The fixture has no active book, so the change persists to the
+  // global defaults rather than landing as a per-book override.
   let #(updated, _) = client.update(empty_model(), SetGhostOpacity(-0.1))
   assert updated
-    == Model(..empty_model(), ghost_opacity: client.min_ghost_opacity)
+    == with_global_ghost_opacity(empty_model(), client.min_ghost_opacity)
 }
 
 pub fn update_set_ghost_opacity_clamps_above_max_test() {
   let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.9))
   assert updated
-    == Model(..empty_model(), ghost_opacity: client.max_ghost_opacity)
+    == with_global_ghost_opacity(empty_model(), client.max_ghost_opacity)
 }
 
 pub fn update_set_ghost_opacity_stores_in_range_value_test() {
   let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.12))
-  assert updated == Model(..empty_model(), ghost_opacity: 0.12)
+  assert updated == with_global_ghost_opacity(empty_model(), 0.12)
+}
+
+fn with_global_ghost_opacity(model: Model, value: Float) -> Model {
+  Model(
+    ..model,
+    ghost_opacity: value,
+    global_defaults: types.UserSettings(
+      ..model.global_defaults,
+      ghost_opacity: value,
+    ),
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -2819,6 +2883,151 @@ pub fn update_set_page_delay_clamps_into_range_test() {
   assert low.page_delay_ms == client.min_page_delay_ms
   assert high.page_delay_ms == client.max_page_delay_ms
   assert mid.page_delay_ms == 2500
+}
+
+// ---------------------------------------------------------------------------
+// update — settings persistence and per-book overrides
+// ---------------------------------------------------------------------------
+//
+// The four overridable fields (`wpm`, `paragraph_delay_ms`,
+// `page_delay_ms`, `ghost_opacity`) route their writes through
+// `persist_target`: in the reader view with an active book they land
+// as per-book overrides; everywhere else they update the global
+// defaults. The tests below pin both branches without inspecting the
+// fire-and-forget save effects (which run through FFI).
+
+pub fn update_set_wpm_with_active_book_sets_per_book_override_test() {
+  // Loaded book → SetWpm should land on `book_settings.wpm`, not on
+  // the global defaults. The effective `wpm` field still reflects the
+  // new value so the slider's readout updates immediately.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      book_settings: Some(types.BookSettings(
+        wpm: None,
+        paragraph_delay_ms: None,
+        page_delay_ms: None,
+        ghost_opacity: None,
+      )),
+    )
+
+  let #(updated, _) = client.update(prior, SetWpm(275))
+
+  assert updated.wpm == 275
+  assert updated.book_settings
+    == Some(types.BookSettings(
+      wpm: Some(275),
+      paragraph_delay_ms: None,
+      page_delay_ms: None,
+      ghost_opacity: None,
+    ))
+  // Global defaults must be untouched — the override only applies to
+  // this book.
+  assert updated.global_defaults == prior.global_defaults
+}
+
+pub fn update_set_wpm_in_library_view_updates_global_defaults_test() {
+  // No active book → SetWpm updates the global defaults instead of
+  // creating a stray per-book override against a stale id.
+  let prior = Model(..empty_model(), view: client.Library)
+
+  let #(updated, _) = client.update(prior, SetWpm(180))
+
+  assert updated.wpm == 180
+  assert updated.global_defaults.default_wpm == 180
+  assert updated.book_settings == None
+}
+
+pub fn update_reset_book_settings_restores_globals_test() {
+  // The Reset to default button collapses every per-book override
+  // back to `None` and re-pins the four effective fields to the
+  // global defaults.
+  let defaults =
+    types.UserSettings(
+      font_size: 20,
+      line_spacing: 1.5,
+      dark_mode: True,
+      ghost_mode: False,
+      ghost_opacity: 0.1,
+      default_wpm: 150,
+      default_paragraph_delay_ms: 800,
+      default_page_delay_ms: 1500,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      global_defaults: defaults,
+      book_settings: Some(types.BookSettings(
+        wpm: Some(400),
+        paragraph_delay_ms: Some(200),
+        page_delay_ms: Some(500),
+        ghost_opacity: Some(0.25),
+      )),
+      wpm: 400,
+      paragraph_delay_ms: 200,
+      page_delay_ms: 500,
+      ghost_opacity: 0.25,
+    )
+
+  let #(updated, _) = client.update(prior, client.ResetBookSettings)
+
+  assert updated.wpm == 150
+  assert updated.paragraph_delay_ms == 800
+  assert updated.page_delay_ms == 1500
+  assert updated.ghost_opacity == 0.1
+  assert updated.book_settings
+    == Some(types.BookSettings(
+      wpm: None,
+      paragraph_delay_ms: None,
+      page_delay_ms: None,
+      ghost_opacity: None,
+    ))
+}
+
+pub fn update_go_to_library_restores_global_pacing_fields_test() {
+  // Returning from the reader to the library should reset the four
+  // overridable fields back to the global defaults so the settings
+  // panel — reachable from the library appbar — shows the user-wide
+  // preferences rather than the previous book's effective values.
+  let defaults =
+    types.UserSettings(
+      ..empty_model().global_defaults,
+      default_wpm: 175,
+      default_paragraph_delay_ms: 600,
+      default_page_delay_ms: 1200,
+      ghost_opacity: 0.08,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      global_defaults: defaults,
+      book_settings: Some(types.BookSettings(
+        wpm: Some(350),
+        paragraph_delay_ms: Some(50),
+        page_delay_ms: Some(300),
+        ghost_opacity: Some(0.25),
+      )),
+      wpm: 350,
+      paragraph_delay_ms: 50,
+      page_delay_ms: 300,
+      ghost_opacity: 0.25,
+    )
+
+  let #(updated, _) = client.update(prior, GoToLibrary)
+
+  assert updated.view == client.Library
+  assert updated.wpm == 175
+  assert updated.paragraph_delay_ms == 600
+  assert updated.page_delay_ms == 1200
+  assert updated.ghost_opacity == 0.08
+  assert updated.book_settings == None
+  assert updated.active_book_id == None
 }
 
 // ---------------------------------------------------------------------------
@@ -4694,6 +4903,16 @@ pub fn view_library_renders_appbar_with_wordmark_test() {
   assert string.contains(rendered, "class=\"lib-appbar\"")
   assert string.contains(rendered, "class=\"app-wordmark\"")
   assert string.contains(rendered, "Vanishing Ink")
+}
+
+pub fn view_library_appbar_carries_settings_gear_test() {
+  // Same affordance as the reader header: the gear button toggles the
+  // settings panel from the library so global preferences (theme,
+  // font, default pacing) can be tweaked before any book is open.
+  let rendered = client.view(library_model()) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Open settings\"")
+  assert string.contains(rendered, "⚙")
 }
 
 pub fn view_library_renders_empty_state_when_no_books_test() {

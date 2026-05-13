@@ -60,7 +60,10 @@ import client/ffi
 import client/gestures
 import client/navigation
 import client/pagination.{type Page, type PageParagraph}
-import client/types.{type BookMeta}
+import client/types.{
+  type BookMeta, type BookSettings, type UserSettings, BookSettings,
+  UserSettings,
+}
 import shared/segmenter.{
   type Paragraph, type SegmentedText, type Sentence, type Word,
 }
@@ -176,6 +179,41 @@ pub const max_page_delay_ms: Int = 5000
 /// conversion divides by. Pulled out so the math is named in
 /// the source rather than relying on a magic literal.
 const ms_per_minute: Int = 60_000
+
+/// Compile-time fallback `UserSettings` used to seed `Model.global_defaults`
+/// before the `SettingsLoaded` round trip lands. The values mirror the
+/// server's `user_settings` column defaults so a fresh boot — even one
+/// where the server response is delayed — applies the same baseline the
+/// persisted record would surface. `dark_mode` is the only field whose
+/// runtime seed (`prefers-color-scheme`) differs from the server default;
+/// the caller supplies the OS preference at construction time so the
+/// in-memory baseline matches the rendered theme until the server
+/// response overwrites both.
+fn fallback_user_settings(dark_mode: Bool) -> UserSettings {
+  UserSettings(
+    font_size: default_font_size,
+    line_spacing: default_line_spacing,
+    dark_mode: dark_mode,
+    ghost_mode: False,
+    ghost_opacity: default_ghost_opacity,
+    default_wpm: default_wpm,
+    default_paragraph_delay_ms: default_paragraph_delay_ms,
+    default_page_delay_ms: default_page_delay_ms,
+  )
+}
+
+/// All-null per-book overrides — every field falls back to the
+/// global default. Used when `Reset to default` clears overrides
+/// and as the placeholder shape when a book has no row in
+/// `book_settings` yet.
+fn empty_book_settings() -> BookSettings {
+  BookSettings(
+    wpm: None,
+    paragraph_delay_ms: None,
+    page_delay_ms: None,
+    ghost_opacity: None,
+  )
+}
 
 // ---------------------------------------------------------------------------
 // DOM ids
@@ -514,6 +552,19 @@ pub type LineBox {
 ///   slot has been consumed. Holding the meta alongside the segments
 ///   means the cache-hit path does not need to walk `books` to
 ///   recover the metadata.
+/// * `global_defaults` — the persisted global reader preferences
+///   (the same eight fields the server's `user_settings` table
+///   carries). Seeded from the compiled-in defaults until the
+///   `SettingsLoaded` round trip lands; updated alongside the
+///   effective field whenever the reader changes a global preference
+///   so the next per-book merge has the latest baseline.
+/// * `book_settings` — the in-flight per-book overrides for the
+///   currently-loaded book (`None` while in the library or before
+///   `BookSettingsLoaded` lands). Each field is `None` when the
+///   book has no override for that setting, so the merge step uses
+///   `global_defaults` for that field. Saves go to
+///   `/api/books/:id/settings`; resetting the row sends an all-null
+///   record so the server clears the row.
 pub type Model {
   Model(
     text: Option(SegmentedText),
@@ -556,6 +607,8 @@ pub type Model {
     paste_error: Option(String),
     add_book_open: Bool,
     created_book_segments: Option(#(BookMeta, SegmentedText)),
+    global_defaults: UserSettings,
+    book_settings: Option(BookSettings),
   )
 }
 
@@ -825,6 +878,30 @@ pub type Msg {
   /// fires `create_book`. The submit button's `disabled` reflects
   /// `paste_submitting` so a double-tap cannot fire two POSTs.
   SubmitPaste
+
+  /// `GET /api/settings` resolved. The success arm decodes the body
+  /// as `UserSettings`, stamps `model.global_defaults`, and applies
+  /// every field to the matching effective model field — pushing CSS
+  /// custom properties and body classes via the same FFI calls the
+  /// individual setters use. The error arm logs and continues with
+  /// the compiled-in defaults; settings load is non-blocking by
+  /// design.
+  SettingsLoaded(Result(String, ffi.FetchError))
+
+  /// `GET /api/books/:id/settings` resolved. The success arm decodes
+  /// the body as `BookSettings`, merges each field with
+  /// `model.global_defaults`, and applies the merged values to the
+  /// four overridable effective fields. The error arm logs and
+  /// continues with the in-effect globals — a stuck request leaves
+  /// the reader using the user's last-known global preferences.
+  BookSettingsLoaded(Result(String, ffi.FetchError))
+
+  /// Reader pressed "Reset to default" in the per-book section of
+  /// the settings panel. Clears every per-book override (writes
+  /// `BookSettings(None, None, None, None)` to the server and the
+  /// model), and restores the four overridable effective fields to
+  /// `model.global_defaults`. A no-op when there is no active book.
+  ResetBookSettings
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +983,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       paste_error: None,
       add_book_open: False,
       created_book_segments: None,
+      global_defaults: fallback_user_settings(dark_mode),
+      book_settings: None,
     )
 
   // Boot effects:
@@ -963,6 +1042,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       viewport_meta,
       body_classes,
       fetch_books(),
+      fetch_settings(),
       resize_listener,
       arrow_listener,
       undo_listener,
@@ -1173,30 +1253,11 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     AdvanceWord -> apply_advance_word(model)
 
-    SetWpm(value) -> #(
-      Model(..model, wpm: clamp_int(value, min_wpm, max_wpm)),
-      effect.none(),
-    )
+    SetWpm(value) -> apply_set_wpm(model, value)
 
-    SetParagraphDelay(value) -> #(
-      Model(
-        ..model,
-        paragraph_delay_ms: clamp_int(
-          value,
-          min_paragraph_delay_ms,
-          max_paragraph_delay_ms,
-        ),
-      ),
-      effect.none(),
-    )
+    SetParagraphDelay(value) -> apply_set_paragraph_delay(model, value)
 
-    SetPageDelay(value) -> #(
-      Model(
-        ..model,
-        page_delay_ms: clamp_int(value, min_page_delay_ms, max_page_delay_ms),
-      ),
-      effect.none(),
-    )
+    SetPageDelay(value) -> apply_set_page_delay(model, value)
 
     BooksLoaded(Ok(books)) -> #(
       Model(..model, books: books, books_loading: False, library_error: None),
@@ -1286,6 +1347,40 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     SubmitPaste -> apply_submit_paste(model)
+
+    SettingsLoaded(Ok(body)) ->
+      case json.parse(body, types.user_settings_decoder()) {
+        Ok(settings) -> apply_settings_loaded(model, settings)
+        Error(_) -> {
+          io.println("Failed to decode /api/settings response")
+          #(model, effect.none())
+        }
+      }
+
+    SettingsLoaded(Error(error)) -> {
+      io.println(
+        "Failed to load global settings: " <> describe_fetch_error(error),
+      )
+      #(model, effect.none())
+    }
+
+    BookSettingsLoaded(Ok(body)) ->
+      case json.parse(body, types.book_settings_decoder()) {
+        Ok(settings) -> apply_book_settings_loaded(model, settings)
+        Error(_) -> {
+          io.println("Failed to decode /api/books/:id/settings response")
+          #(model, effect.none())
+        }
+      }
+
+    BookSettingsLoaded(Error(error)) -> {
+      io.println(
+        "Failed to load book settings: " <> describe_fetch_error(error),
+      )
+      #(model, effect.none())
+    }
+
+    ResetBookSettings -> apply_reset_book_settings(model)
   }
 }
 
@@ -1334,6 +1429,12 @@ fn apply_book_loaded(
   text: SegmentedText,
 ) -> #(Model, Effect(Msg)) {
   let loaded = apply_text_load(model, text)
+  // Reset the per-book overrides up front so a previous book's
+  // overrides do not bleed into the new session before
+  // `BookSettingsLoaded` lands. The effective pacing fields
+  // simultaneously revert to the global defaults; the follow-up
+  // fetch will re-merge any overrides the new book carries.
+  let defaults = loaded.global_defaults
   #(
     Model(
       ..loaded,
@@ -1342,8 +1443,13 @@ fn apply_book_loaded(
       library_error: None,
       engine_state: Stopped,
       next_word_index: None,
+      book_settings: None,
+      ghost_opacity: defaults.ghost_opacity,
+      wpm: defaults.default_wpm,
+      paragraph_delay_ms: defaults.default_paragraph_delay_ms,
+      page_delay_ms: defaults.default_page_delay_ms,
     ),
-    measure_after_paint(),
+    effect.batch([measure_after_paint(), fetch_book_settings(meta.id)]),
   )
 }
 
@@ -1387,6 +1493,7 @@ fn apply_text_load(model: Model, text: SegmentedText) -> Model {
 /// per-book setting; `books` / `books_loading` are untouched so
 /// the library renders immediately on the swap.
 fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
+  let defaults = model.global_defaults
   let cleared =
     Model(
       ..model,
@@ -1409,8 +1516,31 @@ fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       engine_state: Stopped,
       next_word_index: None,
       settings_open: False,
+      // Returning to the library re-pins the four overridable fields
+      // to the global defaults so the settings panel — which can be
+      // opened from the library appbar — shows the user-wide
+      // preferences rather than the previous book's effective values.
+      book_settings: None,
+      ghost_opacity: defaults.ghost_opacity,
+      wpm: defaults.default_wpm,
+      paragraph_delay_ms: defaults.default_paragraph_delay_ms,
+      page_delay_ms: defaults.default_page_delay_ms,
     )
-  #(cleared, effect.from(fn(_dispatch) { ffi.clear_word_timer() }))
+  #(
+    cleared,
+    effect.batch([
+      effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+      // Push the restored `ghost_opacity` into the CSS cascade so the
+      // settings panel slider and any visible ghosted prose pick up
+      // the global value rather than the last per-book override.
+      effect.from(fn(_dispatch) {
+        ffi.set_css_property(
+          css_var_ghost_opacity,
+          float.to_string(defaults.ghost_opacity),
+        )
+      }),
+    ]),
+  )
 }
 
 /// Validate the paste form and fire `create_book`. Empty title or
@@ -1480,6 +1610,103 @@ fn fetch_book(id: String) -> Effect(Msg) {
   })
 }
 
+/// `GET /api/settings` and dispatch `SettingsLoaded` with the raw
+/// response body string. The reducer arm runs the decoder so a
+/// decode failure surfaces as `Error(DecodeError(_))` alongside
+/// every other fetch failure — keeping the load path's error
+/// surface symmetrical with the books fetches.
+fn fetch_settings() -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/settings", fn(result) {
+      dispatch(SettingsLoaded(result))
+    })
+  })
+}
+
+/// `GET /api/books/:id/settings` and dispatch `BookSettingsLoaded`.
+/// Same shape as `fetch_settings` — the body is forwarded raw so
+/// the reducer can branch on the decode result inline.
+fn fetch_book_settings(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/books/" <> id <> "/settings", fn(result) {
+      dispatch(BookSettingsLoaded(result))
+    })
+  })
+}
+
+/// Persist the current global preferences via `PUT /api/settings`.
+/// Fire-and-forget — the JS callback logs failures to the console so
+/// a future operator session can investigate, but the UI does not
+/// surface a banner because settings saves race with rapid slider
+/// drags and a queued error toast would feel noisier than the bug
+/// it indicates.
+fn save_global_settings(settings: UserSettings) -> Effect(Msg) {
+  let body =
+    settings
+    |> user_settings_to_json
+    |> json.to_string
+  effect.from(fn(_dispatch) {
+    ffi.fetch_json_put("/api/settings", body, fn(result) {
+      case result {
+        Ok(_) -> Nil
+        Error(error) ->
+          io.println(
+            "Failed to save global settings: " <> describe_fetch_error(error),
+          )
+      }
+    })
+  })
+}
+
+/// Persist the current per-book overrides via
+/// `PUT /api/books/:id/settings`. Same fire-and-forget shape as
+/// `save_global_settings`; the only failure surface is the console.
+fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
+  let body =
+    settings
+    |> book_settings_to_json
+    |> json.to_string
+  effect.from(fn(_dispatch) {
+    ffi.fetch_json_put("/api/books/" <> id <> "/settings", body, fn(result) {
+      case result {
+        Ok(_) -> Nil
+        Error(error) ->
+          io.println(
+            "Failed to save book settings: " <> describe_fetch_error(error),
+          )
+      }
+    })
+  })
+}
+
+fn user_settings_to_json(settings: UserSettings) -> json.Json {
+  json.object([
+    #("font_size", json.int(settings.font_size)),
+    #("line_spacing", json.float(settings.line_spacing)),
+    #("dark_mode", json.bool(settings.dark_mode)),
+    #("ghost_mode", json.bool(settings.ghost_mode)),
+    #("ghost_opacity", json.float(settings.ghost_opacity)),
+    #("default_wpm", json.int(settings.default_wpm)),
+    #(
+      "default_paragraph_delay_ms",
+      json.int(settings.default_paragraph_delay_ms),
+    ),
+    #("default_page_delay_ms", json.int(settings.default_page_delay_ms)),
+  ])
+}
+
+fn book_settings_to_json(settings: BookSettings) -> json.Json {
+  json.object([
+    #("wpm", json.nullable(settings.wpm, json.int)),
+    #(
+      "paragraph_delay_ms",
+      json.nullable(settings.paragraph_delay_ms, json.int),
+    ),
+    #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
+    #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
+  ])
+}
+
 /// `POST /api/books` with the JSON body `{ "title", "text" }` and
 /// dispatch `BookCreated`. The server segments and stores the text;
 /// the response carries both the new metadata and the parsed
@@ -1539,20 +1766,223 @@ pub fn describe_fetch_error(error: ffi.FetchError) -> String {
 // Splitting them out keeps the top-level `update` case statement scannable
 // and lets each transition be unit-tested without inspecting the others.
 
+/// Apply the persisted global preferences to the running model. Each
+/// of the eight fields is mirrored onto the effective field on the
+/// model and pushed into the CSS cascade through the same FFI calls
+/// the individual setters use, so the rendered theme matches the
+/// loaded record on the same frame. `global_defaults` is also stamped
+/// so a later per-book merge has the latest baseline.
+fn apply_settings_loaded(
+  model: Model,
+  settings: UserSettings,
+) -> #(Model, Effect(Msg)) {
+  let new_model =
+    Model(
+      ..model,
+      global_defaults: settings,
+      font_size: settings.font_size,
+      line_spacing: settings.line_spacing,
+      dark_mode: settings.dark_mode,
+      ghost_mode: settings.ghost_mode,
+      // The per-book overrides — if any — already won the merge in
+      // `apply_book_settings_loaded`; when loading the globals on top
+      // of an already-merged reader state we must not regress those
+      // overrides. The four fields below therefore re-merge against
+      // any active `book_settings` rather than blindly taking the new
+      // global value.
+      ghost_opacity: effective_ghost_opacity(model.book_settings, settings),
+      wpm: effective_wpm(model.book_settings, settings),
+      paragraph_delay_ms: effective_paragraph_delay(
+        model.book_settings,
+        settings,
+      ),
+      page_delay_ms: effective_page_delay(model.book_settings, settings),
+    )
+  let css_effects =
+    effect.from(fn(_dispatch) {
+      ffi.set_css_property(
+        css_var_font_size,
+        int.to_string(new_model.font_size) <> "px",
+      )
+      ffi.set_css_property(
+        css_var_line_height,
+        float.to_string(new_model.line_spacing),
+      )
+      ffi.set_css_property(
+        css_var_ghost_opacity,
+        float.to_string(new_model.ghost_opacity),
+      )
+      ffi.set_body_class(body_class_light_mode, !new_model.dark_mode)
+      ffi.set_body_class(body_class_ghost_mode, new_model.ghost_mode)
+    })
+  // Font size and line spacing changes alter paragraph wrap heights,
+  // so kick the measurement loop. `repaginate_after_paint` is a no-op
+  // when no text is loaded yet (the resulting `ViewportResized`
+  // dispatch fires the measurement effect, which is harmless before
+  // the reader has paginated anything).
+  #(new_model, effect.batch([css_effects, repaginate_after_paint()]))
+}
+
+/// Merge per-book overrides with the current `global_defaults` and
+/// apply the four resulting effective values to the model. The
+/// `BookSettings` record is also stored so a later edit of one
+/// override (or a `ResetBookSettings`) has the prior overrides to
+/// diff against.
+fn apply_book_settings_loaded(
+  model: Model,
+  settings: BookSettings,
+) -> #(Model, Effect(Msg)) {
+  let new_model =
+    Model(
+      ..model,
+      book_settings: Some(settings),
+      ghost_opacity: effective_ghost_opacity(
+        Some(settings),
+        model.global_defaults,
+      ),
+      wpm: effective_wpm(Some(settings), model.global_defaults),
+      paragraph_delay_ms: effective_paragraph_delay(
+        Some(settings),
+        model.global_defaults,
+      ),
+      page_delay_ms: effective_page_delay(Some(settings), model.global_defaults),
+    )
+  let css_effects =
+    effect.from(fn(_dispatch) {
+      ffi.set_css_property(
+        css_var_ghost_opacity,
+        float.to_string(new_model.ghost_opacity),
+      )
+    })
+  #(new_model, css_effects)
+}
+
+/// Clear every per-book override for the current book. Writes an
+/// all-null record to the server (which deletes the override row's
+/// values), restores the four effective fields to the global
+/// defaults, and updates `model.book_settings` to match. A no-op
+/// when no book is loaded — the reader cannot dispatch this Msg
+/// from the library view in practice (the UI only renders the
+/// Reset button when reading), but the guard keeps the helper
+/// total.
+fn apply_reset_book_settings(model: Model) -> #(Model, Effect(Msg)) {
+  case model.active_book_id {
+    None -> #(model, effect.none())
+    Some(id) -> {
+      let cleared = empty_book_settings()
+      let defaults = model.global_defaults
+      let new_model =
+        Model(
+          ..model,
+          book_settings: Some(cleared),
+          ghost_opacity: defaults.ghost_opacity,
+          wpm: defaults.default_wpm,
+          paragraph_delay_ms: defaults.default_paragraph_delay_ms,
+          page_delay_ms: defaults.default_page_delay_ms,
+        )
+      let css_effects =
+        effect.from(fn(_dispatch) {
+          ffi.set_css_property(
+            css_var_ghost_opacity,
+            float.to_string(new_model.ghost_opacity),
+          )
+        })
+      #(new_model, effect.batch([css_effects, save_book_settings(id, cleared)]))
+    }
+  }
+}
+
+/// Where to persist a change to one of the four overridable fields
+/// (`ghost_opacity`, `wpm`, `paragraph_delay_ms`, `page_delay_ms`).
+///
+/// `PersistBook(id)` — the reader is on the reader view with an active
+/// book id, so the change should be stored as a per-book override and
+/// PUT to `/api/books/:id/settings`.
+///
+/// `PersistGlobal` — the reader is on the library view (no book
+/// loaded, no per-book scope to attach the change to), so the change
+/// is stored as a global default and PUT to `/api/settings`. This is
+/// the path the library-appbar gear button feeds, and a future
+/// route-state design that lets the reader edit globals while a book
+/// is open can flow through the same arm.
+type PersistTarget {
+  PersistBook(id: String)
+  PersistGlobal
+}
+
+/// Decide whether the next overridable-field change should land on
+/// the active book or on the global defaults. The reader view with an
+/// active book id is the only path that produces a per-book write —
+/// every other configuration (library view, library view with stale
+/// `active_book_id` from a half-cancelled load) falls through to the
+/// global path so a slider drag in the library never silently writes
+/// to a hidden book row.
+fn persist_target(model: Model) -> PersistTarget {
+  case model.view, model.active_book_id {
+    Reader, Some(id) -> PersistBook(id)
+    _, _ -> PersistGlobal
+  }
+}
+
+fn effective_wpm(
+  overrides: Option(BookSettings),
+  defaults: UserSettings,
+) -> Int {
+  case overrides {
+    Some(BookSettings(wpm: Some(v), ..)) -> v
+    _ -> defaults.default_wpm
+  }
+}
+
+fn effective_paragraph_delay(
+  overrides: Option(BookSettings),
+  defaults: UserSettings,
+) -> Int {
+  case overrides {
+    Some(BookSettings(paragraph_delay_ms: Some(v), ..)) -> v
+    _ -> defaults.default_paragraph_delay_ms
+  }
+}
+
+fn effective_page_delay(
+  overrides: Option(BookSettings),
+  defaults: UserSettings,
+) -> Int {
+  case overrides {
+    Some(BookSettings(page_delay_ms: Some(v), ..)) -> v
+    _ -> defaults.default_page_delay_ms
+  }
+}
+
+fn effective_ghost_opacity(
+  overrides: Option(BookSettings),
+  defaults: UserSettings,
+) -> Float {
+  case overrides {
+    Some(BookSettings(ghost_opacity: Some(v), ..)) -> v
+    _ -> defaults.ghost_opacity
+  }
+}
+
 fn apply_toggle_dark_mode(model: Model) -> #(Model, Effect(Msg)) {
   let new_dark = !model.dark_mode
+  let new_defaults = UserSettings(..model.global_defaults, dark_mode: new_dark)
   #(
-    Model(..model, dark_mode: new_dark),
-    effect.from(fn(_dispatch) {
-      ffi.set_body_class(body_class_light_mode, !new_dark)
-    }),
+    Model(..model, dark_mode: new_dark, global_defaults: new_defaults),
+    effect.batch([
+      effect.from(fn(_dispatch) {
+        ffi.set_body_class(body_class_light_mode, !new_dark)
+      }),
+      save_global_settings(new_defaults),
+    ]),
   )
 }
 
 fn apply_set_font_size(model: Model, size: Int) -> #(Model, Effect(Msg)) {
   let clamped = clamp_int(size, min_font_size, max_font_size)
+  let new_defaults = UserSettings(..model.global_defaults, font_size: clamped)
   #(
-    Model(..model, font_size: clamped),
+    Model(..model, font_size: clamped, global_defaults: new_defaults),
     effect.batch([
       effect.from(fn(_dispatch) {
         ffi.set_css_property(css_var_font_size, int.to_string(clamped) <> "px")
@@ -1563,6 +1993,7 @@ fn apply_set_font_size(model: Model, size: Int) -> #(Model, Effect(Msg)) {
       // keeps the resize path and the settings-change path identical from
       // `measure_after_paint` onward.
       repaginate_after_paint(),
+      save_global_settings(new_defaults),
     ]),
   )
 }
@@ -1572,29 +2003,37 @@ fn apply_set_line_spacing(
   spacing: Float,
 ) -> #(Model, Effect(Msg)) {
   let clamped = clamp_float(spacing, min_line_spacing, max_line_spacing)
+  let new_defaults =
+    UserSettings(..model.global_defaults, line_spacing: clamped)
   #(
-    Model(..model, line_spacing: clamped),
+    Model(..model, line_spacing: clamped, global_defaults: new_defaults),
     effect.batch([
       effect.from(fn(_dispatch) {
         ffi.set_css_property(css_var_line_height, float.to_string(clamped))
       }),
       repaginate_after_paint(),
+      save_global_settings(new_defaults),
     ]),
   )
 }
 
 fn apply_toggle_ghost_mode(model: Model) -> #(Model, Effect(Msg)) {
   let new_ghost = !model.ghost_mode
+  let new_defaults =
+    UserSettings(..model.global_defaults, ghost_mode: new_ghost)
   #(
-    Model(..model, ghost_mode: new_ghost),
-    // Only the body class is toggled here. The `--vi-ghost-opacity`
-    // custom property is owned by `apply_set_ghost_opacity`, which
-    // writes it on every change to `model.ghost_opacity`; pushing it
-    // again from this arm would be a dead write — the variable is
-    // already up to date when ghost mode flips on or off.
-    effect.from(fn(_dispatch) {
-      ffi.set_body_class(body_class_ghost_mode, new_ghost)
-    }),
+    Model(..model, ghost_mode: new_ghost, global_defaults: new_defaults),
+    effect.batch([
+      // Only the body class is toggled here. The `--vi-ghost-opacity`
+      // custom property is owned by `apply_set_ghost_opacity`, which
+      // writes it on every change to `model.ghost_opacity`; pushing it
+      // again from this arm would be a dead write — the variable is
+      // already up to date when ghost mode flips on or off.
+      effect.from(fn(_dispatch) {
+        ffi.set_body_class(body_class_ghost_mode, new_ghost)
+      }),
+      save_global_settings(new_defaults),
+    ]),
   )
 }
 
@@ -1603,12 +2042,119 @@ fn apply_set_ghost_opacity(
   opacity: Float,
 ) -> #(Model, Effect(Msg)) {
   let clamped = clamp_float(opacity, min_ghost_opacity, max_ghost_opacity)
-  #(
-    Model(..model, ghost_opacity: clamped),
+  let css_effect =
     effect.from(fn(_dispatch) {
       ffi.set_css_property(css_var_ghost_opacity, float.to_string(clamped))
-    }),
-  )
+    })
+  let updated = Model(..model, ghost_opacity: clamped)
+  case persist_target(updated) {
+    PersistGlobal -> {
+      let new_defaults =
+        UserSettings(..updated.global_defaults, ghost_opacity: clamped)
+      #(
+        Model(..updated, global_defaults: new_defaults),
+        effect.batch([css_effect, save_global_settings(new_defaults)]),
+      )
+    }
+    PersistBook(id) -> {
+      let overrides = case updated.book_settings {
+        None -> empty_book_settings()
+        Some(s) -> s
+      }
+      let new_overrides =
+        BookSettings(..overrides, ghost_opacity: Some(clamped))
+      #(
+        Model(..updated, book_settings: Some(new_overrides)),
+        effect.batch([css_effect, save_book_settings(id, new_overrides)]),
+      )
+    }
+  }
+}
+
+fn apply_set_wpm(model: Model, value: Int) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_int(value, min_wpm, max_wpm)
+  let updated = Model(..model, wpm: clamped)
+  case persist_target(updated) {
+    PersistGlobal -> {
+      let new_defaults =
+        UserSettings(..updated.global_defaults, default_wpm: clamped)
+      #(
+        Model(..updated, global_defaults: new_defaults),
+        save_global_settings(new_defaults),
+      )
+    }
+    PersistBook(id) -> {
+      let overrides = case updated.book_settings {
+        None -> empty_book_settings()
+        Some(s) -> s
+      }
+      let new_overrides = BookSettings(..overrides, wpm: Some(clamped))
+      #(
+        Model(..updated, book_settings: Some(new_overrides)),
+        save_book_settings(id, new_overrides),
+      )
+    }
+  }
+}
+
+fn apply_set_paragraph_delay(
+  model: Model,
+  value: Int,
+) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_int(value, min_paragraph_delay_ms, max_paragraph_delay_ms)
+  let updated = Model(..model, paragraph_delay_ms: clamped)
+  case persist_target(updated) {
+    PersistGlobal -> {
+      let new_defaults =
+        UserSettings(
+          ..updated.global_defaults,
+          default_paragraph_delay_ms: clamped,
+        )
+      #(
+        Model(..updated, global_defaults: new_defaults),
+        save_global_settings(new_defaults),
+      )
+    }
+    PersistBook(id) -> {
+      let overrides = case updated.book_settings {
+        None -> empty_book_settings()
+        Some(s) -> s
+      }
+      let new_overrides =
+        BookSettings(..overrides, paragraph_delay_ms: Some(clamped))
+      #(
+        Model(..updated, book_settings: Some(new_overrides)),
+        save_book_settings(id, new_overrides),
+      )
+    }
+  }
+}
+
+fn apply_set_page_delay(model: Model, value: Int) -> #(Model, Effect(Msg)) {
+  let clamped = clamp_int(value, min_page_delay_ms, max_page_delay_ms)
+  let updated = Model(..model, page_delay_ms: clamped)
+  case persist_target(updated) {
+    PersistGlobal -> {
+      let new_defaults =
+        UserSettings(..updated.global_defaults, default_page_delay_ms: clamped)
+      #(
+        Model(..updated, global_defaults: new_defaults),
+        save_global_settings(new_defaults),
+      )
+    }
+    PersistBook(id) -> {
+      let overrides = case updated.book_settings {
+        None -> empty_book_settings()
+        Some(s) -> s
+      }
+      let new_overrides =
+        BookSettings(..overrides, page_delay_ms: Some(clamped))
+      #(
+        Model(..updated, book_settings: Some(new_overrides)),
+        save_book_settings(id, new_overrides),
+      )
+    }
+  }
 }
 
 fn apply_toggle_dyslexia_font(model: Model) -> #(Model, Effect(Msg)) {
@@ -3393,7 +3939,63 @@ fn view_settings_sheet(model: Model) -> Element(Msg) {
     view_ghost_mode_toggle(model),
     view_ghost_opacity_slider(model),
     view_dyslexia_font_toggle(model),
+    view_book_override_section(model),
   ])
+}
+
+/// Per-book override controls. Rendered only when the reader is in
+/// the reader view with an active book id — the library view has no
+/// per-book scope to attach a reset to. The visible section is a
+/// single "Reset to default" button: every slider in the panel above
+/// it already routes its writes through `persist_target`, so a
+/// dedicated per-book editing surface would duplicate the existing
+/// controls. The reset button collapses every override to `None`,
+/// applies the global defaults to the four overridable fields, and
+/// PUTs the cleared record so the server row drops its values.
+///
+/// The footer note explains the scoping — without it the reader
+/// would have no way to tell that pacing edits made while reading
+/// only affect this book.
+fn view_book_override_section(model: Model) -> Element(Msg) {
+  case model.view, model.active_book_id {
+    Reader, Some(_) -> view_book_override_panel(model)
+    _, _ -> element.none()
+  }
+}
+
+fn view_book_override_panel(model: Model) -> Element(Msg) {
+  let has_overrides = case model.book_settings {
+    None -> False
+    Some(s) -> book_settings_has_overrides(s)
+  }
+  html.div([attribute.class("settings-book-overrides")], [
+    html.hr([attribute.class("settings-divider")]),
+    html.div([attribute.class("settings-row-header")], [
+      html.span([], [html.text("Per-book overrides")]),
+    ]),
+    html.div([attribute.class("settings-row-hint")], [
+      html.text(
+        "Pacing and ghost opacity changes while reading apply to this book only.",
+      ),
+    ]),
+    html.button(
+      [
+        attribute.class("btn-bar"),
+        attribute.type_("button"),
+        attribute.disabled(!has_overrides),
+        attribute.aria_label("Reset book overrides to defaults"),
+        event.on_click(ResetBookSettings),
+      ],
+      [html.text("Reset to default")],
+    ),
+  ])
+}
+
+fn book_settings_has_overrides(settings: BookSettings) -> Bool {
+  option.is_some(settings.wpm)
+  || option.is_some(settings.paragraph_delay_ms)
+  || option.is_some(settings.page_delay_ms)
+  || option.is_some(settings.ghost_opacity)
 }
 
 /// Attach a click listener that stops propagation but never dispatches
@@ -3704,6 +4306,20 @@ fn view_library_appbar() -> Element(Msg) {
         ),
         html.span([], [html.text("Vanishing Ink")]),
       ]),
+      // Settings is reachable from the library so global preferences
+      // (theme, font, dyslexia mode, default pacing) can be tweaked
+      // before any book is open — without this, the gear was only
+      // available once the reader entered a book, hiding a useful
+      // surface behind a navigation step.
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Open settings"),
+          attribute.type_("button"),
+          event.on_click(ToggleSettings),
+        ],
+        [html.text("⚙")],
+      ),
     ]),
   ])
 }

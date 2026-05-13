@@ -517,7 +517,11 @@ fn get_book_settings_handler(ctx: Context, id: String) -> Response {
   }
 }
 
-fn put_book_settings_handler(req: Request, ctx: Context, id: String) -> Response {
+fn put_book_settings_handler(
+  req: Request,
+  ctx: Context,
+  id: String,
+) -> Response {
   use body <- wisp.require_json(req)
 
   case db.get_book(ctx.db, id) {
@@ -531,11 +535,7 @@ fn put_book_settings_handler(req: Request, ctx: Context, id: String) -> Response
             Error(detail) -> wisp.bad_request(detail)
             Ok(settings) ->
               case
-                db.upsert_book_settings(
-                  ctx.db,
-                  book_id: id,
-                  settings: settings,
-                )
+                db.upsert_book_settings(ctx.db, book_id: id, settings: settings)
               {
                 Error(error) ->
                   db_error_response("db.upsert_book_settings", error)
@@ -561,11 +561,7 @@ fn empty_book_settings() -> BookSettings {
 }
 
 fn book_settings_decoder() -> decode.Decoder(BookSettings) {
-  use wpm <- decode.optional_field(
-    "wpm",
-    None,
-    decode.optional(decode.int),
-  )
+  use wpm <- decode.optional_field("wpm", None, decode.optional(decode.int))
   use paragraph_delay_ms <- decode.optional_field(
     "paragraph_delay_ms",
     None,
