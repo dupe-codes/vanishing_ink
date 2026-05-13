@@ -2326,11 +2326,13 @@ fn fade_pages() -> List(Page) {
 
 fn fade_model() -> Model {
   let text = fade_text()
+  let pages = fade_pages()
   Model(
     ..empty_model(),
     text: Some(text),
     flat_paragraphs: pagination.flatten(text),
-    pages: fade_pages(),
+    pages: pages,
+    total_pages: list.length(pages),
     mode: RealTime,
   )
 }
@@ -2349,11 +2351,13 @@ fn fade_pages_single() -> List(Page) {
 
 fn fade_model_single_page() -> Model {
   let text = fade_text()
+  let pages = fade_pages_single()
   Model(
     ..empty_model(),
     text: Some(text),
     flat_paragraphs: pagination.flatten(text),
-    pages: fade_pages_single(),
+    pages: pages,
+    total_pages: list.length(pages),
     mode: RealTime,
   )
 }
