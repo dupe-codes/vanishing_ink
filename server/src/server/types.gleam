@@ -59,6 +59,24 @@ pub type UserSettings {
   )
 }
 
+/// Per-book reader overrides. Every field is `Option` because a
+/// missing override means "use the global default" — the SQLite row
+/// stores `NULL` for the column, the wire form emits `null`, and the
+/// client merges the result against `UserSettings` at apply time.
+///
+/// Only the four pacing / ghost-opacity fields are overridable; the
+/// visual fields (font size, line spacing, theme) ride on
+/// `UserSettings` alone because they represent a reader-wide
+/// preference rather than a per-text choice.
+pub type BookSettings {
+  BookSettings(
+    wpm: Option(Int),
+    paragraph_delay_ms: Option(Int),
+    page_delay_ms: Option(Int),
+    ghost_opacity: Option(Float),
+  )
+}
+
 /// Per-book reading state. The bitsets are raw bytes addressing
 /// sentences / words by their global index as assigned by the
 /// segmenter; on the wire they go out as base64 so JSON stays
@@ -132,6 +150,21 @@ pub fn user_settings_to_json(settings: UserSettings) -> json.Json {
       json.int(settings.default_paragraph_delay_ms),
     ),
     #("default_page_delay_ms", json.int(settings.default_page_delay_ms)),
+  ])
+}
+
+/// Encode per-book settings as a flat JSON object. Every field is
+/// nullable on the wire — `None` round-trips as JSON `null`, which
+/// the client reads as "no override, use the global default".
+pub fn book_settings_to_json(settings: BookSettings) -> json.Json {
+  json.object([
+    #("wpm", json.nullable(settings.wpm, json.int)),
+    #(
+      "paragraph_delay_ms",
+      json.nullable(settings.paragraph_delay_ms, json.int),
+    ),
+    #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
+    #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
   ])
 }
 

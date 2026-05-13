@@ -88,3 +88,93 @@ pub fn create_book_response_decoder() -> decode.Decoder(
   use segments <- decode.field("segments", segmenter.decoder())
   decode.success(#(meta, segments))
 }
+
+/// Global user-wide reader settings. Mirrors
+/// `server/types.gleam:UserSettings`; the same fields ride on `Model`
+/// at the top level, but a self-contained record is what the
+/// `/api/settings` decoder produces and what the matching encoder
+/// reads back when the client persists a change.
+///
+/// Field names mirror the server's JSON keys exactly so the encoder
+/// and decoder stay symmetrical — a drift on either side surfaces
+/// in tests rather than as a silent shape mismatch at runtime.
+pub type UserSettings {
+  UserSettings(
+    font_size: Int,
+    line_spacing: Float,
+    dark_mode: Bool,
+    ghost_mode: Bool,
+    ghost_opacity: Float,
+    default_wpm: Int,
+    default_paragraph_delay_ms: Int,
+    default_page_delay_ms: Int,
+  )
+}
+
+/// Per-book reader overrides. Every field is `Option` because a
+/// missing override means "use the global default" — the server
+/// stores SQL `NULL` for those columns and the wire form emits
+/// `null`, so the typed mirror is `None`.
+///
+/// Only the four fields below are overridable on a per-book basis:
+/// the visual settings (font size, line spacing, theme) ride on the
+/// global preferences alone.
+pub type BookSettings {
+  BookSettings(
+    wpm: Option(Int),
+    paragraph_delay_ms: Option(Int),
+    page_delay_ms: Option(Int),
+    ghost_opacity: Option(Float),
+  )
+}
+
+/// Decoder for `GET /api/settings`. Pairs field-for-field with the
+/// server's `user_settings_to_json` encoder.
+pub fn user_settings_decoder() -> decode.Decoder(UserSettings) {
+  use font_size <- decode.field("font_size", decode.int)
+  use line_spacing <- decode.field("line_spacing", decode.float)
+  use dark_mode <- decode.field("dark_mode", decode.bool)
+  use ghost_mode <- decode.field("ghost_mode", decode.bool)
+  use ghost_opacity <- decode.field("ghost_opacity", decode.float)
+  use default_wpm <- decode.field("default_wpm", decode.int)
+  use default_paragraph_delay_ms <- decode.field(
+    "default_paragraph_delay_ms",
+    decode.int,
+  )
+  use default_page_delay_ms <- decode.field("default_page_delay_ms", decode.int)
+  decode.success(UserSettings(
+    font_size: font_size,
+    line_spacing: line_spacing,
+    dark_mode: dark_mode,
+    ghost_mode: ghost_mode,
+    ghost_opacity: ghost_opacity,
+    default_wpm: default_wpm,
+    default_paragraph_delay_ms: default_paragraph_delay_ms,
+    default_page_delay_ms: default_page_delay_ms,
+  ))
+}
+
+/// Decoder for `GET /api/books/:id/settings`. The server emits
+/// `null` for a column that has no override; the typed mirror is
+/// `None`, so each field decodes through `decode.optional`.
+pub fn book_settings_decoder() -> decode.Decoder(BookSettings) {
+  use wpm <- decode.field("wpm", decode.optional(decode.int))
+  use paragraph_delay_ms <- decode.field(
+    "paragraph_delay_ms",
+    decode.optional(decode.int),
+  )
+  use page_delay_ms <- decode.field(
+    "page_delay_ms",
+    decode.optional(decode.int),
+  )
+  use ghost_opacity <- decode.field(
+    "ghost_opacity",
+    decode.optional(decode.float),
+  )
+  decode.success(BookSettings(
+    wpm: wpm,
+    paragraph_delay_ms: paragraph_delay_ms,
+    page_delay_ms: page_delay_ms,
+    ghost_opacity: ghost_opacity,
+  ))
+}
