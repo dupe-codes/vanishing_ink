@@ -114,6 +114,7 @@ fn empty_model() -> Model {
     total_sentence_count: 0,
     total_word_count: 0,
     current_chapter_title: "",
+    total_pages: 0,
   )
 }
 
@@ -234,6 +235,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       text: Some(first),
       flat_paragraphs: pagination.flatten(first),
       pages: [Page(index: 0, paragraphs: [])],
+      total_pages: 1,
     )
 
   let #(updated, _effect) = client.update(prior, TextLoaded(second))
@@ -487,6 +489,67 @@ pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test
   assert updated.focused_sentence == None
 }
 
+pub fn update_paragraphs_measured_caches_total_pages_test() {
+  // `total_pages` must equal `list.length(updated.pages)` after
+  // `ParagraphsMeasured` — three 100px paragraphs into a 250px
+  // budget paginates to 2 pages (2 + 1 fit).
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 250.0),
+    )
+
+  assert updated.total_pages == list.length(updated.pages)
+  assert updated.total_pages == 2
+}
+
+pub fn update_paragraphs_measured_updates_total_pages_on_repagination_test() {
+  // Reducing the available height forces repagination to more pages.
+  // `total_pages` must track the new count, not the stale one.
+  let text = two_chapter_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_pages: 2,
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  // 25px budget forces one paragraph per page → 3 pages.
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  assert updated.total_pages == 3
+  assert updated.total_pages == list.length(updated.pages)
+}
+
+pub fn update_paragraphs_measured_sets_total_pages_zero_when_no_text_test() {
+  // A measurement that arrives while text is still None produces no
+  // pages — `total_pages` must reflect the empty result.
+  let prior = Model(..empty_model(), total_pages: 5)
+
+  let #(updated, _) =
+    client.update(
+      prior,
+      ParagraphsMeasured(heights: [], available_height: 380.0),
+    )
+
+  assert updated.total_pages == 0
+}
+
 // ---------------------------------------------------------------------------
 // update — NextPage
 // ---------------------------------------------------------------------------
@@ -501,6 +564,7 @@ pub fn update_next_page_advances_one_when_not_on_last_page_test() {
         Page(index: 2, paragraphs: []),
       ],
       current_page: 0,
+      total_pages: 3,
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
@@ -518,6 +582,7 @@ pub fn update_next_page_holds_on_last_page_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
     )
 
   let #(updated, _effect) = client.update(prior, NextPage)
@@ -554,6 +619,7 @@ pub fn update_next_page_clears_line_boxes_and_active_line_on_real_turn_test() {
         Page(index: 1, paragraphs: []),
       ],
       current_page: 0,
+      total_pages: 2,
       mode: RealTime,
       engine_state: Running,
       next_word_index: Some(0),
@@ -579,6 +645,7 @@ pub fn update_next_page_preserves_line_boxes_on_no_op_turn_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       mode: RealTime,
       engine_state: Running,
       next_word_index: Some(0),
@@ -611,6 +678,7 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
       text: Some(text),
       flat_paragraphs: pagination.flatten(text),
       pages: [Page(index: 0, paragraphs: [])],
+      total_pages: 1,
     )
 
   let #(updated, _effect) = client.update(prior, ViewportResized)
@@ -700,6 +768,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -919,6 +988,7 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       erased: set.from_list([0, 1]),
       undo_stack: [1, 0],
     )
@@ -939,6 +1009,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([8]),
       undo_stack: [8],
     )
@@ -957,6 +1028,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([5]),
       undo_stack: [5],
       touch_start: Some(#(300.0, 200.0)),
@@ -990,6 +1062,7 @@ pub fn update_touch_end_below_threshold_does_nothing_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       touch_start: Some(#(100.0, 200.0)),
     )
 
@@ -1004,6 +1077,7 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       touch_start: Some(#(300.0, 200.0)),
     )
 
@@ -1023,6 +1097,7 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       erased: set.from_list([9]),
       undo_stack: [9],
       touch_start: Some(#(100.0, 200.0)),
@@ -1043,6 +1118,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 1,
+      total_pages: 2,
       touch_start: Some(#(100.0, 200.0)),
     )
 
@@ -1064,6 +1140,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
       ..empty_model(),
       pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
       current_page: 0,
+      total_pages: 2,
       erased: set.from_list([3]),
       undo_stack: [3],
       touch_start: Some(#(100.0, 200.0)),
@@ -1154,6 +1231,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
       erased: set.from_list([1]),
       undo_stack: [1],
     )
@@ -1260,6 +1338,7 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
     )
 
   let assert Ok(reading_area) =
@@ -1341,6 +1420,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -1453,11 +1533,13 @@ fn vim_pages() -> List(Page) {
 }
 
 fn vim_model_on_page(page_index: Int) -> Model {
+  let pages = vim_pages()
   Model(
     ..empty_model(),
     text: Some(vim_text()),
     flat_paragraphs: pagination.flatten(vim_text()),
-    pages: vim_pages(),
+    pages: pages,
+    total_pages: list.length(pages),
     current_page: page_index,
   )
 }
@@ -2263,11 +2345,13 @@ fn fade_pages() -> List(Page) {
 
 fn fade_model() -> Model {
   let text = fade_text()
+  let pages = fade_pages()
   Model(
     ..empty_model(),
     text: Some(text),
     flat_paragraphs: pagination.flatten(text),
-    pages: fade_pages(),
+    pages: pages,
+    total_pages: list.length(pages),
     mode: RealTime,
   )
 }
@@ -2286,11 +2370,13 @@ fn fade_pages_single() -> List(Page) {
 
 fn fade_model_single_page() -> Model {
   let text = fade_text()
+  let pages = fade_pages_single()
   Model(
     ..empty_model(),
     text: Some(text),
     flat_paragraphs: pagination.flatten(text),
-    pages: fade_pages_single(),
+    pages: pages,
+    total_pages: list.length(pages),
     mode: RealTime,
   )
 }
@@ -3361,6 +3447,7 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3405,6 +3492,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      total_pages: list.length(pages),
       current_chapter_title: "Two",
     )
 
@@ -3431,6 +3519,7 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       total_sentence_count: 3,
     )
 
@@ -3460,6 +3549,7 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       mode: Manual,
       total_sentence_count: 3,
@@ -3488,6 +3578,7 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased_words: set.from_list([0, 1]),
       mode: RealTime,
       total_word_count: 5,
@@ -3520,6 +3611,7 @@ pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 1,
+      total_pages: list.length(pages),
       current_chapter_title: "",
     )
 
@@ -3542,6 +3634,22 @@ pub fn text_loaded_resets_cached_chapter_title_test() {
   assert updated.current_chapter_title == ""
 }
 
+pub fn text_loaded_resets_cached_total_pages_test() {
+  // The Model invariant is `total_pages == list.length(pages)`.
+  // `TextLoaded` resets `pages` to `[]` for a fresh book load, so
+  // the cache must reset to `0` in the same arm. Without this the
+  // page indicator briefly renders against the previous book's
+  // page count between `TextLoaded` and `ParagraphsMeasured` —
+  // exactly the cache-lag the sibling `current_chapter_title`
+  // reset is designed to prevent.
+  let prior = Model(..empty_model(), total_pages: 7)
+
+  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+
+  assert updated.total_pages == 0
+  assert updated.total_pages == list.length(updated.pages)
+}
+
 pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
   // ARIA progressbar semantics let screen reader users hear where
   // they are in the book — the app's central affordance. The track
@@ -3561,6 +3669,7 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       mode: Manual,
       total_sentence_count: 3,
@@ -3588,6 +3697,7 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       mode: Manual,
     )
 
@@ -3646,6 +3756,7 @@ pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       undo_stack: [],
     )
 
@@ -3679,6 +3790,7 @@ pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
+      total_pages: list.length(pages),
       erased: set.from_list([0]),
       undo_stack: [0],
     )
@@ -3718,6 +3830,7 @@ pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
       flat_paragraphs: flat,
       pages: pages,
       current_page: 2,
+      total_pages: list.length(pages),
     )
 
   let rendered = client.view(model) |> element.to_string
@@ -3784,6 +3897,85 @@ pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
   assert string.contains(rendered, "class=\"btn-play\"")
   assert !string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">⏸</button>")
+}
+
+pub fn view_realtime_play_button_aria_label_is_start_reading_when_stopped_test() {
+  // Screen-reader users need to know what the button does, not just
+  // that it is a play/pause toggle. Engine state `Stopped` means
+  // the first press will begin reading — announce "Start reading".
+  // Mirror the negation pattern the Resume / Pause sibling tests
+  // use: pin the absent labels too so a future refactor that
+  // accidentally emits multiple labels for the same button is
+  // caught here, not at runtime by a screen-reader user.
+  let model =
+    Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Resume reading\"")
+  assert !string.contains(rendered, "aria-label=\"Pause reading\"")
+}
+
+pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test() {
+  // Engine state `Paused`: reading was in progress and the reader
+  // paused it. The button press resumes from where it left off —
+  // announce "Resume reading", not "Start reading".
+  // Mirror the negation pattern the Stopped / Running sibling tests
+  // use: pin both absent labels so a future refactor that emits
+  // "Pause reading" on a Paused-state DOM is caught here, not at
+  // runtime by a screen-reader user.
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Paused,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Resume reading\"")
+  assert !string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Pause reading\"")
+}
+
+pub fn view_realtime_play_button_aria_label_is_pause_reading_when_running_test() {
+  // Engine state `Running`: the engine is actively fading words.
+  // The button press will pause it — announce "Pause reading".
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "aria-label=\"Pause reading\"")
+  assert !string.contains(rendered, "aria-label=\"Start reading\"")
+  assert !string.contains(rendered, "aria-label=\"Resume reading\"")
+}
+
+pub fn view_realtime_wpm_readout_has_accessible_label_test() {
+  // The `N wpm` text is a terse visual shorthand that screen readers
+  // may not announce in enough context. The aria-label supplies the
+  // full phrase — "Reading speed: N words per minute" — so the
+  // announcement is unambiguous regardless of the surrounding layout.
+  // The element also needs `role="text"`: a roleless `<div>` is a
+  // generic that JAWS and VoiceOver may skip, dropping the
+  // supplemental phrase silently. Pinning the role here catches a
+  // future refactor that strips it.
+  let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 200)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "aria-label=\"Reading speed: 200 words per minute\"",
+  )
+  assert string.contains(rendered, "role=\"text\"")
 }
 
 pub fn view_settings_sheet_carries_handle_and_dividers_test() {
