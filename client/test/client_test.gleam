@@ -3330,3 +3330,363 @@ pub fn view_sentence_level_erase_subsumes_word_level_opacity_test() {
     "data-sentence-index=\"0\" style=\"opacity:0;\"",
   )
 }
+
+// ---------------------------------------------------------------------------
+// view — reader chrome: header, progress bar, mode-aware bottom bars
+// ---------------------------------------------------------------------------
+//
+// The visual-polish quest replaced the old `.reader-control-bar`
+// (page indicator + settings gear) with a three-row chrome: a sticky
+// header at the top (back glyph, book title, settings gear), a thin
+// progress bar between header and content, and a mode-aware bottom
+// bar (manual gets undo / page label / turn-page; realtime gets WPM
+// readout / play button / spacer). The tests below pin the rendered
+// structure so a future refactor cannot quietly drop any of those
+// elements.
+
+pub fn default_line_spacing_matches_warm_palette_mock_test() {
+  // The mock spec (`mobile-reader-prototype.html`) uses `--lh: 1.85`
+  // for the reading surface. The Gleam constant is the source of
+  // truth for the initial model field; the CSS variable receives
+  // the same number on first paint, so a divergence here would put
+  // the engine's line measurement and the visible line spacing out
+  // of phase. The exact float value is pinned rather than a range
+  // because the spec is the contract.
+  assert client.default_line_spacing == 1.85
+}
+
+pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
+  // The header is rendered for every paginated view, regardless of
+  // mode. It carries three slots:
+  // * Back glyph (`←`, aria "Back to library").
+  // * Book title (currently the bundled sample's chapter + author).
+  // * Settings gear (`⚙`, aria "Open settings") — moved from the
+  //   old `.reader-control-bar` into the header row.
+  // Once Act 4 lands library navigation the back button will dispatch
+  // a real back-Msg; until then it routes through `SetMode(Manual)`,
+  // which is idempotent in Manual mode and stops the fade engine in
+  // RealTime mode.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-header\"")
+  assert string.contains(rendered, "class=\"reader-header-inner\"")
+  assert string.contains(rendered, "aria-label=\"Back to library\"")
+  assert string.contains(rendered, ">←</button>")
+  assert string.contains(rendered, "class=\"reader-title\"")
+  assert string.contains(rendered, "Pride and Prejudice")
+  assert string.contains(rendered, "aria-label=\"Open settings\"")
+  assert string.contains(rendered, ">⚙</button>")
+}
+
+pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
+  // Progress bar fill starts at 0% before any erasure. The fill
+  // element always renders (so the CSS transition has a stable
+  // target to interpolate from) — only its inline width is driven
+  // by the model.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-progress-track\"")
+  // `width:0.0%;` is the float-formatted zero — `float.to_string(0.0)`
+  // yields `"0.0"`. The serialised inline style pins the unit.
+  assert string.contains(rendered, "style=\"width:0.0%;\"")
+}
+
+pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
+  // Manual mode: width = erased sentences / total sentences * 100.
+  // `two_chapter_text` has three sentences total; erasing one
+  // should drive the fill to 33.333...%. Floats stringify with
+  // their full precision, but the substring "33.3" appears
+  // regardless of the trailing digits.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      mode: Manual,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-progress-fill\"")
+  assert string.contains(rendered, "style=\"width:33.3")
+}
+
+pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
+  // Real-time mode: width = faded words / total words * 100.
+  // `two_chapter_text` carries five words total; fading two
+  // resolves to exactly 40.0% — a clean denominator so the test
+  // can pin the full numeric prefix without floating-point
+  // ambiguity.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased_words: set.from_list([0, 1]),
+      mode: RealTime,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "style=\"width:40.0%;\"")
+}
+
+pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
+  // Manual mode bottom bar: undo button, page label, turn-page
+  // button. The realtime bottom-bar classes must be entirely
+  // absent — the bar is mode-conditional, not just CSS-toggled.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      mode: Manual,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-bottom-manual\"")
+  assert string.contains(rendered, "↩ Undo")
+  assert string.contains(rendered, "Turn Page →")
+  // Realtime-only chrome must not appear in Manual mode.
+  assert !string.contains(rendered, "reader-bottom-realtime")
+  assert !string.contains(rendered, "btn-play")
+  assert !string.contains(rendered, "wpm-readout")
+}
+
+pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
+  // RealTime mode bottom bar: WPM readout, play button, spacer.
+  // Manual chrome (undo, turn-page) must not appear — the bar is
+  // mode-conditional.
+  let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-bottom-realtime\"")
+  assert string.contains(rendered, "class=\"wpm-readout\"")
+  assert string.contains(rendered, "250 wpm")
+  assert string.contains(rendered, "btn-play")
+  assert string.contains(rendered, "btn-play-spacer")
+  // Manual-only chrome must not appear in RealTime mode.
+  assert !string.contains(rendered, "reader-bottom-manual")
+  assert !string.contains(rendered, "↩ Undo")
+  assert !string.contains(rendered, "Turn Page →")
+}
+
+pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
+  // Undo button is `disabled` when `undo_stack` is empty so the
+  // reader sees the disabled visual state. The `Disabled` HTML
+  // attribute is the contract — CSS reads `:disabled` for the
+  // dimmed-pill rendering.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      undo_stack: [],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // The undo button carries its aria-label so we can grep around
+  // it; the same span must contain the disabled attribute.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Undo last erase\" class=\"btn-bar\" disabled",
+  )
+}
+
+pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
+  // Mirror of the above: with at least one entry on the undo
+  // stack, the button is enabled (no `disabled` attribute).
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      erased: set.from_list([0]),
+      undo_stack: [0],
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // Undo button is enabled: aria-label present, but no `disabled`
+  // attribute on the same button. We pin the absence of
+  // `disabled` immediately after the aria-label of the undo
+  // button — the turn-page button comes later in the markup with
+  // its own aria-label, so this substring is unambiguous.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Undo last erase\" class=\"btn-bar\" type=\"button\">↩ Undo",
+  )
+}
+
+pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
+  // On the last page the turn-page button reads "✓ Finished"
+  // (instead of "Turn Page →") and is disabled — there is nowhere
+  // forward to go.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  // Three pages; current_page = 2 is the last.
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 2,
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "✓ Finished")
+  assert !string.contains(rendered, "Turn Page →")
+  assert string.contains(
+    rendered,
+    "aria-label=\"Turn page\" class=\"btn-bar primary\" disabled",
+  )
+}
+
+pub fn view_realtime_play_button_shows_play_glyph_with_paused_class_when_stopped_test() {
+  // Engine state `Stopped`: button shows ▶ and carries the
+  // `paused` modifier class so CSS swaps the bg to the copper
+  // accent. The reader reads it as "ready to start".
+  let model =
+    Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-play paused\"")
+  assert string.contains(rendered, ">▶</button>")
+}
+
+pub fn view_realtime_play_button_shows_play_glyph_with_paused_class_when_paused_test() {
+  // Engine state `Paused`: same visuals as `Stopped` (▶, paused
+  // class). The dispatch target differs — Stopped clicks
+  // `StartFade`, Paused clicks `ResumeFade` — but the visual
+  // contract is identical.
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Paused,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-play paused\"")
+  assert string.contains(rendered, ">▶</button>")
+}
+
+pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
+  // Engine state `Running`: button shows ⏸ and drops the `paused`
+  // class (so the bg returns to the inverted text-on-bg default).
+  let model =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let rendered = client.view(model) |> element.to_string
+
+  // The button's class is exactly `btn-play` (no `paused`
+  // modifier) while running. Pinning the exact class string also
+  // catches a regression where the modifier is left on across
+  // state transitions.
+  assert string.contains(rendered, "class=\"btn-play\"")
+  assert !string.contains(rendered, "class=\"btn-play paused\"")
+  assert string.contains(rendered, ">⏸</button>")
+}
+
+pub fn view_settings_sheet_carries_handle_and_dividers_test() {
+  // The settings sheet's visual update adds:
+  // * A `.settings-sheet-handle` indicator at the top — a small
+  //   rounded bar that matches iOS / Material bottom-sheet
+  //   conventions.
+  // * Two `<hr class="settings-divider">` rules between the three
+  //   logical groups (pacing / appearance / reading-aids).
+  let model = Model(..empty_model(), settings_open: True)
+
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"settings-sheet-handle\"")
+  // Two dividers — count by splitting and asserting the resulting
+  // chunk count (one more than the divider count).
+  let divider_chunks =
+    rendered
+    |> string.split("class=\"settings-divider\"")
+    |> list.length
+  assert divider_chunks == 3
+}
+
+pub fn view_back_button_dispatches_set_mode_manual_when_clicked_test() {
+  // The back glyph in the header dispatches `SetMode(Manual)`.
+  // When the reader is already in Manual mode this is an
+  // idempotent no-op; when the reader is in RealTime mode it
+  // stops the fade engine and switches mode. Either way, the
+  // dispatch is unconditional — the routing happens in `update`,
+  // not in the view.
+  //
+  // `SetMode(Manual)` against a Running engine should produce a
+  // Stopped engine and Manual mode, with the timer cleared.
+  let prior =
+    Model(
+      ..fade_model_single_page(),
+      mode: RealTime,
+      engine_state: Running,
+      next_word_index: Some(0),
+    )
+
+  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+
+  assert updated.mode == Manual
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+}
