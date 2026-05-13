@@ -4164,11 +4164,7 @@ pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
     client.update(prior, BookCreated(Ok(#(new_meta, text))))
 
   assert updated
-    == Model(
-      ..empty_model(),
-      view: client.Library,
-      books: [new_meta, existing],
-    )
+    == Model(..empty_model(), view: client.Library, books: [new_meta, existing])
 }
 
 pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
@@ -4458,7 +4454,10 @@ pub fn view_library_renders_add_book_sheet_when_open_test() {
 
   assert string.contains(rendered_string, "class=\"sheet-overlay open\"")
   assert string.contains(rendered_string, "class=\"bottom-sheet\"")
-  assert string.contains(rendered_string, "class=\"add-sheet-title\">Add a Book")
+  assert string.contains(
+    rendered_string,
+    "class=\"add-sheet-title\">Add a Book",
+  )
   assert string.contains(rendered_string, "class=\"paste-input\"")
   assert string.contains(rendered_string, "class=\"paste-area\"")
   // Submit starts disabled (empty form). The selector composes
