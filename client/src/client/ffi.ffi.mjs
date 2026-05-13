@@ -10,7 +10,7 @@
  */
 
 import { Ok, Error as GleamError, toList } from "../gleam.mjs";
-import { NetworkError, HttpError, DecodeError } from "./ffi.mjs";
+import { NetworkError, HttpError } from "./ffi.mjs";
 
 const PARAGRAPH_INDEX_ATTRIBUTE = "data-paragraph-global-index";
 const WORD_INDEX_ATTRIBUTE = "data-global-index";
