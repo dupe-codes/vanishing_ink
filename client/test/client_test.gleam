@@ -4065,9 +4065,12 @@ pub fn update_books_loaded_ok_stores_books_and_clears_loading_flag_test() {
 
   let #(updated, _effect) = client.update(prior, BooksLoaded(Ok(books)))
 
-  assert updated.books == books
-  assert updated.books_loading == False
-  assert updated.library_error == None
+  // Asserting the whole model pins all three reducer-driven
+  // transitions in one place (books landed, `books_loading` cleared,
+  // `library_error` cleared) and also catches the regression class
+  // field-level assertions miss — any field the reducer is *not*
+  // meant to touch but starts touching would surface here.
+  assert updated == Model(..empty_model(), books: books)
 }
 
 pub fn update_books_loaded_error_unsets_loading_and_surfaces_error_test() {
@@ -4076,16 +4079,26 @@ pub fn update_books_loaded_error_unsets_loading_and_surfaces_error_test() {
   let #(updated, _effect) =
     client.update(prior, BooksLoaded(Error(ffi.NetworkError("offline"))))
 
-  assert updated.books_loading == False
-  assert updated.books == []
-  assert updated.library_error == Some("Could not reach the server: offline")
+  assert updated
+    == Model(
+      ..empty_model(),
+      library_error: Some("Could not reach the server: offline"),
+    )
 }
 
 pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
-  // BookLoaded success behaves like the existing `TextLoaded` arm
-  // (flat_paragraphs cache, total counts, reset undo / focus / line
-  // boxes) and additionally flips `view` to `Reader` plus records
-  // the active book id.
+  // BookLoaded success delegates the per-text reset to the same
+  // `apply_text_load` helper TextLoaded uses (flat_paragraphs cache,
+  // total counts, reset undo / focus / line boxes / bitsets) and
+  // additionally flips `view` to `Reader`, records the active book
+  // id, clears `library_error`, and resets the fade engine.
+  //
+  // `two_chapter_text()` carries exactly 3 sentences and 5 words —
+  // pinning the totals to the literal integers (rather than `> 0`)
+  // would catch a regression where `total_counts` started counting
+  // chapters or paragraphs instead, which an inequality cannot.
+  // `books_loading: True` is preserved (the reducer does not touch
+  // it), so the whole-model assertion carries it through too.
   let prior =
     Model(
       ..empty_model(),
@@ -4098,15 +4111,16 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
 
   let #(updated, _effect) = client.update(prior, BookLoaded(Ok(#(meta, text))))
 
-  assert updated.view == client.Reader
-  assert updated.active_book_id == Some("book-x")
-  assert updated.text == Some(text)
-  assert updated.pages == []
-  assert updated.current_page == 0
-  assert updated.flat_paragraphs == pagination.flatten(text)
-  assert updated.total_sentence_count > 0
-  assert updated.total_word_count > 0
-  assert updated.library_error == None
+  assert updated
+    == Model(
+      ..empty_model(),
+      books_loading: True,
+      active_book_id: Some("book-x"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_sentence_count: 3,
+      total_word_count: 5,
+    )
 }
 
 pub fn update_book_loaded_error_returns_to_library_with_error_message_test() {
@@ -4115,16 +4129,22 @@ pub fn update_book_loaded_error_returns_to_library_with_error_message_test() {
   let #(updated, _effect) =
     client.update(prior, BookLoaded(Error(ffi.HttpError(404, "missing"))))
 
-  assert updated.view == client.Library
-  assert updated.library_error == Some("Server returned 404: missing")
-  assert updated.text == None
+  assert updated
+    == Model(
+      ..empty_model(),
+      view: client.Library,
+      library_error: Some("Server returned 404: missing"),
+    )
 }
 
 pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
   // The POST response carries the new metadata; the reducer
-  // prepends it to `books` and clears the paste form so a quick
-  // second add starts blank. The reader stays in the library —
-  // the reader experience is not interrupted by the upload.
+  // prepends it to `books`, clears the paste form so a quick second
+  // add starts blank, and closes the sheet. The reader stays in the
+  // library — the reader experience is not interrupted by the
+  // upload. Asserting the whole model in one shot also pins "view
+  // stays in `Library`" against the same equality the form-clearing
+  // assertions ride on, instead of a separate `view == Library`.
   let existing = sample_book("a", "Alpha", None)
   let prior =
     Model(
@@ -4143,15 +4163,12 @@ pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
   let #(updated, _effect) =
     client.update(prior, BookCreated(Ok(#(new_meta, text))))
 
-  assert updated.books == [new_meta, existing]
-  assert updated.paste_title == ""
-  assert updated.paste_text == ""
-  assert updated.paste_submitting == False
-  assert updated.paste_error == None
-  assert updated.add_book_open == False
-  // View stays in Library — the user can decide whether to open
-  // the new book.
-  assert updated.view == client.Library
+  assert updated
+    == Model(
+      ..empty_model(),
+      view: client.Library,
+      books: [new_meta, existing],
+    )
 }
 
 pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
@@ -4169,12 +4186,16 @@ pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
       BookCreated(Error(ffi.HttpError(400, "title must not be empty"))),
     )
 
-  assert updated.paste_submitting == False
-  // The form is left populated so the reader can correct and retry.
-  assert updated.paste_title == "Beta"
-  assert updated.paste_text == "lorem"
-  assert updated.paste_error
-    == Some("Server returned 400: title must not be empty")
+  // The form is left populated (`paste_title` / `paste_text` carry
+  // through) so the reader can correct and retry; submission is
+  // cleared and the error is surfaced.
+  assert updated
+    == Model(
+      ..empty_model(),
+      paste_title: "Beta",
+      paste_text: "lorem",
+      paste_error: Some("Server returned 400: title must not be empty"),
+    )
 }
 
 pub fn update_open_book_flips_view_to_reader_test() {
@@ -4211,18 +4232,14 @@ pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
 
   let #(updated, _effect) = client.update(prior, GoToLibrary)
 
-  assert updated.view == client.Library
-  assert updated.text == None
-  assert updated.pages == []
-  assert updated.erased == set.new()
-  assert updated.erased_words == set.new()
-  assert updated.focused_sentence == None
-  assert updated.engine_state == Stopped
-  assert updated.next_word_index == None
-  assert updated.active_book_id == None
-  // The user's mode preference is preserved — going to the library
-  // is not a settings reset.
-  assert updated.mode == RealTime
+  // GoToLibrary returns to a fully cleared reader state with only
+  // the user's `mode` preference preserved — every other field on
+  // the prior model is reset to its `empty_model()` default.
+  // Asserting the whole model in one shot catches a regression that
+  // forgot to clear any field (the exact class of bug field-level
+  // assertions invite) and also pins "mode preserved" against the
+  // same equality the per-field clears ride on.
+  assert updated == Model(..empty_model(), view: client.Library, mode: RealTime)
 }
 
 pub fn update_toggle_add_book_flips_sheet_and_clears_error_on_open_test() {
