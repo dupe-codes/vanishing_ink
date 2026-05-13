@@ -131,8 +131,17 @@ pub const max_wpm: Int = 500
 /// steady WPM rhythm.
 pub const default_paragraph_delay_ms: Int = 1000
 
+/// Lower bound on the Paragraph-pause slider. Zero disables the
+/// inter-paragraph pause entirely so the engine ticks at the
+/// steady WPM rhythm regardless of paragraph boundaries — the
+/// right choice for a reader who wants uninterrupted pace.
 pub const min_paragraph_delay_ms: Int = 0
 
+/// Upper bound on the Paragraph-pause slider. 5 seconds is long
+/// enough to feel like a deliberate break-and-breathe beat
+/// without dragging the reading flow into stop-start tedium;
+/// past this point readers tend to perceive the engine as
+/// stalled rather than paused.
 pub const max_paragraph_delay_ms: Int = 5000
 
 /// Default extra pause inserted between the last word of one page
@@ -142,8 +151,17 @@ pub const max_paragraph_delay_ms: Int = 5000
 /// next fade is meaningful.
 pub const default_page_delay_ms: Int = 2000
 
+/// Lower bound on the Page-pause slider. Zero disables the
+/// page-turn pause so the engine continues directly into the
+/// first word of the new page — useful for fast readers who
+/// can mentally re-anchor without a beat.
 pub const min_page_delay_ms: Int = 0
 
+/// Upper bound on the Page-pause slider. Matches
+/// `max_paragraph_delay_ms` so the sliders feel consistent
+/// even though the page-turn beat is typically chosen longer
+/// than the paragraph beat; 5 seconds is still inside the
+/// "deliberate pause" envelope rather than reading as a stall.
 pub const max_page_delay_ms: Int = 5000
 
 /// One minute in milliseconds — the constant the WPM-to-interval
@@ -1947,7 +1965,7 @@ pub fn view_sentence(
 fn view_word(
   word: Word,
   with_trailing_space: Bool,
-  hidden: Bool,
+  word_erased: Bool,
   erased_opacity: String,
 ) -> Element(Msg) {
   let text_content = case with_trailing_space {
@@ -1960,7 +1978,7 @@ fn view_word(
   // ghost mode on sees faded words at the configured ghost
   // opacity rather than fully invisible. CSS handles the
   // transition timing via `.word { transition: opacity ... }`.
-  let opacity_attrs = case hidden {
+  let opacity_attrs = case word_erased {
     True -> [attribute.style("opacity", erased_opacity)]
     False -> []
   }
