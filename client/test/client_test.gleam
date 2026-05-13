@@ -41,15 +41,16 @@ import shared/segmenter.{
 }
 
 import client.{
-  type LineBox, type Model, AdvanceWord, BookCreated, BookLoaded, BooksLoaded,
-  EraseFocused, EraseSentence, FocusNext, FocusParagraphDown, FocusParagraphUp,
-  FocusPrevious, GoToLibrary, LineBox, LinesMeasured, Manual, Model, NextPage,
-  OpenBook, ParagraphsMeasured, PauseFade, Paused, RealTime, ResumeFade, Running,
-  SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
-  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SpacePressed,
-  StartFade, Stopped, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart, Undo, ViewportResized,
+  type LineBox, type Model, AdvanceWord, BookCreated, BookLoaded,
+  BookSettingsLoaded, BooksLoaded, EraseFocused, EraseSentence, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary, LineBox,
+  LinesMeasured, Manual, Model, NextPage, OpenBook, ParagraphsMeasured,
+  PauseFade, Paused, RealTime, ResumeFade, Running, SetFontSize, SetGhostOpacity,
+  SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay, SetPasteText,
+  SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade, Stopped,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  ViewportResized,
 }
 import client/ffi
 import client/gestures
@@ -3028,6 +3029,279 @@ pub fn update_go_to_library_restores_global_pacing_fields_test() {
   assert updated.ghost_opacity == 0.08
   assert updated.book_settings == None
   assert updated.active_book_id == None
+}
+
+// ---------------------------------------------------------------------------
+// update — settings load + merge path
+// ---------------------------------------------------------------------------
+//
+// `apply_settings_loaded` and `apply_book_settings_loaded` are the
+// load-path mirrors of the write-path reducer arms pinned above. The
+// effective-field merge they share — global defaults + per-book
+// overrides → four `wpm` / `paragraph_delay_ms` / `page_delay_ms` /
+// `ghost_opacity` fields on `Model` — is the invariant the quest
+// exists to deliver, so these tests pin:
+//
+//   (a) `BookSettingsLoaded` with `Some(...)` overrides wins the
+//       merge field-by-field;
+//   (b) `BookSettingsLoaded` with all-null falls back to the global
+//       defaults on every overridable field;
+//   (c) `SettingsLoaded(Ok)` arriving after a per-book merge re-merges
+//       against `model.book_settings` rather than blindly stamping the
+//       new globals — the order-independence the docstring at
+//       `apply_settings_loaded` promises.
+//
+// The dispatched Msg variants carry a `Result(String, FetchError)` of
+// the raw response body; the JSON literals below mirror the on-wire
+// shape the server emits (and that `types.user_settings_decoder` /
+// `types.book_settings_decoder` parse). A drift between the JSON keys
+// here and either side would surface as a decode failure in these
+// tests rather than as a silent runtime data-shape mismatch.
+
+pub fn update_book_settings_loaded_merges_some_overrides_over_globals_test() {
+  // Each of the four overridable fields rides into `BookSettingsLoaded`
+  // as `Some(v)` — every override should win the merge against the
+  // matching global default. The effective model fields all flip to
+  // the override values and `book_settings` mirrors the decoded record.
+  let defaults =
+    types.UserSettings(
+      font_size: 18,
+      line_spacing: 1.5,
+      dark_mode: True,
+      ghost_mode: False,
+      ghost_opacity: 0.06,
+      default_wpm: 200,
+      default_paragraph_delay_ms: 1000,
+      default_page_delay_ms: 2000,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      global_defaults: defaults,
+      book_settings: None,
+      wpm: defaults.default_wpm,
+      paragraph_delay_ms: defaults.default_paragraph_delay_ms,
+      page_delay_ms: defaults.default_page_delay_ms,
+      ghost_opacity: defaults.ghost_opacity,
+    )
+  let body =
+    "{\"wpm\":275,\"paragraph_delay_ms\":1500,\"page_delay_ms\":2500,"
+    <> "\"ghost_opacity\":0.25}"
+
+  let #(updated, _effect) = client.update(prior, BookSettingsLoaded(Ok(body)))
+
+  // Every override wins.
+  assert updated.wpm == 275
+  assert updated.paragraph_delay_ms == 1500
+  assert updated.page_delay_ms == 2500
+  assert updated.ghost_opacity == 0.25
+  // The decoded record is stored verbatim so a later reset or per-field
+  // edit has the prior overrides to diff against.
+  assert updated.book_settings
+    == Some(types.BookSettings(
+      wpm: Some(275),
+      paragraph_delay_ms: Some(1500),
+      page_delay_ms: Some(2500),
+      ghost_opacity: Some(0.25),
+    ))
+  // Globals untouched — the merge writes to the effective fields, not
+  // to `global_defaults`.
+  assert updated.global_defaults == defaults
+}
+
+pub fn update_book_settings_loaded_with_all_null_falls_back_to_globals_test() {
+  // The all-null wire form is the "no overrides for this book" shape
+  // (matches what the server returns for a book with no row, and what
+  // `ResetBookSettings` writes). Every effective field must take the
+  // global default; `book_settings` is the all-`None` record so the
+  // next per-field edit sees the empty override slot and routes
+  // through `persist_target` correctly.
+  let defaults =
+    types.UserSettings(
+      ..empty_model().global_defaults,
+      ghost_opacity: 0.09,
+      default_wpm: 175,
+      default_paragraph_delay_ms: 750,
+      default_page_delay_ms: 1750,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      global_defaults: defaults,
+      // Pre-stamp the effective fields with values that DO NOT match
+      // any global — if the load path forgot to write the merged
+      // values back, the assertions below would catch the leftover
+      // state.
+      wpm: 999,
+      paragraph_delay_ms: 999,
+      page_delay_ms: 999,
+      ghost_opacity: 0.99,
+      book_settings: None,
+    )
+  let body =
+    "{\"wpm\":null,\"paragraph_delay_ms\":null,\"page_delay_ms\":null,"
+    <> "\"ghost_opacity\":null}"
+
+  let #(updated, _effect) = client.update(prior, BookSettingsLoaded(Ok(body)))
+
+  // Every effective field falls back to the matching global default.
+  assert updated.wpm == 175
+  assert updated.paragraph_delay_ms == 750
+  assert updated.page_delay_ms == 1750
+  assert updated.ghost_opacity == 0.09
+  // The empty-overrides record is stored so a later
+  // `ResetBookSettings` (which writes the same shape) does not
+  // appear to be a no-op against `None`.
+  assert updated.book_settings
+    == Some(types.BookSettings(
+      wpm: None,
+      paragraph_delay_ms: None,
+      page_delay_ms: None,
+      ghost_opacity: None,
+    ))
+}
+
+pub fn update_settings_loaded_remerges_against_existing_book_overrides_test() {
+  // Order-independence: the per-book `BookSettingsLoaded` lands first
+  // (this fixture pre-stamps `book_settings`), then the global
+  // `SettingsLoaded` lands second. The four overridable fields must
+  // re-merge — the existing per-book overrides win over the freshly-
+  // loaded globals on the overridable axis, but the four non-
+  // overridable globals (`font_size`, `line_spacing`, `dark_mode`,
+  // `ghost_mode`) take the new server values.
+  //
+  // This is the invariant the docstring at `apply_settings_loaded`
+  // promises ("the per-book overrides already won the merge in
+  // apply_book_settings_loaded; loading the globals must not regress
+  // those overrides"). Pinning it here means a future refactor that
+  // drops the re-merge calls and falls back to "blindly take the new
+  // global" would fail the test rather than silently regress the
+  // user's per-book pacing on every page reload.
+  let stale_defaults =
+    types.UserSettings(
+      font_size: 14,
+      line_spacing: 1.2,
+      dark_mode: False,
+      ghost_mode: False,
+      ghost_opacity: 0.03,
+      default_wpm: 120,
+      default_paragraph_delay_ms: 500,
+      default_page_delay_ms: 1200,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      // Stale defaults — the load is about to replace these.
+      global_defaults: stale_defaults,
+      font_size: 14,
+      line_spacing: 1.2,
+      dark_mode: False,
+      ghost_mode: False,
+      // The per-book merge has already run: book_settings carries
+      // Some(_) on every field, and the effective fields hold the
+      // override values.
+      book_settings: Some(types.BookSettings(
+        wpm: Some(350),
+        paragraph_delay_ms: Some(200),
+        page_delay_ms: Some(500),
+        ghost_opacity: Some(0.3),
+      )),
+      wpm: 350,
+      paragraph_delay_ms: 200,
+      page_delay_ms: 500,
+      ghost_opacity: 0.3,
+    )
+  // Fresh globals from the server: every field differs from the stale
+  // ones, so any blind-take regression would show up as a wrong value.
+  let body =
+    "{\"font_size\":20,\"line_spacing\":1.7,\"dark_mode\":true,"
+    <> "\"ghost_mode\":true,\"ghost_opacity\":0.08,\"default_wpm\":250,"
+    <> "\"default_paragraph_delay_ms\":900,\"default_page_delay_ms\":1800}"
+
+  let #(updated, _effect) = client.update(prior, SettingsLoaded(Ok(body)))
+
+  // Non-overridable globals: take the server values.
+  assert updated.font_size == 20
+  assert updated.line_spacing == 1.7
+  assert updated.dark_mode == True
+  assert updated.ghost_mode == True
+  // Overridable effective fields: re-merge keeps the per-book overrides
+  // — NOT the new globals (250, 900, 1800, 0.08).
+  assert updated.wpm == 350
+  assert updated.paragraph_delay_ms == 200
+  assert updated.page_delay_ms == 500
+  assert updated.ghost_opacity == 0.3
+  // Globals are stamped onto the model so a future per-book reset has
+  // the fresh baseline to fall back to.
+  assert updated.global_defaults
+    == types.UserSettings(
+      font_size: 20,
+      line_spacing: 1.7,
+      dark_mode: True,
+      ghost_mode: True,
+      ghost_opacity: 0.08,
+      default_wpm: 250,
+      default_paragraph_delay_ms: 900,
+      default_page_delay_ms: 1800,
+    )
+  // Per-book overrides are preserved verbatim.
+  assert updated.book_settings
+    == Some(types.BookSettings(
+      wpm: Some(350),
+      paragraph_delay_ms: Some(200),
+      page_delay_ms: Some(500),
+      ghost_opacity: Some(0.3),
+    ))
+}
+
+pub fn update_settings_loaded_without_overrides_takes_all_global_values_test() {
+  // Negative-space companion to the re-merge test above: when no
+  // per-book merge has run yet (`book_settings == None`), every
+  // overridable field takes the global default. This is the
+  // init-time path on a fresh boot before any book has been opened.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Library,
+      active_book_id: None,
+      book_settings: None,
+      // Pre-stamp every effective field with a value that does NOT
+      // match the incoming globals so a missed write surfaces as a
+      // wrong value, not a coincidence.
+      wpm: 999,
+      paragraph_delay_ms: 999,
+      page_delay_ms: 999,
+      ghost_opacity: 0.99,
+      font_size: 99,
+      line_spacing: 9.9,
+      dark_mode: False,
+      ghost_mode: False,
+    )
+  let body =
+    "{\"font_size\":20,\"line_spacing\":1.7,\"dark_mode\":true,"
+    <> "\"ghost_mode\":true,\"ghost_opacity\":0.08,\"default_wpm\":250,"
+    <> "\"default_paragraph_delay_ms\":900,\"default_page_delay_ms\":1800}"
+
+  let #(updated, _effect) = client.update(prior, SettingsLoaded(Ok(body)))
+
+  // Every effective field takes the server value — overridable and
+  // non-overridable alike, since there are no overrides to merge.
+  assert updated.font_size == 20
+  assert updated.line_spacing == 1.7
+  assert updated.dark_mode == True
+  assert updated.ghost_mode == True
+  assert updated.ghost_opacity == 0.08
+  assert updated.wpm == 250
+  assert updated.paragraph_delay_ms == 900
+  assert updated.page_delay_ms == 1800
+  // `book_settings` stays `None` — load does not synthesise a row.
+  assert updated.book_settings == None
 }
 
 // ---------------------------------------------------------------------------
