@@ -21,6 +21,7 @@ import client/view/library as library_view
 import client/view/reader as reader_view
 import client/view/reader/jump_menu
 import client/view/settings as settings_view
+import client/view/stats as stats_view
 
 pub fn view(model: Model) -> Element(Msg) {
   let body = case model.view {
@@ -43,9 +44,15 @@ pub fn view(model: Model) -> Element(Msg) {
     Library -> element.none()
   }
 
+  let stats_overlay = case model.stats_open {
+    True -> stats_view.view(model)
+    False -> element.none()
+  }
+
   html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
     body,
     overlay,
     jump_overlay,
+    stats_overlay,
   ])
 }
