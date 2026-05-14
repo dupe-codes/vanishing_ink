@@ -372,4 +372,43 @@ pub type Msg {
   /// arm surfaces the failure in `library_error` without removing the
   /// book from the grid.
   BookDeleted(id: String, result: Result(String, ffi.FetchError))
+
+  /// Reader tapped the Jump button on the bottom bar (open) or the
+  /// scrim / close affordance on the modal (close). Flips
+  /// `model.jump_menu_open`. Closing the menu mid-preview is harmless
+  /// — `jump_preview` is independent and lives until `LockInJump` or
+  /// `UndoJump` resolves it.
+  ToggleJumpMenu
+
+  /// Reader picked a page from the Jump Ahead menu. The reducer
+  /// stashes the pre-jump position on `jump_preview`, pauses the fade
+  /// engine for the preview, and moves the reader forward to the
+  /// target page. Backward targets (`page_index <= current_page`) are
+  /// rejected — the menu only renders forward chapters, and the
+  /// numeric input clamps to the same range, but the reducer-side
+  /// guard is the authority.
+  JumpToPage(page_index: Int)
+
+  /// Reader tapped a chapter row in the Jump Ahead menu. Looked up
+  /// against `chapter_entries`; on a hit, delegates to the same path
+  /// `JumpToPage` uses. A no-op when the index has no entry — the
+  /// chapter list is the reducer's source for "what page does this
+  /// chapter live on?", so a stale tap (chapter dropped on a
+  /// re-pagination after the menu opened) collapses to no action
+  /// rather than landing the reader on a wrong page.
+  JumpToChapter(chapter_index: Int)
+
+  /// Reader tapped Lock In on the preview banner. Bulk-vanishes
+  /// every word on pages before `current_page` (the reader has
+  /// "read" them by jumping past them), clears `jump_preview` so the
+  /// banner disappears, and chains a `save_reading_state` so the
+  /// server learns about the new position and the freshly-vanished
+  /// word bitset together.
+  LockInJump
+
+  /// Reader tapped Go Back on the preview banner. Restores the
+  /// pre-jump position, engine state, and word pointer from
+  /// `jump_preview`, then clears the snapshot. No save fires — the
+  /// reading position is unchanged from before the jump.
+  UndoJump
 }

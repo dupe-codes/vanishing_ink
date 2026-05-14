@@ -49,13 +49,14 @@ import client/msg.{
   BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
   EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
-  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
-  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
-  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  ViewportResized,
+  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, OpenBook,
+  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitPaste, TextLoaded,
+  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized,
 }
 import client/navigation
 import client/pagination
@@ -65,6 +66,10 @@ import client/reducer/book.{
 }
 import client/reducer/focus.{
   apply_erase_focused, focus_paragraph_step, focus_sentence_step,
+}
+import client/reducer/jump.{
+  apply_jump_to_chapter, apply_jump_to_page, apply_lock_in_jump,
+  apply_toggle_jump_menu, apply_undo_jump,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -380,6 +385,16 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+
+    ToggleJumpMenu -> apply_toggle_jump_menu(model)
+
+    JumpToPage(page_index) -> apply_jump_to_page(model, page_index)
+
+    JumpToChapter(chapter_index) -> apply_jump_to_chapter(model, chapter_index)
+
+    LockInJump -> apply_lock_in_jump(model)
+
+    UndoJump -> apply_undo_jump(model)
   }
 }
 
