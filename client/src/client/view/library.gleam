@@ -24,11 +24,13 @@ import lustre/element/html
 import lustre/event
 
 import client/msg.{
-  type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, OpenBook, ToggleSettings,
+  type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, OpenBook,
+  OpenEditMetadata, ToggleSettings,
 }
 import client/state.{type Model, cover_color_for_title}
 import client/types.{type BookMeta}
 import client/view/library/add_book
+import client/view/library/edit_metadata
 
 /// Render the library view: app bar + scrollable body (hero card,
 /// grid or empty state, error banner) + FAB + add-book sheet.
@@ -39,6 +41,7 @@ pub fn view(model: Model) -> Element(Msg) {
     add_book.view_add_book_fab(),
     add_book.view_add_book_sheet(model),
     view_delete_confirm_overlay(model),
+    edit_metadata.view(model),
   ])
 }
 
@@ -291,6 +294,7 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
           ],
         ),
         html.div([attribute.class("hero-meta")], [
+          view_genre_badge(book.genre),
           html.div([attribute.class("hero-meta-line")], [
             html.text(format_word_count(book.word_count) <> " words"),
           ]),
@@ -300,6 +304,7 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
         ]),
       ],
     ),
+    view_edit_metadata_badge(book, ["btn-edit-metadata-hero"]),
     view_delete_badge(book, is_deleting, ["btn-delete-hero"]),
   ])
 }
@@ -352,14 +357,51 @@ fn view_book_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
         html.div([attribute.class("book-info")], [
           html.div([attribute.class("book-title")], [html.text(book.title)]),
           html.div([attribute.class("book-author")], [html.text(author)]),
+          view_genre_badge(book.genre),
           html.div([attribute.class("book-meta")], [
             html.text(format_word_count(book.word_count) <> " words"),
           ]),
         ]),
       ],
     ),
+    view_edit_metadata_badge(book, []),
     view_delete_badge(book, is_deleting, []),
   ])
+}
+
+/// Optional genre tag rendered below the author line. `None` collapses
+/// to no DOM node so an empty genre cell does not occupy space on the
+/// card. Distinct visual treatment (small pill) so the genre reads as
+/// a category rather than as another line of muted metadata.
+fn view_genre_badge(genre: option.Option(String)) -> Element(Msg) {
+  case genre {
+    None -> element.none()
+    Some(value) ->
+      html.div([attribute.class("book-genre")], [
+        html.span([attribute.class("book-genre-tag")], [html.text(value)]),
+      ])
+  }
+}
+
+/// Edit-metadata affordance rendered as a pencil glyph button. Sits
+/// in a sibling layer above the open-book button so the click target
+/// is its own surface — nested `<button>` is invalid HTML and would
+/// also collapse the click targets in the accessibility tree. The
+/// hero variant takes `extra_classes` to opt into a larger badge.
+fn view_edit_metadata_badge(
+  book: BookMeta,
+  extra_classes: List(String),
+) -> Element(Msg) {
+  let base_classes = ["btn-edit-metadata", ..extra_classes]
+  html.button(
+    [
+      attribute.class(string.join(base_classes, " ")),
+      attribute.type_("button"),
+      attribute.aria_label("Edit metadata for " <> book.title),
+      event.on_click(OpenEditMetadata(book.id)),
+    ],
+    [html.text("✎")],
+  )
 }
 
 /// Shared × badge used by both the hero card and each grid card.

@@ -1112,6 +1112,138 @@ pub fn delete_book_cascades_book_settings_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Books — metadata PATCH
+// ---------------------------------------------------------------------------
+
+pub fn create_book_with_genre_round_trips_through_wire_test() {
+  use ctx <- with_context
+
+  let body =
+    json.object([
+      #("title", json.string("Dune")),
+      #("author", json.string("Frank Herbert")),
+      #("genre", json.string("Science Fiction")),
+      #("text", json.string(sample_text)),
+    ])
+
+  let response =
+    simulate.browser_request(http.Post, "/api/books")
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 201
+  let decoded = decode_body(response, book_create_response_decoder())
+  assert decoded.book.author == Some("Frank Herbert")
+  assert decoded.book.genre == Some("Science Fiction")
+
+  // Listing endpoint reflects the new field too.
+  let listing =
+    router.handle_request(simulate.browser_request(http.Get, "/api/books"), ctx)
+  let books = decode_body(listing, decode.list(book_meta_wire_decoder()))
+  assert books == [decoded.book]
+}
+
+pub fn patch_book_metadata_updates_all_three_fields_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Original", None, sample_text)
+
+  let body =
+    json.object([
+      #("title", json.string("Renamed")),
+      #("author", json.string("New Author")),
+      #("genre", json.string("Fantasy")),
+    ])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  assert decoded.title == "Renamed"
+  assert decoded.author == Some("New Author")
+  assert decoded.genre == Some("Fantasy")
+
+  // Subsequent GET reflects the persisted values.
+  let after =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/books/" <> created.book.id),
+      ctx,
+    )
+  let after_decoded = decode_body(after, book_full_decoder())
+  assert after_decoded.title == "Renamed"
+  assert after_decoded.author == Some("New Author")
+  assert after_decoded.genre == Some("Fantasy")
+}
+
+pub fn patch_book_metadata_preserves_untouched_fields_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", Some("Author"), sample_text)
+
+  // PATCH only `genre` — title and author must remain untouched.
+  let body = json.object([#("genre", json.string("Mystery"))])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  assert decoded.title == "Title"
+  assert decoded.author == Some("Author")
+  assert decoded.genre == Some("Mystery")
+}
+
+pub fn patch_book_metadata_clears_field_on_explicit_null_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", Some("Author"), sample_text)
+
+  // Explicit `null` for `author` must clear the column; `title` is
+  // omitted entirely so it stays as "Title".
+  let body = json.object([#("author", json.null())])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  assert decoded.title == "Title"
+  assert decoded.author == None
+}
+
+pub fn patch_book_metadata_rejects_empty_title_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body = json.object([#("title", json.string("   "))])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  // Empty / whitespace-only title is the only blocking validation —
+  // surfaces as a 400 with a field-name hint so the client can fix
+  // the form without a second round trip.
+  assert response.status == 400
+  assert string.contains(simulate.read_body(response), "title")
+}
+
+pub fn patch_book_metadata_unknown_id_is_404_test() {
+  use ctx <- with_context
+  let body = json.object([#("title", json.string("New"))])
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/no-such-book")
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+  assert response.status == 404
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
