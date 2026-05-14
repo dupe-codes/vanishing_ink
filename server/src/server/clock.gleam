@@ -25,3 +25,15 @@ pub fn now_iso8601() -> String
 /// monotonicity of `updated_at` would otherwise be silently fooled by.
 @external(erlang, "vanishing_ink_time_ffi", "parse_iso8601")
 pub fn parse_iso8601(value: String) -> Result(String, Nil)
+
+/// Today's UTC date as a `YYYY-MM-DD` string. Used by the stats
+/// handler so the streak computation can compare each session's day
+/// prefix against "is this today or yesterday?".
+@external(erlang, "vanishing_ink_time_ffi", "today_iso8601_date")
+pub fn today_iso8601_date() -> String
+
+/// Is `b` the calendar day immediately after `a`? Both arguments are
+/// `YYYY-MM-DD` strings; an unparseable input returns `False` so a
+/// malformed row in `reading_sessions` cannot wedge the streak count.
+@external(erlang, "vanishing_ink_time_ffi", "is_next_day")
+pub fn is_next_day(a: String, b: String) -> Bool

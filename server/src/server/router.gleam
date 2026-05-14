@@ -21,6 +21,7 @@ import gleam/result
 import gleam/string
 import server/clock
 import server/db
+import server/sessions
 import server/types.{
   type BookSettings, type ReadingState, type UserSettings, BookMeta,
   BookSettings, ReadingState, UserSettings,
@@ -29,7 +30,6 @@ import server/web.{type Context}
 import shared
 import shared/segmenter
 import simplifile
-import sqlight
 import wisp.{type Request, type Response}
 
 /// Closed vocabulary for `reading_state.mode`. The schema defaults to
@@ -49,6 +49,11 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
     ["api", "books", id] -> books_item(req, ctx, id)
     ["api", "books", id, "state"] -> reading_state(req, ctx, id)
     ["api", "books", id, "settings"] -> book_settings(req, ctx, id)
+    ["api", "books", id, "sessions"] -> sessions.collection(req, ctx, id)
+    ["api", "books", id, "sessions", session_id] ->
+      sessions.item(req, ctx, id, session_id)
+    ["api", "books", id, "stats"] -> sessions.book_stats(req, ctx, id)
+    ["api", "stats"] -> sessions.library_stats(req, ctx)
     ["api", "settings"] -> settings(req, ctx)
 
     // SPA shell — serve index.html for the root and any non-API,
@@ -104,7 +109,7 @@ fn list_books_handler(ctx: Context) -> Response {
         |> json.to_string
       wisp.json_response(body, 200)
     }
-    Error(error) -> db_error_response("db.list_books", error)
+    Error(error) -> web.db_error_response("db.list_books", error)
   }
 }
 
@@ -127,7 +132,7 @@ fn create_book_handler(req: Request, ctx: Context) -> Response {
   use body <- wisp.require_json(req)
 
   case decode.run(body, create_book_decoder()) {
-    Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+    Error(errors) -> wisp.bad_request(web.describe_decode_errors(errors))
     Ok(input) -> {
       case validate_create_input(input) {
         Error(detail) -> wisp.bad_request(detail)
@@ -172,7 +177,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
       uploaded_at: uploaded_at,
     )
   {
-    Error(error) -> db_error_response("db.create_book", error)
+    Error(error) -> web.db_error_response("db.create_book", error)
     Ok(Nil) -> {
       let meta =
         BookMeta(
@@ -212,7 +217,7 @@ fn books_item(req: Request, ctx: Context, id: String) -> Response {
 
 fn delete_book_handler(ctx: Context, id: String) -> Response {
   case db.delete_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.delete_book", error)
+    Error(error) -> web.db_error_response("db.delete_book", error)
     Ok(False) -> wisp.not_found()
     Ok(True) -> wisp.response(204)
   }
@@ -220,7 +225,7 @@ fn delete_book_handler(ctx: Context, id: String) -> Response {
 
 fn get_book_handler(ctx: Context, id: String) -> Response {
   case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
+    Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(book)) -> {
       // The stored `segments_json` is parsed and re-embedded as
@@ -269,7 +274,7 @@ fn put_reading_state_handler(
   use body <- wisp.require_json(req)
 
   case decode.run(body, reading_state_input_decoder()) {
-    Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+    Error(errors) -> wisp.bad_request(web.describe_decode_errors(errors))
     Ok(input) ->
       case validate_reading_state_input(input) {
         Error(detail) -> wisp.bad_request(detail)
@@ -350,7 +355,7 @@ fn persist_reading_state(
   // the SQLite layer — and so a missing book maps to a clean 404
   // instead of an opaque 500.
   case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
+    Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) -> {
       // Tie the `reading_state` upsert and the `books.last_read_at`
@@ -376,13 +381,13 @@ fn persist_reading_state(
           db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
         })
       case write_result {
-        Error(error) -> db_error_response("db.persist_reading_state", error)
+        Error(error) -> web.db_error_response("db.persist_reading_state", error)
         Ok(Nil) ->
           // Re-read so the client sees the authoritative state — if
           // the last-write-wins guard rejected the write, the
           // response still reflects whatever's on disk.
           case db.get_reading_state(ctx.db, id) {
-            Error(error) -> db_error_response("db.get_reading_state", error)
+            Error(error) -> web.db_error_response("db.get_reading_state", error)
             Ok(None) -> {
               wisp.log_error(
                 "reading_state vanished immediately after upsert for book "
@@ -404,11 +409,11 @@ fn persist_reading_state(
 
 fn get_reading_state_handler(ctx: Context, id: String) -> Response {
   case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
+    Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
       case db.get_reading_state(ctx.db, id) {
-        Error(error) -> db_error_response("db.get_reading_state", error)
+        Error(error) -> web.db_error_response("db.get_reading_state", error)
         // A book with no recorded reading state surfaces as an empty
         // default; that's simpler for the client than a 404 because
         // every book starts with no reading progress.
@@ -522,11 +527,11 @@ fn get_book_settings_handler(ctx: Context, id: String) -> Response {
   // 404 rather than a synthesized all-null payload that the client
   // would mistake for "book exists, no overrides set".
   case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
+    Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
       case db.get_book_settings(ctx.db, id) {
-        Error(error) -> db_error_response("db.get_book_settings", error)
+        Error(error) -> web.db_error_response("db.get_book_settings", error)
         // A book with no overrides surfaces as an all-null record so
         // the client can decode the response with a single shape
         // regardless of whether the row exists yet.
@@ -554,11 +559,11 @@ fn put_book_settings_handler(
   use body <- wisp.require_json(req)
 
   case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
+    Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
       case decode.run(body, book_settings_decoder()) {
-        Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+        Error(errors) -> wisp.bad_request(web.describe_decode_errors(errors))
         Ok(settings) ->
           case validate_book_settings(settings) {
             Error(detail) -> wisp.bad_request(detail)
@@ -567,7 +572,7 @@ fn put_book_settings_handler(
                 db.upsert_book_settings(ctx.db, book_id: id, settings: settings)
               {
                 Error(error) ->
-                  db_error_response("db.upsert_book_settings", error)
+                  web.db_error_response("db.upsert_book_settings", error)
                 Ok(Nil) -> {
                   let body =
                     types.book_settings_to_json(settings)
@@ -674,7 +679,7 @@ fn settings(req: Request, ctx: Context) -> Response {
 
 fn get_settings_handler(ctx: Context) -> Response {
   case db.get_settings(ctx.db) {
-    Error(error) -> db_error_response("db.get_settings", error)
+    Error(error) -> web.db_error_response("db.get_settings", error)
     Ok(settings) -> {
       let body =
         types.user_settings_to_json(settings)
@@ -688,13 +693,13 @@ fn put_settings_handler(req: Request, ctx: Context) -> Response {
   use body <- wisp.require_json(req)
 
   case decode.run(body, user_settings_decoder()) {
-    Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+    Error(errors) -> wisp.bad_request(web.describe_decode_errors(errors))
     Ok(settings) ->
       case validate_user_settings(settings) {
         Error(detail) -> wisp.bad_request(detail)
         Ok(settings) ->
           case db.update_settings(ctx.db, settings) {
-            Error(error) -> db_error_response("db.update_settings", error)
+            Error(error) -> web.db_error_response("db.update_settings", error)
             Ok(Nil) -> {
               let body =
                 types.user_settings_to_json(settings)
@@ -793,38 +798,6 @@ fn user_settings_decoder() -> decode.Decoder(UserSettings) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Render every decode failure on a single line. Reporting only the
-/// first error meant a client missing two fields had to fix one,
-/// re-request, then learn about the second; rolling them all up
-/// removes that round-trip.
-fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
-  case errors {
-    [] -> "invalid JSON body"
-    _ ->
-      errors
-      |> list.map(describe_decode_error)
-      |> string.join("; ")
-  }
-}
-
-fn describe_decode_error(error: decode.DecodeError) -> String {
-  let decode.DecodeError(expected, found, path) = error
-  let path_str = case path {
-    [] -> "<root>"
-    _ -> string.join(path, ".")
-  }
-  "expected " <> expected <> " at " <> path_str <> " but found " <> found
-}
-
-/// Log a SQLite error with operator-visible context, then return the
-/// generic 500. Centralised so every call site has the same shape
-/// (operation tag plus a structured Sqlight error inspection) and no
-/// future error path can silently drop the trail.
-fn db_error_response(operation: String, error: sqlight.Error) -> Response {
-  wisp.log_error(operation <> " failed: " <> string.inspect(error))
-  wisp.internal_server_error()
-}
 
 /// Word and sentence totals for the stored `books` row. Global indices
 /// are assigned by the segmenter in document reading order starting at
