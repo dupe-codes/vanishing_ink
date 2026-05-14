@@ -64,6 +64,7 @@ import client/msg.{
 }
 import client/pagination.{type Page, Page}
 import client/reducer
+import client/reducer/jump as jump_reducer
 import client/sample
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
@@ -6755,6 +6756,17 @@ pub fn update_lock_in_jump_restores_running_engine_with_valid_word_test() {
   // word on the now-current page; after the bulk vanish, every word
   // on pages 0..1 is erased, so the eligible word is word 4 on
   // page 2. Same save-discipline pin as the sibling test.
+  //
+  // FFI timer protocol pin: `apply_jump_to_page` cleared the
+  // single-slot word timer on the way into the preview, so a
+  // `Running` restoration must rearm it via `schedule_advance_word`.
+  // The predicate `should_resume_word_timer_after_jump` is the
+  // source of truth — `engine_resume_effect` consults it inside
+  // the reducer arm. Asserting it `True` here pins the discipline:
+  // if a future refactor drops the helper call from
+  // `apply_lock_in_jump`, the runtime path stops re-arming the
+  // timer while the predicate still reads True, and the live
+  // engine sits with an empty timer slot for an indefinite stretch.
   let preview =
     JumpPreview(
       source_page: 0,
@@ -6778,6 +6790,63 @@ pub fn update_lock_in_jump_restores_running_engine_with_valid_word_test() {
   // preview snapshot, so the chained `save_reading_state` PUT actually
   // fires the reading-state update to the server.
   assert effects.should_save_reading_state(updated) == True
+  // Timer-resume pin: a Running restoration needs the FFI single-
+  // slot word timer rearmed in the same effect batch as the save.
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == True
+}
+
+pub fn update_lock_in_jump_paused_snapshot_skips_timer_resume_test() {
+  // A `Paused` snapshot must not rearm the FFI single-slot timer —
+  // the engine stays paused after lock-in and a stray
+  // `schedule_advance_word` would tick a paused engine into the
+  // `Paused, _` no-op arm of `apply_advance_word`, wasting a frame
+  // and partially defeating the slot's "is there a timer in flight"
+  // invariant.
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Paused,
+      prior_next_word_index: Some(0),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  assert updated.engine_state == Paused
+  // Predicate pin: the timer-resume effect must collapse to
+  // `effect.none()` for a Paused restoration.
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
+}
+
+pub fn update_lock_in_jump_stopped_snapshot_skips_timer_resume_test() {
+  // A `Stopped` snapshot — the engine was dormant pre-jump — also
+  // skips the timer resume. The restored engine is `Stopped`, not
+  // `Running`, so the slot stays empty by design.
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      current_page: 2,
+      jump_preview: Some(preview),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  assert updated.engine_state == Stopped
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
 }
 
 // ---------------------------------------------------------------------------
@@ -6791,6 +6860,13 @@ pub fn update_undo_jump_restores_pre_jump_state_test() {
   // chapter title, drops the preview, and clears the overlay state.
   // No save effect — the reading position is unchanged from before
   // the jump.
+  //
+  // FFI timer protocol pin: same as on lock-in, a `Running`
+  // restoration must rearm the FFI single-slot word timer because
+  // `apply_jump_to_page` cleared it on the way into the preview.
+  // The undo arm reuses the preview's stashed
+  // `prior_next_word_index` (valid on the source page) rather than
+  // re-anchoring like the lock-in arm does.
   let preview =
     JumpPreview(
       source_page: 1,
@@ -6822,6 +6898,35 @@ pub fn update_undo_jump_restores_pre_jump_state_test() {
   // the new page against the previewed page's coordinates.
   assert updated.line_boxes == []
   assert updated.active_line == None
+  // Timer-resume pin: a Running restoration on undo must chain
+  // `schedule_advance_word`, same protocol as lock-in.
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == True
+}
+
+pub fn update_undo_jump_paused_snapshot_skips_timer_resume_test() {
+  // Symmetric to the lock-in Paused test: an undo back to a paused
+  // engine leaves the FFI timer slot empty. The reader can resume
+  // the engine manually later, which routes through `apply_resume_fade`
+  // and schedules its own timer.
+  let preview =
+    JumpPreview(
+      source_page: 1,
+      prior_engine_state: Paused,
+      prior_next_word_index: Some(2),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+      next_word_index: None,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, UndoJump)
+
+  assert updated.engine_state == Paused
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
 }
 
 pub fn update_undo_jump_is_noop_when_no_preview_test() {
@@ -6906,6 +7011,37 @@ pub fn should_save_reading_state_allows_committed_active_book_test() {
     Model(..jump_model(), active_book_id: Some("the-iliad"), jump_preview: None)
 
   assert effects.should_save_reading_state(active) == True
+}
+
+// ---------------------------------------------------------------------------
+// FFI timer-resume gate (jump restoration)
+// ---------------------------------------------------------------------------
+
+pub fn should_resume_word_timer_after_jump_running_test() {
+  // Running engine after a jump restoration ⇒ the FFI single-slot
+  // word timer slot is empty (cleared by `apply_jump_to_page` on
+  // the way into the preview), so the reducer arm must chain
+  // `schedule_advance_word` to rearm it.
+  let running = Model(..jump_model(), engine_state: Running)
+
+  assert jump_reducer.should_resume_word_timer_after_jump(running) == True
+}
+
+pub fn should_resume_word_timer_after_jump_paused_test() {
+  // Paused engine after restoration ⇒ no tick is expected, so the
+  // timer slot stays empty by design. A future `ResumeFade` would
+  // route through `apply_resume_fade` and chain its own schedule.
+  let paused = Model(..jump_model(), engine_state: Paused)
+
+  assert jump_reducer.should_resume_word_timer_after_jump(paused) == False
+}
+
+pub fn should_resume_word_timer_after_jump_stopped_test() {
+  // Stopped engine after restoration ⇒ no tick is expected, ever.
+  // The engine is dormant and the slot stays empty.
+  let stopped = Model(..jump_model(), engine_state: Stopped)
+
+  assert jump_reducer.should_resume_word_timer_after_jump(stopped) == False
 }
 
 // ---------------------------------------------------------------------------

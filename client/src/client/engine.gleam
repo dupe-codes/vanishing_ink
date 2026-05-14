@@ -415,7 +415,12 @@ fn is_word_visible(
 /// division — the residual fractional millisecond is sub-frame
 /// at every realistic WPM and would not be observable in the
 /// rendered fade.
-fn word_interval_ms(wpm: Int) -> Int {
+///
+/// Exposed so the jump-restoration path in `client/reducer/jump`
+/// can re-arm the FFI single-slot word timer at the same delay the
+/// engine uses for a within-page tick, without duplicating the
+/// `ms_per_minute / wpm` constant arithmetic.
+pub fn word_interval_ms(wpm: Int) -> Int {
   ms_per_minute / wpm
 }
 

@@ -29,6 +29,32 @@
 //// chains a save unconditionally; the central predicate short-
 //// circuits it while `jump_preview: Some(_)`, so the discipline
 //// here does not have to be reified at every dispatch site.
+////
+//// **FFI timer protocol.** The engine's single-slot word timer is the
+//// runtime authority on "is a tick in flight" (see the docstring on
+//// `client/engine`). Every `Running → Paused` transition must call
+//// `ffi.clear_word_timer`; every `Paused → Running` or
+//// `Stopped → Running` transition must chain `schedule_advance_word`.
+//// The jump path moves the engine across that boundary twice — once
+//// into `Paused` on `apply_jump_to_page`, once back out on lock-in
+//// or undo — and both crossings have to respect the protocol.
+////
+//// `apply_jump_to_page` chains `ffi.clear_word_timer` alongside the
+//// `Paused` write so a Running-engine jump does not leave a pending
+//// tick that will land during the preview window as a no-op
+//// `AdvanceWord` (which fails the `Paused` arm and never re-arms the
+//// slot). `apply_lock_in_jump` and `apply_undo_jump` then route any
+//// `Running` restoration through `engine_resume_effect` so the slot
+//// is re-armed in the same model update that flips
+//// `engine_state: Running`. Skipping either half leaves the engine
+//// logically running with an empty timer slot and no further word
+//// fades fire until the reader manually pauses and resumes.
+////
+//// The pinable predicate for the resume half is
+//// `should_resume_word_timer_after_jump`, mirroring
+//// `should_save_reading_state` in shape: a pure boolean over the
+//// post-restoration `Model` that both the reducer arms and the test
+//// surface lock onto.
 
 import gleam/int
 import gleam/list
@@ -36,7 +62,11 @@ import gleam/option.{None, Some}
 import gleam/set
 import lustre/effect.{type Effect}
 
-import client/effects.{measure_lines_after_paint, save_reading_state}
+import client/effects.{
+  measure_lines_after_paint, save_reading_state, schedule_advance_word,
+}
+import client/engine.{word_interval_ms}
+import client/ffi
 import client/msg.{type Msg}
 import client/pagination.{type Page}
 import client/state.{type Model, JumpPreview, Model, Paused, Running, Stopped}
@@ -89,8 +119,13 @@ pub fn apply_submit_jump_page(model: Model) -> #(Model, Effect(Msg)) {
 /// only navigation invariant.
 ///
 /// On success: stash the pre-jump position, pause the fade engine,
-/// advance the page, close the menu, and chain a line-measurement so
-/// the active-line overlay re-anchors on the new page.
+/// clear the FFI single-slot word timer (the `Running → Paused`
+/// half of the timer protocol — without this, a pending tick fires
+/// during the preview window, lands on the no-op `Paused`
+/// `AdvanceWord` arm, and leaves the slot empty so `apply_lock_in`'s
+/// `Running` restoration has nothing to schedule against), advance
+/// the page, close the menu, and chain a line-measurement so the
+/// active-line overlay re-anchors on the new page.
 pub fn apply_jump_to_page(
   model: Model,
   page_index: Int,
@@ -126,7 +161,17 @@ pub fn apply_jump_to_page(
       // the reader on its next open.
       let with_cleared_overlay =
         Model(..advanced, line_boxes: [], active_line: None)
-      #(with_cleared_overlay, measure_lines_after_paint())
+      #(
+        with_cleared_overlay,
+        effect.batch([
+          // FFI single-slot timer protocol: every Running → Paused
+          // transition clears the timer. Safe to call unconditionally
+          // — the FFI no-ops when nothing is scheduled, and a Stopped
+          // or Paused prior state means the slot was already empty.
+          effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+          measure_lines_after_paint(),
+        ]),
+      )
     }
   }
 }
@@ -158,8 +203,10 @@ pub fn apply_jump_to_chapter(
 /// Lock in the in-flight jump. Bulk-vanish every word on pages
 /// strictly before `current_page` (those pages have been "read" by
 /// skipping past them), drop the preview snapshot, restore the
-/// engine state captured in the preview, and chain a save so the
-/// server picks up the new position and the new word bitset.
+/// engine state captured in the preview, chain a save so the server
+/// picks up the new position and the new word bitset, and re-arm
+/// the FFI single-slot word timer when the restored state is
+/// `Running`.
 ///
 /// The save chain depends on `jump_preview: None` being written
 /// *before* the effect is constructed — `save_reading_state`'s gate
@@ -170,7 +217,11 @@ pub fn apply_jump_to_chapter(
 ///
 /// Restoring the engine state runs through `restore_engine_after_jump`
 /// so a `Running` snapshot lands on a valid `next_word_index` instead
-/// of re-introducing the `Running, None` invariant violation.
+/// of re-introducing the `Running, None` invariant violation. The
+/// `engine_resume_effect` helper then chains `schedule_advance_word`
+/// for the `Running` case so the timer slot — emptied by
+/// `apply_jump_to_page`'s `clear_word_timer` — is rearmed in the same
+/// model update that flips `engine_state: Running`.
 pub fn apply_lock_in_jump(model: Model) -> #(Model, Effect(Msg)) {
   case model.jump_preview {
     None -> #(model, effect.none())
@@ -183,16 +234,30 @@ pub fn apply_lock_in_jump(model: Model) -> #(Model, Effect(Msg)) {
           Model(..model, erased_words: vanished_words, jump_preview: None),
           preview,
         )
-      #(restored, save_reading_state(restored))
+      #(
+        restored,
+        effect.batch([
+          engine_resume_effect(restored),
+          save_reading_state(restored),
+        ]),
+      )
     }
   }
 }
 
 /// Undo the in-flight jump. Restores the pre-jump page, engine
-/// state, and `next_word_index`, drops the preview snapshot, and
-/// chains a line-measurement so the active-line overlay re-anchors
-/// to the restored page. No save fires — the reading position is
-/// unchanged from before the jump.
+/// state, and `next_word_index`, drops the preview snapshot, chains
+/// a line-measurement so the active-line overlay re-anchors to the
+/// restored page, and re-arms the FFI single-slot word timer when
+/// the restored state is `Running`. No save fires — the reading
+/// position is unchanged from before the jump.
+///
+/// The `Running` restoration reuses the preview's stashed
+/// `prior_next_word_index` because the reader is returning to the
+/// source page, where the pointer was already valid. The timer slot,
+/// however, was cleared by `apply_jump_to_page` on the way into the
+/// preview, so `engine_resume_effect` must chain
+/// `schedule_advance_word` here just as it does on lock-in.
 pub fn apply_undo_jump(model: Model) -> #(Model, Effect(Msg)) {
   case model.jump_preview {
     None -> #(model, effect.none())
@@ -225,8 +290,65 @@ pub fn apply_undo_jump(model: Model) -> #(Model, Effect(Msg)) {
           active_line: None,
           chapter_entries: compute_chapter_entries(model.pages, restored_page),
         )
-      #(restored, measure_lines_after_paint())
+      #(
+        restored,
+        effect.batch([
+          engine_resume_effect(restored),
+          measure_lines_after_paint(),
+        ]),
+      )
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FFI timer protocol — jump-restoration side
+// ---------------------------------------------------------------------------
+
+/// Predicate gating the `schedule_advance_word` chain on jump
+/// restoration. Returns `True` when the post-restoration model
+/// requires the FFI single-slot word timer to be re-armed, `False`
+/// when no timer effect should fire.
+///
+/// The slot is empty by the time lock-in or undo runs:
+/// `apply_jump_to_page` calls `ffi.clear_word_timer` on the way into
+/// the preview, and the `Paused` arm of `apply_advance_word`
+/// (`client/engine`) is a no-op that does not re-arm. Only a
+/// `Running` restoration therefore needs to chain
+/// `schedule_advance_word`; `Paused` and `Stopped` restorations
+/// deliberately leave the slot empty. `apply_pause_fade` /
+/// `apply_resume_fade` continue to own the protocol for
+/// non-jump-mediated transitions.
+///
+/// Mirrors `should_save_reading_state` in shape: a pure boolean
+/// over the post-restoration `Model` that both the reducer arms and
+/// the test surface lock onto, so the timer protocol invariant is
+/// not duplicated between runtime and assertions. A future drop of
+/// the `engine_resume_effect` call from `apply_lock_in_jump` /
+/// `apply_undo_jump` makes the runtime path and the test pin
+/// disagree.
+pub fn should_resume_word_timer_after_jump(model: Model) -> Bool {
+  case model.engine_state {
+    Running -> True
+    Paused -> False
+    Stopped -> False
+  }
+}
+
+/// Construct the effect that re-arms the FFI single-slot word timer
+/// after a jump restoration. Consults
+/// `should_resume_word_timer_after_jump` for the gate and chains
+/// `schedule_advance_word` at the WPM-derived interval when the
+/// predicate says yes.
+///
+/// Pulled out so `apply_lock_in_jump` and `apply_undo_jump` share
+/// one chain rather than each branching on `engine_state` inline,
+/// and so a future engine-state arm only has to update the predicate
+/// to flow into both reducer arms at once.
+fn engine_resume_effect(model: Model) -> Effect(Msg) {
+  case should_resume_word_timer_after_jump(model) {
+    True -> schedule_advance_word(word_interval_ms(model.wpm))
+    False -> effect.none()
   }
 }
 
