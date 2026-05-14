@@ -1418,10 +1418,14 @@ pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
   // is only ever exercised against tables created before the genre
   // column landed — which means the entire test suite, on fresh
   // `:memory:` databases, never drives it. Hand-build a pre-genre
-  // `books` table here, run the migration, and verify the column
-  // appears. Idempotency is asserted too: a second call on the
-  // already-migrated table must be a no-op (the PRAGMA gate skips
-  // the ALTER because `genre` is already present).
+  // `books` table here, seed a row, run the migration, and verify
+  // both the column appears AND the seeded row's `genre` reads back
+  // as NULL — the actual contract callers depend on (a pre-existing
+  // row must not vanish, and its new column must default to nullable
+  // NULL, not be backfilled with an empty string or error). Idempotency
+  // is asserted too: a second call on the already-migrated table must
+  // be a no-op (the PRAGMA gate skips the ALTER because `genre` is
+  // already present) and must not disturb the seeded row's NULL.
   let assert Ok(conn) = sqlight.open(":memory:")
   let pre_genre_schema =
     "CREATE TABLE books (
@@ -1437,6 +1441,16 @@ pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
      );"
   let assert Ok(_) = sqlight.exec(pre_genre_schema, conn)
 
+  // Seed one row at the pre-genre schema so the migration is run
+  // against non-empty data. The contract under test: after ALTER
+  // TABLE ADD COLUMN, this row's `genre` must be readable as NULL.
+  let seed_row_sql =
+    "INSERT INTO books (id, title, author, raw_text, segments_json,
+      word_count, sentence_count, uploaded_at, last_read_at)
+     VALUES ('legacy-1', 'Legacy Title', NULL, 'raw', '[]', 0, 0,
+       '2026-04-01T12:00:00Z', NULL);"
+  let assert Ok(_) = sqlight.exec(seed_row_sql, conn)
+
   // Sanity: the table starts without `genre`. SELECT genre FROM books
   // must fail with a column-missing error — confirms the seed schema
   // is genuinely pre-genre.
@@ -1446,10 +1460,33 @@ pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
   let assert Ok(Nil) = db.ensure_books_genre_column(conn)
   let assert Ok(_) = sqlight.exec("SELECT genre FROM books;", conn)
 
+  // The pre-existing row's `genre` reads back as NULL — the column
+  // default is nullable, no backfill happens, and the seeded row is
+  // still there with its original id.
+  let row_decoder = {
+    use id <- decode.field(0, decode.string)
+    use genre <- decode.field(1, decode.optional(decode.string))
+    decode.success(#(id, genre))
+  }
+  let assert Ok([#("legacy-1", None)]) =
+    sqlight.query(
+      "SELECT id, genre FROM books;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
+
   // Second run: the PRAGMA gate sees `genre` already present and
-  // skips the ALTER. Still `Ok(Nil)`, still leaves the column intact.
+  // skips the ALTER. Still `Ok(Nil)`, still leaves the column intact,
+  // and the seeded row's NULL is undisturbed.
   let assert Ok(Nil) = db.ensure_books_genre_column(conn)
-  let assert Ok(_) = sqlight.exec("SELECT genre FROM books;", conn)
+  let assert Ok([#("legacy-1", None)]) =
+    sqlight.query(
+      "SELECT id, genre FROM books;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
 
   let assert Ok(_) = sqlight.close(conn)
 }
