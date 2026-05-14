@@ -13,7 +13,7 @@
 
 import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/http.{Get, Post, Put}
+import gleam/http.{Delete, Get, Post, Put}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -205,7 +205,16 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
 fn books_item(req: Request, ctx: Context, id: String) -> Response {
   case req.method {
     Get -> get_book_handler(ctx, id)
-    _ -> wisp.method_not_allowed([Get])
+    Delete -> delete_book_handler(ctx, id)
+    _ -> wisp.method_not_allowed([Get, Delete])
+  }
+}
+
+fn delete_book_handler(ctx: Context, id: String) -> Response {
+  case db.delete_book(ctx.db, id) {
+    Error(error) -> db_error_response("db.delete_book", error)
+    Ok(False) -> wisp.not_found()
+    Ok(True) -> wisp.response(204)
   }
 }
 

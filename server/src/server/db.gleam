@@ -63,15 +63,17 @@ CREATE TABLE IF NOT EXISTS user_settings (
 );
 
 -- NOTE: `book_settings.book_id` and `reading_state.book_id` reference
--- `books(id)` without an `ON DELETE CASCADE` clause. There is no book
--- deletion endpoint today, but when one lands the foreign keys must
--- gain `ON DELETE CASCADE` (or the delete handler must purge the
--- dependent rows first) or the delete will fail with a FK violation
--- under `PRAGMA foreign_keys = ON`.
+-- `books(id)` WITHOUT `ON DELETE CASCADE`. The cascade is performed
+-- manually in `db.delete_book`, which deletes dependent rows before
+-- the parent under a single SQLite transaction. Any NEW table that
+-- adds `REFERENCES books(id)` MUST be added to `delete_book` — there
+-- is no compile-time check, and `PRAGMA foreign_keys = ON` will
+-- surface the omission only at runtime as a FK violation. The
+-- unenforced-convention hazard is filed for a future migration that
+-- moves these FKs to `ON DELETE CASCADE`.
 CREATE TABLE IF NOT EXISTS book_settings (
-  -- See the cascade note above the `books` table: this FK lacks
-  -- `ON DELETE CASCADE`, so the first book-delete endpoint must
-  -- either purge `book_settings` rows first or migrate the FK.
+  -- See the cascade note above the `book_settings` table: dependent
+  -- rows are purged in `db.delete_book` ahead of the parent row.
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   wpm INTEGER,
   paragraph_delay_ms INTEGER,
@@ -80,8 +82,8 @@ CREATE TABLE IF NOT EXISTS book_settings (
 );
 
 CREATE TABLE IF NOT EXISTS reading_state (
-  -- Mirrors `book_settings.book_id`: same no-cascade caveat applies
-  -- to the future book-delete endpoint.
+  -- Mirrors `book_settings.book_id`: no `ON DELETE CASCADE`, manually
+  -- purged in `db.delete_book` ahead of the parent `books` row.
   book_id TEXT PRIMARY KEY REFERENCES books(id),
   mode TEXT NOT NULL DEFAULT 'manual',
   sentence_bitset BLOB,
@@ -244,6 +246,59 @@ pub fn set_book_last_read_at(
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(error)
   }
+}
+
+/// Delete a book and its dependent rows (`reading_state`, `book_settings`)
+/// inside a transaction. Returns `Ok(True)` when the book existed and was
+/// deleted, `Ok(False)` when the id was not found, and `Error(error)` on
+/// any SQLite failure.
+///
+/// Dependent rows are deleted first because `PRAGMA foreign_keys = ON` is
+/// set at connection time — deleting the `books` row first would raise a
+/// constraint violation. The manual cascade is explicit by design; the
+/// schema intentionally omits `ON DELETE CASCADE` so future tables that
+/// reference `books(id)` have to opt in.
+pub fn delete_book(
+  connection: sqlight.Connection,
+  id: shared.BookId,
+) -> Result(Bool, sqlight.Error) {
+  use <- transaction(connection)
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM reading_state WHERE book_id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM book_settings WHERE book_id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM books WHERE id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
+  // `changes()` reports how many rows the immediately preceding DML
+  // statement touched — 1 if the book existed, 0 if the id was unknown.
+  let count_decoder = {
+    use count <- decode.field(0, decode.int)
+    decode.success(count)
+  }
+  sqlight.query(
+    "SELECT changes();",
+    on: connection,
+    with: [],
+    expecting: count_decoder,
+  )
+  |> result.map(fn(rows) {
+    case rows {
+      [count, ..] -> count > 0
+      [] -> False
+    }
+  })
 }
 
 /// Run a closure inside a SQLite transaction. On `Ok` the transaction

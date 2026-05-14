@@ -18,6 +18,11 @@ import wisp/wisp_mist
 
 const port = 3000
 
+/// Bind address. `0.0.0.0` listens on all network interfaces so the
+/// app is reachable from other devices on the LAN (e.g. a phone on
+/// the same WiFi).
+const host = "0.0.0.0"
+
 /// SQLite database file. Relative to the server's working directory so
 /// development and production runs both end up with a co-located store.
 const database_path = "./vanishing_ink.db"
@@ -53,6 +58,7 @@ pub fn main() -> Nil {
     |> wisp_mist.handler(secret_key_base)
     |> mist.new
     |> mist.port(port)
+    |> mist.bind(host)
     |> mist.start
 
   case start_result {

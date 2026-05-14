@@ -609,6 +609,20 @@ pub type Model {
     created_book_segments: Option(#(BookMeta, SegmentedText)),
     global_defaults: UserSettings,
     book_settings: Option(BookSettings),
+    /// `Some(book_id)` while the delete confirmation overlay is visible
+    /// for that book. `None` at all other times. The overlay asks the
+    /// reader to confirm before the DELETE request fires, preventing
+    /// accidental destruction of a book and its reading history.
+    confirm_delete_id: Option(String),
+    /// Ids of books whose `DELETE /api/books/:id` request is in flight.
+    /// The card remains in `books` until `BookDeleted(_, Ok)` lands so
+    /// the failure arm can restore the row without an explicit undo —
+    /// but while the request is outstanding, the × badge for that card
+    /// is rendered disabled and `ConfirmDelete(id)` is a no-op, so a
+    /// keen-fingered reader cannot fire a second DELETE on the same
+    /// id (which would resolve as a 404 and surface a confusing
+    /// FetchError on a successful deletion).
+    deleting_book_ids: Set(String),
   )
 }
 
@@ -926,6 +940,26 @@ pub type Msg {
   /// model), and restores the four overridable effective fields to
   /// `model.global_defaults`. A no-op when there is no active book.
   ResetBookSettings
+
+  /// Reader tapped the delete icon on a book card. Sets
+  /// `confirm_delete_id` to `Some(id)` so the confirmation overlay
+  /// renders for that specific card. No request is fired yet.
+  ConfirmDelete(id: String)
+
+  /// Reader tapped "Cancel" on the delete confirmation overlay.
+  /// Clears `confirm_delete_id` without firing a DELETE request.
+  CancelDelete
+
+  /// Reader tapped "Delete" on the delete confirmation overlay.
+  /// Fires `DELETE /api/books/:id` and clears `confirm_delete_id`.
+  ExecuteDelete(id: String)
+
+  /// `DELETE /api/books/:id` resolved. The `Ok` arm removes the book
+  /// from `model.books` and, when the deleted book is the currently
+  /// active reader book, navigates back to the library. The `Error`
+  /// arm surfaces the failure in `library_error` without removing the
+  /// book from the grid.
+  BookDeleted(id: String, result: Result(String, ffi.FetchError))
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1043,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       created_book_segments: None,
       global_defaults: fallback_user_settings(dark_mode),
       book_settings: None,
+      confirm_delete_id: None,
+      deleting_book_ids: set.new(),
     )
 
   // Boot effects:
@@ -1434,6 +1470,70 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     ResetBookSettings -> apply_reset_book_settings(model)
+
+    // A second tap on an already-in-flight card is a no-op: opening
+    // the confirmation overlay again would let the reader fire a
+    // second DELETE on an id that is about to be 404'd by the first
+    // delete's success, surfacing a confusing FetchError on what was
+    // actually a successful deletion.
+    ConfirmDelete(id) ->
+      case set.contains(model.deleting_book_ids, id) {
+        True -> #(model, effect.none())
+        False -> #(Model(..model, confirm_delete_id: Some(id)), effect.none())
+      }
+
+    CancelDelete -> #(Model(..model, confirm_delete_id: None), effect.none())
+
+    // Mark the id as in-flight so the × badge for that card renders
+    // disabled (see `view_book_card` / `view_hero_card`) and a
+    // re-entrant `ConfirmDelete(id)` is short-circuited above. The
+    // id is removed from the set in both `BookDeleted` arms so a
+    // failed delete also unblocks subsequent retries.
+    ExecuteDelete(id) -> #(
+      Model(
+        ..model,
+        confirm_delete_id: None,
+        deleting_book_ids: set.insert(model.deleting_book_ids, id),
+      ),
+      delete_book_effect(id),
+    )
+
+    BookDeleted(id, Ok(_)) -> {
+      let books = list.filter(model.books, fn(b) { b.id != id })
+      let deleting_book_ids = set.delete(model.deleting_book_ids, id)
+      case model.active_book_id == Some(id) {
+        True -> {
+          let #(nav_model, nav_effect) = apply_go_to_library(model)
+          #(
+            Model(
+              ..nav_model,
+              books: books,
+              library_error: None,
+              deleting_book_ids: deleting_book_ids,
+            ),
+            nav_effect,
+          )
+        }
+        False -> #(
+          Model(
+            ..model,
+            books: books,
+            library_error: None,
+            deleting_book_ids: deleting_book_ids,
+          ),
+          effect.none(),
+        )
+      }
+    }
+
+    BookDeleted(id, Error(error)) -> #(
+      Model(
+        ..model,
+        library_error: Some(describe_fetch_error(error)),
+        deleting_book_ids: set.delete(model.deleting_book_ids, id),
+      ),
+      effect.none(),
+    )
   }
 }
 
@@ -1992,6 +2092,19 @@ fn book_settings_to_json(settings: BookSettings) -> json.Json {
     #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
     #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
   ])
+}
+
+/// `DELETE /api/books/:id` and dispatch `BookDeleted`. The server
+/// responds 204 No Content on success and 404 when the id is not found;
+/// both resolve through the same `Result(String, FetchError)` shape the
+/// other fetch effects use, so the update arm can treat a 404 as an
+/// error the same way it treats a network failure.
+fn delete_book_effect(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_delete("/api/books/" <> id, fn(result) {
+      dispatch(BookDeleted(id, result))
+    })
+  })
 }
 
 /// `POST /api/books` with the JSON body `{ "title", "text" }` and
@@ -4686,6 +4799,7 @@ fn view_library(model: Model) -> Element(Msg) {
     html.div([attribute.class("lib-scroll")], [view_library_body(model)]),
     view_add_book_fab(),
     view_add_book_sheet(model),
+    view_delete_confirm_overlay(model),
   ])
 }
 
@@ -4733,18 +4847,88 @@ fn view_library_body(model: Model) -> Element(Msg) {
   let hero_book = hero_candidate(sorted)
   let grid_books = grid_candidates(sorted, hero_book)
 
+  // The hero and each grid card need to know whether their delete
+  // request is in flight so the × badge can render disabled. Threading
+  // a closure (rather than the raw set) keeps the lookup out of the
+  // view layer's vocabulary — `view_book_card` doesn't have to know
+  // a `Set` exists, only that "is this id currently being deleted?"
+  // is a one-call query.
+  let is_deleting = fn(id: String) -> Bool {
+    set.contains(model.deleting_book_ids, id)
+  }
+
   let hero = case hero_book {
     None -> element.none()
-    Some(book) -> view_hero_card(book)
+    Some(book) -> view_hero_card(book, is_deleting(book.id))
   }
 
   let body_main = case model.books_loading, model.books {
     True, _ -> view_library_loading()
     False, [] -> view_library_empty()
-    False, _ -> view_library_grid(grid_books)
+    False, _ -> view_library_grid(grid_books, is_deleting)
   }
 
   html.div([attribute.class("lib-body")], [error_banner, hero, body_main])
+}
+
+/// Delete confirmation modal. Rendered as a full-screen overlay when
+/// `confirm_delete_id` is `Some(_)`. Tapping the scrim cancels;
+/// tapping Delete fires `ExecuteDelete`.
+fn view_delete_confirm_overlay(model: Model) -> Element(Msg) {
+  case model.confirm_delete_id {
+    None -> element.none()
+    Some(book_id) -> {
+      let title = case list.find(model.books, fn(b) { b.id == book_id }) {
+        Ok(book) -> book.title
+        Error(_) -> "this book"
+      }
+      html.div(
+        [
+          attribute.class("sheet-overlay open"),
+          attribute.attribute("role", "dialog"),
+          attribute.attribute("aria-modal", "true"),
+          attribute.aria_label("Confirm delete"),
+          event.on_click(CancelDelete),
+        ],
+        [
+          html.div(
+            [
+              attribute.class("delete-confirm-sheet"),
+              stop_click_propagation(),
+            ],
+            [
+              html.div([attribute.class("delete-confirm-title")], [
+                html.text("Delete \"" <> title <> "\"?"),
+              ]),
+              html.div([attribute.class("delete-confirm-sub")], [
+                html.text(
+                  "This will permanently remove the book and its reading history.",
+                ),
+              ]),
+              html.div([attribute.class("delete-confirm-actions")], [
+                html.button(
+                  [
+                    attribute.class("btn-bar"),
+                    attribute.type_("button"),
+                    event.on_click(CancelDelete),
+                  ],
+                  [html.text("Cancel")],
+                ),
+                html.button(
+                  [
+                    attribute.class("btn-bar btn-bar-danger"),
+                    attribute.type_("button"),
+                    event.on_click(ExecuteDelete(book_id)),
+                  ],
+                  [html.text("Delete")],
+                ),
+              ]),
+            ],
+          ),
+        ],
+      )
+    }
+  }
 }
 
 /// Sort by `last_read_at` descending, with unread books (None)
@@ -4826,56 +5010,69 @@ fn view_library_empty() -> Element(Msg) {
   ])
 }
 
-fn view_hero_card(book: BookMeta) -> Element(Msg) {
+/// The hero card is the most prominent affordance on the library
+/// surface — the book the reader is most likely to want to remove
+/// (just finished, abandoned, imported by mistake) is precisely the
+/// one the × badge has to reach. The badge sits in a sibling layer
+/// above the open-book button rather than inside it: nested
+/// `<button>` is invalid HTML and would also collapse the click
+/// targets in the accessibility tree.
+fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
-  html.button(
-    [
-      attribute.class("hero-card"),
-      attribute.type_("button"),
-      attribute.aria_label("Continue reading " <> book.title),
-      event.on_click(OpenBook(book.id)),
-    ],
-    [
-      html.div([attribute.class("section-label")], [
-        html.text("Continue Reading"),
-      ]),
-      html.div(
-        [
-          attribute.class("hero-cover"),
-          attribute.style("background", color),
-        ],
-        [
-          html.div(
-            [
-              attribute.class("hero-cover-gradient"),
-              attribute.attribute("aria-hidden", "true"),
-            ],
-            [],
-          ),
-          html.div([attribute.class("hero-cover-text")], [
-            html.div([attribute.class("hero-title")], [html.text(book.title)]),
-            html.div([attribute.class("hero-author")], [html.text(author)]),
-          ]),
-        ],
-      ),
-      html.div([attribute.class("hero-meta")], [
-        html.div([attribute.class("hero-meta-line")], [
-          html.text(format_word_count(book.word_count) <> " words"),
-        ]),
-        html.div([attribute.class("hero-cta")], [
+  html.div([attribute.class("hero-card-wrapper")], [
+    html.button(
+      [
+        attribute.class("hero-card"),
+        attribute.type_("button"),
+        attribute.aria_label("Continue reading " <> book.title),
+        event.on_click(OpenBook(book.id)),
+      ],
+      [
+        html.div([attribute.class("section-label")], [
           html.text("Continue Reading"),
         ]),
-      ]),
-    ],
-  )
+        html.div(
+          [
+            attribute.class("hero-cover"),
+            attribute.style("background", color),
+          ],
+          [
+            html.div(
+              [
+                attribute.class("hero-cover-gradient"),
+                attribute.attribute("aria-hidden", "true"),
+              ],
+              [],
+            ),
+            html.div([attribute.class("hero-cover-text")], [
+              html.div([attribute.class("hero-title")], [html.text(book.title)]),
+              html.div([attribute.class("hero-author")], [html.text(author)]),
+            ]),
+          ],
+        ),
+        html.div([attribute.class("hero-meta")], [
+          html.div([attribute.class("hero-meta-line")], [
+            html.text(format_word_count(book.word_count) <> " words"),
+          ]),
+          html.div([attribute.class("hero-cta")], [
+            html.text("Continue Reading"),
+          ]),
+        ]),
+      ],
+    ),
+    view_delete_badge(book, is_deleting, ["btn-delete-hero"]),
+  ])
 }
 
 /// Render the 2-column book grid. The wrapping container carries
 /// the section label so the empty-grid case (a library with only
 /// a hero book) collapses cleanly without leaving a dangling
 /// header.
-fn view_library_grid(books: List(BookMeta)) -> Element(Msg) {
+fn view_library_grid(
+  books: List(BookMeta),
+  is_deleting: fn(String) -> Bool,
+) -> Element(Msg) {
   case books {
     [] -> element.none()
     _ ->
@@ -4885,40 +5082,78 @@ fn view_library_grid(books: List(BookMeta)) -> Element(Msg) {
         ]),
         html.div(
           [attribute.class("book-grid")],
-          list.map(books, view_book_card),
+          list.map(books, fn(book) {
+            view_book_card(book, is_deleting(book.id))
+          }),
         ),
       ])
   }
 }
 
-fn view_book_card(book: BookMeta) -> Element(Msg) {
+fn view_book_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
-  html.button(
-    [
-      attribute.class("book-card"),
-      attribute.type_("button"),
-      attribute.aria_label("Open " <> book.title),
-      event.on_click(OpenBook(book.id)),
-    ],
-    [
-      html.div(
-        [attribute.class("book-cover"), attribute.style("background", color)],
-        [
-          html.div([attribute.class("book-cover-title")], [
-            html.text(book.title),
+  html.div([attribute.class("book-card-wrapper")], [
+    html.button(
+      [
+        attribute.class("book-card"),
+        attribute.type_("button"),
+        attribute.aria_label("Open " <> book.title),
+        event.on_click(OpenBook(book.id)),
+      ],
+      [
+        html.div(
+          [attribute.class("book-cover"), attribute.style("background", color)],
+          [
+            html.div([attribute.class("book-cover-title")], [
+              html.text(book.title),
+            ]),
+          ],
+        ),
+        html.div([attribute.class("book-info")], [
+          html.div([attribute.class("book-title")], [html.text(book.title)]),
+          html.div([attribute.class("book-author")], [html.text(author)]),
+          html.div([attribute.class("book-meta")], [
+            html.text(format_word_count(book.word_count) <> " words"),
           ]),
-        ],
-      ),
-      html.div([attribute.class("book-info")], [
-        html.div([attribute.class("book-title")], [html.text(book.title)]),
-        html.div([attribute.class("book-author")], [html.text(author)]),
-        html.div([attribute.class("book-meta")], [
-          html.text(format_word_count(book.word_count) <> " words"),
         ]),
-      ]),
-    ],
-  )
+      ],
+    ),
+    view_delete_badge(book, is_deleting, []),
+  ])
+}
+
+/// Shared × badge used by both the hero card and each grid card.
+/// `is_deleting` mirrors `model.deleting_book_ids` for this id —
+/// while a DELETE is in flight, the button renders disabled (and
+/// no `on_click` is attached) so a second tap cannot fire a duplicate
+/// request that would race the first's response. `extra_classes`
+/// lets the hero card opt into its larger badge variant without
+/// duplicating the base styles.
+fn view_delete_badge(
+  book: BookMeta,
+  is_deleting: Bool,
+  extra_classes: List(String),
+) -> Element(Msg) {
+  let base_classes = ["btn-delete-book", ..extra_classes]
+  let class_attr = case is_deleting {
+    True -> attribute.class(string.join(["is-deleting", ..base_classes], " "))
+    False -> attribute.class(string.join(base_classes, " "))
+  }
+  let common = [
+    class_attr,
+    attribute.type_("button"),
+    attribute.aria_label("Delete " <> book.title),
+  ]
+  let attrs = case is_deleting {
+    True -> [
+      attribute.disabled(True),
+      attribute.attribute("aria-disabled", "true"),
+      ..common
+    ]
+    False -> [event.on_click(ConfirmDelete(book.id)), ..common]
+  }
+  html.button(attrs, [html.text("×")])
 }
 
 /// Format a word count with thousands separators. The prototype's

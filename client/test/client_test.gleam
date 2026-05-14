@@ -41,11 +41,12 @@ import shared/segmenter.{
 }
 
 import client.{
-  type LineBox, type Model, AdvanceWord, BookCreated, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, EraseFocused, EraseSentence, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary, LineBox,
-  LinesMeasured, Manual, Model, NextPage, OpenBook, ParagraphsMeasured,
-  PauseFade, Paused, ReadingStateLoaded, RealTime, ResumeFade, Running,
+  type LineBox, type Model, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
+  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused,
+  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
+  FocusPrevious, GoToLibrary, LineBox, LinesMeasured, Manual, Model, NextPage,
+  OpenBook, ParagraphsMeasured, PauseFade, Paused, ReadingStateLoaded, RealTime,
+  ResumeFade, Running,
   SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
   SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
   SpacePressed, StartFade, Stopped, SubmitPaste, TextLoaded, ToggleAddBook,
@@ -147,6 +148,8 @@ fn empty_model() -> Model {
       default_page_delay_ms: client.default_page_delay_ms,
     ),
     book_settings: None,
+    confirm_delete_id: None,
+    deleting_book_ids: set.new(),
   )
 }
 
@@ -5756,6 +5759,226 @@ pub fn view_library_add_book_button_shows_submitting_label_test() {
   assert lustre_query.has(
     in: rendered_tree,
     matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// library — delete book Msg variants
+// ---------------------------------------------------------------------------
+//
+// These tests exercise the five Msg variants the delete feature
+// introduced (`ConfirmDelete`, `CancelDelete`, `ExecuteDelete`,
+// `BookDeleted(Ok)`, `BookDeleted(Error)`) and the in-flight reentrancy
+// guard (`deleting_book_ids`). The two `BookDeleted(Ok, _)` outcomes —
+// with and without active-book navigation — each get their own test,
+// since the only behavioural difference is the navigation effect and
+// the reset that rides with it.
+
+pub fn update_confirm_delete_sets_confirm_id_without_firing_request_test() {
+  // Tapping the × badge stages a confirmation overlay; no DELETE is
+  // dispatched until `ExecuteDelete` lands. The reducer arm should
+  // therefore set `confirm_delete_id` and leave the rest of the model
+  // (books list, deleting set) untouched.
+  let prior = Model(..library_model(), books: [sample_book("a", "Alpha", None)])
+
+  let #(updated, _effect) = client.update(prior, ConfirmDelete("a"))
+
+  assert updated.confirm_delete_id == Some("a")
+  assert updated.books == prior.books
+  assert updated.deleting_book_ids == set.new()
+}
+
+pub fn update_confirm_delete_is_noop_when_id_already_in_flight_test() {
+  // The whole point of the in-flight guard is that a second tap on a
+  // card whose DELETE is mid-flight cannot open the confirmation a
+  // second time — which would let the reader fire a duplicate DELETE
+  // that resolves as a 404 and surfaces a FetchError on a successful
+  // deletion. With the id already in `deleting_book_ids`, the reducer
+  // must return the model unchanged.
+  let prior =
+    Model(
+      ..library_model(),
+      books: [sample_book("a", "Alpha", None)],
+      deleting_book_ids: set.from_list(["a"]),
+    )
+
+  let #(updated, _effect) = client.update(prior, ConfirmDelete("a"))
+
+  assert updated == prior
+}
+
+pub fn update_cancel_delete_clears_confirm_id_test() {
+  // Tapping the modal scrim or the Cancel button must drop the
+  // overlay without affecting anything else — no DELETE is dispatched
+  // and the books list stays put.
+  let prior =
+    Model(
+      ..library_model(),
+      books: [sample_book("a", "Alpha", None)],
+      confirm_delete_id: Some("a"),
+    )
+
+  let #(updated, _effect) = client.update(prior, CancelDelete)
+
+  assert updated.confirm_delete_id == None
+  assert updated.books == prior.books
+}
+
+pub fn update_execute_delete_marks_in_flight_and_clears_confirm_id_test() {
+  // `ExecuteDelete` dispatches the DELETE effect and stages the
+  // in-flight guard. The confirm overlay closes (so the reader sees
+  // their tap was acknowledged) but the card stays in the grid until
+  // `BookDeleted(Ok)` lands — that way, the failure arm can restore
+  // the row without an explicit undo step. The id must land in
+  // `deleting_book_ids` so the × badge for that card renders disabled.
+  let prior =
+    Model(
+      ..library_model(),
+      books: [sample_book("a", "Alpha", None)],
+      confirm_delete_id: Some("a"),
+    )
+
+  let #(updated, _effect) = client.update(prior, ExecuteDelete("a"))
+
+  assert updated.confirm_delete_id == None
+  assert updated.books == prior.books
+  assert updated.deleting_book_ids == set.from_list(["a"])
+}
+
+pub fn update_book_deleted_ok_removes_book_and_clears_in_flight_test() {
+  // The `Ok` arm has two outcomes: with and without active-book
+  // navigation. This test pins the simpler path — the deleted book
+  // is not currently open, so `apply_go_to_library` is not invoked.
+  // The book is filtered out of `books`, the id is removed from
+  // `deleting_book_ids`, and any stale `library_error` is cleared
+  // (a previously-failed delete should not haunt a successful one).
+  let prior =
+    Model(
+      ..library_model(),
+      books: [
+        sample_book("a", "Alpha", None),
+        sample_book("b", "Beta", None),
+      ],
+      deleting_book_ids: set.from_list(["a"]),
+      library_error: Some("stale"),
+      active_book_id: None,
+    )
+
+  let #(updated, _effect) = client.update(prior, BookDeleted("a", Ok("")))
+
+  assert updated.books == [sample_book("b", "Beta", None)]
+  assert updated.deleting_book_ids == set.new()
+  assert updated.library_error == None
+  assert updated.view == client.Library
+}
+
+pub fn update_book_deleted_ok_navigates_to_library_when_active_book_deleted_test() {
+  // The active-book case: the reader is mid-reading the book whose
+  // DELETE just succeeded, so the reducer must navigate back to the
+  // library and reset every per-text field — the same surface
+  // `GoToLibrary` is responsible for. Comparing the whole post-state
+  // against a freshly-built library_model() with the surviving book
+  // pinned in catches a regression that forgot to clear any reader
+  // field (the exact class of bug field-level assertions miss).
+  let prior =
+    Model(
+      ..library_model(),
+      view: client.Reader,
+      active_book_id: Some("a"),
+      books: [
+        sample_book("a", "Alpha", None),
+        sample_book("b", "Beta", None),
+      ],
+      deleting_book_ids: set.from_list(["a"]),
+    )
+
+  let #(updated, _effect) = client.update(prior, BookDeleted("a", Ok("")))
+
+  // The reader returns to the library with `active_book_id` cleared
+  // and only the surviving book in the grid. `apply_go_to_library`
+  // owns the per-text reset; this test pins the library-bookkeeping
+  // fields a successful delete is uniquely responsible for.
+  assert updated.view == client.Library
+  assert updated.active_book_id == None
+  assert updated.books == [sample_book("b", "Beta", None)]
+  assert updated.deleting_book_ids == set.new()
+  assert updated.library_error == None
+}
+
+pub fn update_book_deleted_error_surfaces_message_and_keeps_book_test() {
+  // The `Error` arm: surface a human-readable message in
+  // `library_error` (so the reader sees what went wrong) and leave
+  // the book in `books` (the failed delete must not orphan the card).
+  // The id is still removed from `deleting_book_ids` so the reader
+  // can retry — leaving it in the set would lock the × badge in the
+  // disabled state forever.
+  let prior =
+    Model(
+      ..library_model(),
+      books: [sample_book("a", "Alpha", None)],
+      deleting_book_ids: set.from_list(["a"]),
+    )
+
+  let #(updated, _effect) =
+    client.update(prior, BookDeleted("a", Error(ffi.NetworkError("offline"))))
+
+  assert updated.books == prior.books
+  assert updated.deleting_book_ids == set.new()
+  // The exact wording is owned by `describe_fetch_error`; this test
+  // only pins that *something* surfaced and that it carries the FFI
+  // message verbatim — the rest is a contract test on the formatter.
+  assert case updated.library_error {
+    Some(message) -> string.contains(message, "offline")
+    None -> False
+  }
+}
+
+pub fn view_library_hero_card_renders_delete_badge_test() {
+  // The R1 critic surfaced this as the headline finding — the hero
+  // card is the most prominent affordance on the library surface and
+  // the one card the reader is most likely to want to remove (just
+  // finished, abandoned, imported by mistake). With no × badge, the
+  // reader had to open a different book first to demote the current
+  // hero before they could delete it. This test pins the affordance:
+  // the hero must render the delete button, addressed to the hero's
+  // id, with the same `Delete <title>` aria label the grid cards use.
+  let recent = sample_book("a", "Recent", Some("2026-04-10T00:00:00Z"))
+  let model = Model(..library_model(), books: [recent])
+  let rendered = client.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"hero-card-wrapper\"")
+  // Both classes — base + hero variant — ride on the same button.
+  assert string.contains(rendered, "btn-delete-book btn-delete-hero")
+  assert string.contains(rendered, "aria-label=\"Delete Recent\"")
+}
+
+pub fn view_library_delete_badge_renders_disabled_when_in_flight_test() {
+  // When a DELETE is in flight for a card, the × badge must render
+  // disabled (the `disabled` attribute and the `is-deleting` class
+  // hook). The reducer's reentrancy guard short-circuits a stray
+  // `ConfirmDelete`, but a disabled control is what tells the reader
+  // their tap landed and the request is in progress.
+  let model =
+    Model(
+      ..library_model(),
+      books: [sample_book("a", "Alpha", None), sample_book("b", "Beta", None)],
+      deleting_book_ids: set.from_list(["a"]),
+    )
+
+  let rendered_tree = client.view(model)
+
+  // Card "a" — disabled.
+  assert lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.class("is-deleting")
+      |> lustre_query.and(lustre_query.attribute("aria-label", "Delete Alpha"))
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+  // Card "b" — enabled (no `disabled`, no `is-deleting`).
+  assert !lustre_query.has(
+    in: rendered_tree,
+    matching: lustre_query.attribute("aria-label", "Delete Beta")
       |> lustre_query.and(lustre_query.attribute("disabled", "")),
   )
 }

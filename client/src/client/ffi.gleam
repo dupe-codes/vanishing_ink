@@ -224,6 +224,16 @@ pub fn fetch_json_put(
   on_complete: fn(Result(String, FetchError)) -> Nil,
 ) -> Nil
 
+/// Issue a `DELETE` for `url` with no request body and invoke
+/// `on_complete` with `Ok("")` on a 204 No Content, or a typed
+/// `FetchError` on network / HTTP failure. The body is empty for
+/// a successful delete so the caller does not need to decode anything.
+@external(javascript, "./ffi.ffi.mjs", "fetch_json_delete")
+pub fn fetch_json_delete(
+  url: String,
+  on_complete: fn(Result(String, FetchError)) -> Nil,
+) -> Nil
+
 /// Wall-clock now formatted as an ISO 8601 UTC string with millisecond
 /// precision (`YYYY-MM-DDTHH:MM:SS.sssZ`). Used to stamp
 /// `reading_state.updated_at` on each PUT — the server canonicalises

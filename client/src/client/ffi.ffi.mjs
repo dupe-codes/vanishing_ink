@@ -455,6 +455,18 @@ export function fetch_json_put(url, body, on_complete) {
 }
 
 /**
+ * DELETE counterpart to `fetch_json_get`. Issues a DELETE request with no
+ * body; on success the server returns 204 No Content with an empty body,
+ * which `on_complete` receives as `Ok("")`.
+ *
+ * @param {string} url Absolute or relative URL.
+ * @param {function(Ok<string>|GleamError): void} on_complete
+ */
+export function fetch_json_delete(url, on_complete) {
+  do_fetch(url, { method: "DELETE" }, on_complete);
+}
+
+/**
  * Shared implementation for `fetch_json_get` / `fetch_json_post`. The
  * promise chain has three resolution points and each maps to one
  * `FetchError` variant:
