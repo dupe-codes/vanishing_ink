@@ -1465,17 +1465,6 @@ body.vi-reduced-motion .paste-area {
   margin: 0;
 }
 
-/* Hero × badge — slightly larger than the grid-card badge to match the
- * hero's prominence, and offset to clear the `.section-label` text
- * row that sits above the cover. */
-.btn-delete-hero {
-  top: 32px;
-  right: 10px;
-  width: 32px;
-  height: 32px;
-  font-size: 20px;
-}
-
 /* Delete button — small × badge in the top-right corner of the card.
  * Sits above the card surface (z-index: 1) so taps land here and not
  * on the underlying open-book button. */
@@ -1535,6 +1524,20 @@ body.vi-light-mode .btn-delete-book:hover,
 body.vi-light-mode .btn-delete-book:focus-visible {
   background-color: rgba(180, 40, 40, 0.85);
   color: rgba(255, 255, 255, 0.95);
+}
+
+/* Hero × badge — slightly larger than the grid-card badge to match the
+ * hero's prominence, and offset to clear the `.section-label` text
+ * row that sits above the cover. Must follow `.btn-delete-book` so its
+ * overrides win the source-order tiebreak: both selectors share (0,1,0)
+ * specificity, and the hero badge carries both classes per
+ * `view_delete_badge` in `client/src/client.gleam`. */
+.btn-delete-hero {
+  top: 32px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
 }
 
 /* Delete confirmation sheet — centred card modal inside the existing
