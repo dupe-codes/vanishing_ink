@@ -38,10 +38,13 @@ import lustre/event
 /// existing `shared/segmenter.segment/1` runs unchanged on the
 /// server's `POST /api/books` path.
 ///
-/// `title` and `author` come from the ePub package metadata (the OPF's
-/// `<dc:title>` and `<dc:creator>` elements via foliate-js). Both
-/// default to empty strings when the metadata is missing — the
-/// reducer treats empties as "ask the reader to fill in the title."
+/// `title` comes from the ePub package metadata (the OPF's
+/// `<dc:title>` element via foliate-js) and defaults to an empty
+/// string when the metadata is missing — the reducer treats empty as
+/// "ask the reader to fill in the title." Author / creator metadata
+/// is not surfaced because the create-book wire (`POST /api/books`)
+/// only carries `{ title, text }`; threading a `_author` field
+/// through the reducer to drop it on the floor would be dead code.
 ///
 /// `sections_skipped` is the count of spine sections the FFI could
 /// not parse (malformed XHTML, `createDocument` threw). The reducer
@@ -49,12 +52,7 @@ import lustre/event
 /// non-zero so the reader can distinguish "imported every chapter"
 /// from "imported but some chapters silently fell off the wire."
 pub type EpubExtract {
-  EpubExtract(
-    title: String,
-    author: String,
-    text: String,
-    sections_skipped: Int,
-  )
+  EpubExtract(title: String, text: String, sections_skipped: Int)
 }
 
 /// Failure modes the import surface can produce. Each variant maps to

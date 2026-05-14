@@ -5625,8 +5625,7 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
       paste_error: Some("old"),
     )
 
-  let extract =
-    EpubExtract("Walden", "Henry David Thoreau", "# Walden\n\nProse.\n\n", 0)
+  let extract = EpubExtract("Walden", "# Walden\n\nProse.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5652,7 +5651,7 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
       paste_submitting: True,
     )
 
-  let extract = EpubExtract("Walden", "", "Some text.\n\n", 0)
+  let extract = EpubExtract("Walden", "Some text.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5671,7 +5670,7 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   // type a meaningful title, so the extractor's guess fills in.
   let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "", "Body.\n\n", 0)
+  let extract = EpubExtract("Walden", "Body.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5692,7 +5691,7 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
   // the "1" case keeps the message natural.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "", "Body.\n\n", 1)
+  let extract = EpubExtract("Walden", "Body.\n\n", 1)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5714,7 +5713,7 @@ pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
   // 14 is acceptable; 13 of 14 is not).
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "", "Body.\n\n", 3)
+  let extract = EpubExtract("Walden", "Body.\n\n", 3)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =

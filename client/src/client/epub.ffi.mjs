@@ -107,11 +107,11 @@ function makeLoader(entries) {
   };
 }
 
-// Foliate-js parses the OPF metadata into `{ title: [...], author:
-// [...] }` (each field is an array because EPUB 3 metadata is
-// repeatable). Reduce each to a single human-readable string. Authors
-// may carry `{ name: "..." }` or be plain strings depending on the
-// EPUB version — handle both.
+// Foliate-js parses the OPF metadata into `{ title: [...], ... }`
+// (each field is an array because EPUB 3 metadata is repeatable).
+// Reduce the title to a single human-readable string; EPUB 2 carries
+// a bare string per entry, EPUB 3 wraps it in `{ value: "..." }`, so
+// we handle both shapes.
 function readTitle(metadata) {
   const titles = metadata?.title;
   if (!Array.isArray(titles) || titles.length === 0) return "";
@@ -121,25 +121,6 @@ function readTitle(metadata) {
     return first.value.trim();
   }
   return "";
-}
-
-function readAuthor(metadata) {
-  const authors = metadata?.author;
-  if (!Array.isArray(authors) || authors.length === 0) return "";
-  const names = authors
-    .map((author) => {
-      if (typeof author === "string") return author.trim();
-      if (author && typeof author === "object") {
-        if (typeof author.name === "string") return author.name.trim();
-        if (typeof author.value === "string") return author.value.trim();
-      }
-      return "";
-    })
-    .filter((name) => name.length > 0);
-  // Multiple creators join with " & " so a co-authored book reads
-  // naturally in the library card ("Strunk & White") rather than a
-  // comma list that looks like a single name with a suffix.
-  return names.join(" & ");
 }
 
 // Collapse all whitespace runs to a single space and trim — matches
@@ -381,12 +362,7 @@ async function parseEpub(file) {
     throw new EmptyTextMarker();
   }
 
-  return new EpubExtract(
-    readTitle(book.metadata),
-    readAuthor(book.metadata),
-    text,
-    sectionsSkipped,
-  );
+  return new EpubExtract(readTitle(book.metadata), text, sectionsSkipped);
 }
 
 // Marker classes carry the error shape from the inner parser to the

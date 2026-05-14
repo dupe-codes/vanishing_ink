@@ -295,7 +295,7 @@ pub fn apply_epub_parsed(
   result: Result(EpubExtract, EpubError),
 ) -> #(Model, Effect(Msg)) {
   case result {
-    Ok(EpubExtract(title, _author, text, sections_skipped)) -> #(
+    Ok(EpubExtract(title, text, sections_skipped)) -> #(
       Model(
         ..model,
         paste_title: paste_title_after_import(model.paste_title, title),
