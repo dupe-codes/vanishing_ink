@@ -54,13 +54,13 @@ import client/msg.{
   EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
   FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
   LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, ParagraphsMeasured,
-  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
-  SetGhostOpacity, SetJumpPageInput, SetLineSpacing, SetMode, SetPageDelay,
-  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
-  SpacePressed, StartFade, SubmitJumpPage, SubmitPaste, TextLoaded,
-  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  UndoJump, ViewportResized,
+  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
+  SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/pagination.{type Page, Page}
 import client/reducer
@@ -68,7 +68,7 @@ import client/reducer/jump as jump_reducer
 import client/sample
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
-  Model, Paused, Reader, RealTime, Running, Stopped,
+  Model, Paused, Reader, RealTime, Running, SearchResult, Stopped,
 }
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
@@ -7225,4 +7225,352 @@ pub fn view_renders_preview_banner_when_jump_preview_some_test() {
   // The regular manual chrome must step aside while previewing.
   assert !string.contains(rendered, "reader-bottom-manual")
   assert !string.contains(rendered, "Turn Page →")
+}
+
+// ---------------------------------------------------------------------------
+// update — SetJumpSearchQuery / SelectSearchResult
+// ---------------------------------------------------------------------------
+
+pub fn update_set_jump_search_query_caches_query_and_results_test() {
+  // A non-empty query lands on `jump_search_query` and the cached
+  // result list is populated by `search.search_forward` against the
+  // pages strictly ahead of `current_page`. The fixture's page 2
+  // contains "Two charlie." so "two" produces one hit on page 2.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("two"))
+
+  assert updated.jump_search_query == "two"
+  assert case updated.jump_search_results {
+    [SearchResult(page_index: 2, snippet: _)] -> True
+    _ -> False
+  }
+}
+
+pub fn update_set_jump_search_query_empty_clears_results_test() {
+  // An empty query collapses to no results — the view treats this as
+  // "show nothing" rather than "no matches", so a reader who hasn't
+  // typed yet is not greeted with a misleading empty-state message.
+  let prior =
+    Model(..jump_model(), jump_search_query: "two", jump_search_results: [
+      SearchResult(page_index: 2, snippet: "..."),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery(""))
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_whitespace_clears_results_test() {
+  // Whitespace-only queries are no-search just like empty queries.
+  // `search.search_forward` trims the query and short-circuits on
+  // `""`, so the result list is empty regardless of what the
+  // reader typed (a stray spacebar press in the field must not
+  // surface every page that contains a space).
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("   "))
+
+  assert updated.jump_search_query == "   "
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_is_case_insensitive_test() {
+  // The fixture's page 2 contains "Two charlie." Typing "TWO" (upper
+  // case) must still match — both the query and the page text are
+  // lowercased before the substring check.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("TWO"))
+
+  assert case updated.jump_search_results {
+    [SearchResult(page_index: 2, snippet: _)] -> True
+    _ -> False
+  }
+}
+
+pub fn update_set_jump_search_query_only_searches_forward_pages_test() {
+  // Forward-only: page 0 contains "Zero alpha." but is the current
+  // page, so a search for "zero" from page 0 must return no hits.
+  // Page-level skipping mirrors the chapter list and page-number
+  // input, both of which only render forward targets.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("zero"))
+
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_excludes_current_page_even_when_match_present_test() {
+  // Self-check on the forward-only contract: bumping `current_page`
+  // to 1 must drop page 1 ("One bravo.") from the search even though
+  // it textually matches "one". Only page 2 ("Two charlie.")
+  // remains as a forward target — no hit for "one".
+  let prior = Model(..jump_model(), current_page: 1)
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("one"))
+
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_caps_results_at_limit_test() {
+  // Build a long-document fixture where every page after the current
+  // one contains the search needle. The cap is the reducer's
+  // authority: a 30-page run on a popular needle ("the") must
+  // produce exactly `jump_search_result_limit` hits, not 30.
+  let pages = many_matching_pages(30)
+  let prior =
+    Model(
+      ..jump_model(),
+      pages: pages,
+      total_pages: list.length(pages),
+      current_page: 0,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("needle"))
+
+  assert list.length(updated.jump_search_results)
+    == state.jump_search_result_limit
+  // Cap is the *first* 20 forward pages (1..20), not the last 20.
+  assert case updated.jump_search_results {
+    [first, ..] -> first.page_index == 1
+    _ -> False
+  }
+}
+
+pub fn update_select_search_result_dispatches_jump_test() {
+  // A tap on a search-result row routes through `apply_jump_to_page`
+  // — same path the page-input row uses. The reader lands in
+  // preview mode with the pre-jump snapshot stashed.
+  let prior =
+    Model(
+      ..jump_model(),
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: "...Two charlie..."),
+      ],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SelectSearchResult(2))
+
+  assert updated.current_page == 2
+  assert updated.jump_menu_open == False
+  assert updated.jump_preview
+    == Some(JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    ))
+}
+
+pub fn update_select_search_result_rejects_backward_target_test() {
+  // The forward-only guard in `apply_jump_to_page` still applies
+  // through the search path. A `SelectSearchResult(0)` from page 1
+  // is a no-op — search results land in `jump_search_results` only
+  // for forward pages, but the reducer-side guard is the authority.
+  let prior = Model(..jump_model(), current_page: 1)
+
+  let #(updated, _effect) = reducer.update(prior, SelectSearchResult(0))
+
+  assert updated == prior
+}
+
+pub fn update_toggle_jump_menu_clears_search_state_test() {
+  // Closing the menu wipes the search query and cached results so a
+  // half-typed query does not pre-populate the next open, and a
+  // stale hit list does not flash on screen before the reader has
+  // retyped anything.
+  let prior =
+    Model(
+      ..jump_model(),
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [SearchResult(page_index: 2, snippet: "...")],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, ToggleJumpMenu)
+
+  assert updated.jump_menu_open == False
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_text_loaded_clears_search_state_test() {
+  // A fresh `TextLoaded` resets per-book scratch state — search
+  // included. Without this reset, opening a new book while the
+  // previous one had a search in flight would carry the stale
+  // query and results across.
+  let prior =
+    Model(..jump_model(), jump_search_query: "two", jump_search_results: [
+      SearchResult(page_index: 2, snippet: "..."),
+    ])
+
+  let payload =
+    SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: []),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, TextLoaded(payload))
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_go_to_library_clears_search_state_test() {
+  // Returning to the library tears down per-book reader state; the
+  // search query and cache go with it for the same reason as the
+  // jump menu open flag and the chapter cache.
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      view: Reader,
+      jump_search_query: "two",
+      jump_search_results: [SearchResult(page_index: 2, snippet: "...")],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, GoToLibrary)
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+// Build `n` pages, each carrying one paragraph whose single sentence
+// contains the word "needle". Used by the cap test to fabricate
+// enough matching forward pages to drive the result-count past the
+// `jump_search_result_limit` constant.
+fn many_matching_pages(n: Int) -> List(Page) {
+  build_pages(0, n, []) |> list.reverse
+}
+
+fn build_pages(i: Int, n: Int, acc: List(Page)) -> List(Page) {
+  case i >= n {
+    True -> acc
+    False -> {
+      let paragraph =
+        Paragraph(index: 0, sentences: [
+          Sentence(index: i, global_index: i, words: [
+            Word(index: 0, global_index: i, text: "needle"),
+          ]),
+        ])
+      let page_paragraph =
+        pagination.PageParagraph(
+          global_index: i,
+          chapter_index: 0,
+          chapter_title: None,
+          paragraph: paragraph,
+        )
+      let page = Page(index: i, paragraphs: [page_paragraph])
+      build_pages(i + 1, n, [page, ..acc])
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// View — Jump menu search section
+// ---------------------------------------------------------------------------
+
+pub fn view_renders_search_input_when_menu_open_test() {
+  // The search input is the third affordance in the open modal,
+  // sitting under the page-number row. The controlled value echoes
+  // `model.jump_search_query`; the empty seed lands as the literal
+  // `value=""` substring in the rendered HTML.
+  let open = Model(..jump_model(), view: Reader, jump_menu_open: True)
+
+  let rendered = view.view(open) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-input\"")
+  assert string.contains(rendered, "Search ahead...")
+  assert string.contains(rendered, "aria-label=\"Search ahead\"")
+}
+
+pub fn view_renders_search_results_when_query_has_matches_test() {
+  // A non-empty query with cached results renders one row per hit.
+  // Each row carries the 1-based page label and the snippet text.
+  // The row is a `<button>` so screen readers announce it as a
+  // navigable target rather than a passive cell.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: "…Two charlie…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-results\"")
+  assert string.contains(rendered, "class=\"jump-search-result-item\"")
+  // 1-based page label in the result row.
+  assert string.contains(rendered, "p. 3")
+  // Snippet text rendered.
+  assert string.contains(rendered, "Two charlie")
+  // Aria-label uses the 1-based page number for screen readers.
+  assert string.contains(rendered, "aria-label=\"Jump to page 3\"")
+}
+
+pub fn view_renders_no_matches_message_for_unmatched_query_test() {
+  // A non-empty query with an empty cached result list renders the
+  // muted "No matches found" line. The line is distinct from "search
+  // hasn't run yet" (empty query → nothing rendered) so the reader
+  // knows the search actually executed.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "zztop",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-empty\"")
+  assert string.contains(rendered, "No matches found")
+}
+
+pub fn view_omits_search_results_for_empty_query_test() {
+  // Empty query → no results region in the DOM at all. Not even the
+  // "No matches found" line should appear, because the search has
+  // not run yet. The input itself is still rendered so the reader
+  // sees the affordance.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-input\"")
+  assert !string.contains(rendered, "jump-search-results")
+  assert !string.contains(rendered, "No matches found")
+}
+
+pub fn view_omits_search_results_for_whitespace_query_test() {
+  // Whitespace-only queries are also "no search intent". The view
+  // mirrors `apply_set_jump_search_query`'s short-circuit: the
+  // results region trims the query before deciding whether to
+  // render the empty state.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "   ",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "jump-search-results")
+  assert !string.contains(rendered, "No matches found")
 }
