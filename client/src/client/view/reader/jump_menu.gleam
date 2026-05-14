@@ -216,20 +216,46 @@ fn view_search_section(model: Model) -> Element(Msg) {
 }
 
 /// Render the search-results region. An empty trimmed query returns
-/// `element.none()`; a non-empty query with no matches renders the
-/// muted empty-state line; matches render as a list of tappable rows.
+/// `element.none()`; a non-empty query with no live matches renders
+/// the muted empty-state line; live matches render as a list of
+/// tappable rows.
+///
+/// **Stale-row filter.** The cached `jump_search_results` was built
+/// by `apply_set_jump_search_query` against the `current_page` at
+/// the time the reader typed. The fade engine continues ticking
+/// while the jump menu is open, so on a long enough open the
+/// engine can advance `current_page` past one or more cached
+/// `page_index` values. Tapping a row whose `page_index` no longer
+/// satisfies the strict-forward contract dispatches a
+/// `SelectSearchResult(stale_page)` that the reducer's forward-only
+/// guard in `apply_jump_to_page` silently rejects — a tap that
+/// visibly "does nothing", which is the worst sort of UX defect.
+/// Filtering at the view boundary drops the stale rows before the
+/// reader can tap them, and when every cached row is stale the
+/// section falls back to the same "No matches found" line a
+/// genuine zero-match query produces. The reducer-side guard
+/// remains the authority on what a tap is allowed to commit; this
+/// filter is the second rail that keeps the affordance honest.
 fn view_search_results(model: Model) -> Element(Msg) {
-  case string.trim(model.jump_search_query), model.jump_search_results {
-    "", _ -> element.none()
-    _, [] ->
-      html.div([attribute.class("jump-search-empty")], [
-        html.text("No matches found"),
-      ])
-    _, results ->
-      html.div(
-        [attribute.class("jump-search-results")],
-        list.map(results, view_search_result_row),
-      )
+  case string.trim(model.jump_search_query) {
+    "" -> element.none()
+    _ -> {
+      let live =
+        list.filter(model.jump_search_results, fn(result) {
+          result.page_index > model.current_page
+        })
+      case live {
+        [] ->
+          html.div([attribute.class("jump-search-empty")], [
+            html.text("No matches found"),
+          ])
+        results ->
+          html.div(
+            [attribute.class("jump-search-results")],
+            list.map(results, view_search_result_row),
+          )
+      }
+    }
   }
 }
 

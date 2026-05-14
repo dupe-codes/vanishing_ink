@@ -7567,6 +7567,65 @@ pub fn view_omits_search_results_for_empty_query_test() {
   assert !string.contains(rendered, "No matches found")
 }
 
+pub fn view_filters_stale_search_results_below_current_page_test() {
+  // The engine can advance `current_page` while the jump menu is
+  // open (a long enough open and a fast enough WPM cross a page
+  // boundary). The reducer's `jump_search_results` cache was built
+  // against the *prior* `current_page`, so it may now hold rows
+  // whose `page_index <= current_page`. Tapping such a row would
+  // dispatch into `apply_jump_to_page`'s forward-only guard and
+  // silently no-op — the view filters them out instead, so the
+  // reader never sees a row that does nothing on tap. When every
+  // cached row is stale, the section falls back to the same
+  // "No matches found" line a genuine zero-match query produces.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      current_page: 3,
+      jump_search_query: "stale",
+      jump_search_results: [
+        SearchResult(page_index: 1, snippet: "…stale-row-one…"),
+        SearchResult(page_index: 2, snippet: "…stale-row-two…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "stale-row-one")
+  assert !string.contains(rendered, "stale-row-two")
+  assert string.contains(rendered, "No matches found")
+}
+
+pub fn view_keeps_live_results_and_drops_stale_results_test() {
+  // Mixed cache: one stale row, one live row. The stale row is
+  // filtered out at render time, the live row still appears. This
+  // pins the predicate (`result.page_index > model.current_page`)
+  // rather than the all-stale degenerate case above.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      current_page: 1,
+      jump_search_query: "mixed",
+      jump_search_results: [
+        SearchResult(page_index: 1, snippet: "…stale-equal-current…"),
+        SearchResult(page_index: 2, snippet: "…live-row-forward…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "stale-equal-current")
+  assert string.contains(rendered, "live-row-forward")
+  // Both rows had a `page_index` past the menu's "no matches"
+  // threshold — the section must still render the results region,
+  // not the empty-state line, because at least one live row remains.
+  assert !string.contains(rendered, "No matches found")
+}
+
 pub fn view_omits_search_results_for_whitespace_query_test() {
   // Whitespace-only queries are also "no search intent". The view
   // mirrors `apply_set_jump_search_query`'s short-circuit: the
