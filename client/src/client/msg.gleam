@@ -372,4 +372,78 @@ pub type Msg {
   /// arm surfaces the failure in `library_error` without removing the
   /// book from the grid.
   BookDeleted(id: String, result: Result(String, ffi.FetchError))
+
+  /// Reader tapped the Jump button on the bottom bar (open) or the
+  /// scrim / close affordance on the modal (close). Flips
+  /// `model.jump_menu_open`. Closing the menu mid-preview is harmless
+  /// — `jump_preview` is independent and lives until `LockInJump` or
+  /// `UndoJump` resolves it.
+  ToggleJumpMenu
+
+  /// Reader picked a page from the Jump Ahead menu. The reducer
+  /// stashes the pre-jump position on `jump_preview`, pauses the fade
+  /// engine for the preview, and moves the reader forward to the
+  /// target page. Backward targets (`page_index <= current_page`) are
+  /// rejected — the menu only renders forward chapters, and the
+  /// numeric input clamps to the same range, but the reducer-side
+  /// guard is the authority.
+  JumpToPage(page_index: Int)
+
+  /// Reader tapped a chapter row in the Jump Ahead menu. Looked up
+  /// against `chapter_entries`; on a hit, delegates to the same path
+  /// `JumpToPage` uses. A no-op when the index has no entry — the
+  /// chapter list is the reducer's source for "what page does this
+  /// chapter live on?", so a stale tap (chapter dropped on a
+  /// re-pagination after the menu opened) collapses to no action
+  /// rather than landing the reader on a wrong page.
+  JumpToChapter(chapter_index: Int)
+
+  /// Reader tapped Lock In on the preview banner. Bulk-vanishes
+  /// every word on pages before `current_page` (the reader has
+  /// "read" them by jumping past them), clears `jump_preview` so the
+  /// banner disappears, and chains a `save_reading_state` so the
+  /// server learns about the new position and the freshly-vanished
+  /// word bitset together.
+  LockInJump
+
+  /// Reader tapped Go Back on the preview banner. Restores the
+  /// pre-jump position, engine state, and word pointer from
+  /// `jump_preview`, then clears the snapshot. No save fires — the
+  /// reading position is unchanged from before the jump.
+  UndoJump
+
+  /// Controlled change of the Jump Ahead menu's page-number input.
+  /// Stores the new value on `model.jump_page_input` so the Enter-
+  /// key handler and the Go button can both read it without
+  /// reaching into the DOM. Carries the raw string so the field
+  /// can echo "12" while the reader is mid-typing rather than
+  /// the parsed int, which would round-trip badly on partial
+  /// input.
+  SetJumpPageInput(value: String)
+
+  /// Reader tapped the Go button next to the Jump Ahead menu's
+  /// page-number input. Reads `model.jump_page_input`, parses it as
+  /// a 1-based page number, and dispatches the same code path the
+  /// Enter-key handler does. Invalid / empty / out-of-range inputs
+  /// are reducer-side no-ops — the input field's `min`/`max` HTML
+  /// attributes are advisory; the reducer is the authority.
+  SubmitJumpPage
+
+  /// Sentinel Msg variant used as the placeholder type parameter for
+  /// `decode.failure` in event decoders that intentionally never
+  /// dispatch — `stop_click_propagation` on overlay sheets, the
+  /// `keydown` decoder's non-`Enter` arm in the Jump Ahead page
+  /// input, etc. `decode.failure` always fails the decode and
+  /// collapses the event, but its first parameter still has to be a
+  /// real Msg value for the type checker; using a dedicated no-op
+  /// variant rather than reusing a meaningful Msg makes the intent
+  /// unambiguous to a future reader skimming the decoder.
+  ///
+  /// The reducer's `NoOp` arm is a unit-noop: returns the model
+  /// unchanged and no effect. By construction, no dispatch site ever
+  /// fires it; if a future change accidentally wires `NoOp` to a real
+  /// event, the only visible behaviour is "the model holds steady",
+  /// which is the safest possible failure mode for an accidental
+  /// dispatch.
+  NoOp
 }

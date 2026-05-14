@@ -266,7 +266,20 @@ function pushChunk(rawText, chunks) {
 // count of sections that failed to parse. The reducer surfaces a
 // non-zero count as a soft warning in the add-book sheet so the
 // reader can distinguish a complete import from a partial one.
+//
+// The top-level TOC entries are projected into a `spine index → label`
+// map before the spine walk. Whenever a section's index hits the map
+// we prepend `# label\n\n` before the section's body — the segmenter
+// already understands `# Title` as a chapter break, so threading the
+// TOC label through the same surface gives the Jump Ahead menu real
+// chapter names for ePubs that ship a navigation document.
+//
+// Top-level entries only: nested TOC items (a section subdivided into
+// scenes, say) are dropped. v1 ships only the spine-level breaks; a
+// future quest can recurse into `entry.subitems` if readers ask for
+// finer-grained chapter targets.
 async function renderSections(book) {
+  const tocByIndex = buildTocIndex(book);
   const chunks = [];
   let sectionsSkipped = 0;
   for (const section of book.sections ?? []) {
@@ -284,9 +297,57 @@ async function renderSections(book) {
       sectionsSkipped += 1;
       continue;
     }
+    const tocLabel = tocByIndex.get(section.index);
+    if (tocLabel) {
+      chunks.push(`# ${tocLabel}\n\n`);
+    }
     extractSection(doc, chunks);
   }
   return { text: chunks.join(""), sectionsSkipped };
+}
+
+// Resolve each top-level `book.toc` entry to its spine index and
+// return a `Map(spineIndex → label)`. Entries whose href cannot be
+// resolved (e.g. an external link, or a TOC pointing at a removed
+// item) are skipped — `resolveHref` returns `null` in that case and
+// the entry never lands in the map, so the spine walk falls through
+// to the section's own heading rather than emitting an empty `#` line.
+//
+// `normalizeWhitespace` is applied to the label so an EPUB whose nav
+// document indented the title across multiple lines still produces a
+// clean one-line chapter marker.
+//
+// `resolveHref` itself is wrapped in `try/catch` because foliate-js
+// throws on malformed nav documents (relative paths that escape the
+// EPUB root, broken character refs in the href). The neighbouring
+// `extractSection` path already catches the same class of malformed-
+// EPUB failure; mirroring the discipline here keeps a TOC-driven
+// import alive when the spine is otherwise parseable.
+function buildTocIndex(book) {
+  const tocByIndex = new Map();
+  const entries = book?.toc ?? [];
+  for (const entry of entries) {
+    if (!entry || typeof entry.href !== "string") continue;
+    const label = normalizeWhitespace(entry.label ?? "");
+    if (label.length === 0) continue;
+    let resolved;
+    try {
+      resolved = book.resolveHref(entry.href);
+    } catch (error) {
+      console.warn("Failed to resolve toc href", entry.href, error);
+      continue;
+    }
+    if (!resolved || typeof resolved.index !== "number") continue;
+    // First-write-wins: two TOC entries pointing at the same spine
+    // section keep the earlier label (the typical "Cover" then
+    // "Title page" pattern in malformed nav docs). Without the guard
+    // the later entry would silently overwrite the chosen chapter
+    // marker for that section.
+    if (!tocByIndex.has(resolved.index)) {
+      tocByIndex.set(resolved.index, label);
+    }
+  }
+  return tocByIndex;
 }
 
 /**

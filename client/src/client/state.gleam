@@ -18,7 +18,10 @@
 ////   (`total_pages == list.length(pages)`).
 //// * Writing `current_page` requires writing
 ////   `current_chapter_title` (refresh via
-////   `compute_current_chapter_title` from `client/state/helpers`).
+////   `compute_current_chapter_title` from `client/state/helpers`)
+////   AND `chapter_entries` (the Jump Ahead menu's forward-only
+////   chapter cache, refresh via `compute_chapter_entries` from the
+////   same module).
 //// * Writing `text` requires writing `total_sentence_count` /
 ////   `total_word_count` (refresh via `total_counts` from
 ////   `client/state/helpers`).
@@ -26,8 +29,13 @@
 //// The pure helpers in `client/state/helpers` (`go_to_page`,
 //// `change_page`) refresh the cached fields as they mutate, so
 //// callers that go through those helpers do not need to worry about
-//// drift. Direct `Model(..model, pages: ...)` updates in the reducer
-//// must mirror the invariant by hand.
+//// drift. Direct `Model(..model, pages: ...)` or
+//// `Model(..model, current_page: ...)` updates in the reducer must
+//// mirror the invariant by hand — see `apply_paragraphs_measured`
+//// (re-paginates and writes both caches), `apply_reading_state_loaded`
+//// (resume-from-server writes `current_page` directly), and
+//// `apply_undo_jump` (backward navigation is the explicit exception
+//// to `change_page`'s forward-only rule).
 
 import gleam/int
 import gleam/list
@@ -330,6 +338,53 @@ pub type EngineState {
   Paused
 }
 
+/// One chapter's position in the paginated book. `title` is the
+/// chapter title taken from the segmenter's `Chapter.title` (callers
+/// drop chapters whose title is `None` — those land on the reader's
+/// menu only as page numbers, not as a named entry). `page_index` is
+/// the zero-based index of the page on which the chapter's first
+/// paragraph lives. `chapter_index` is the segmenter's stable
+/// `Chapter.index` for that chapter, so the Jump Ahead menu can
+/// dispatch a `JumpToChapter` keyed by the chapter itself rather
+/// than by the row's transient position in the `chapter_entries`
+/// list — pagination or engine ticks during the open-menu window
+/// can otherwise re-key the list, and a tap that looked like
+/// "Chapter Two" could otherwise hit a different entry after the
+/// shuffle. Used by the Jump Ahead menu to render forward chapters
+/// as tappable rows.
+pub type ChapterEntry {
+  ChapterEntry(title: String, page_index: Int, chapter_index: Int)
+}
+
+/// Snapshot of pre-jump reader state, captured at the moment the
+/// reader taps a chapter / page row in the Jump Ahead menu. Held on
+/// `Model.jump_preview` while the reader is previewing the target
+/// page; `LockInJump` discards it (the jump commits, undoing back to
+/// the original page is no longer offered) and `UndoJump` restores
+/// each field onto the model.
+///
+/// The three fields are exactly the model state Jump Ahead mutates:
+///
+/// * `source_page` — where the reader was when the jump started, so
+///   `UndoJump` lands them back on the same page.
+/// * `prior_engine_state` — the fade engine's lifecycle state at the
+///   moment of the jump. The jump pauses the engine for the preview
+///   so the reader can inspect the page without words fading out
+///   underneath them; lock-in / undo restore the prior state.
+/// * `prior_next_word_index` — the word the engine would have faded
+///   next, paired with `prior_engine_state` so the engine resumes at
+///   the same word on undo. `Running` engines always carry
+///   `Some(_)` here (see the `Running, None` panic in
+///   `engine.apply_advance_word`), and the snapshot mirrors that
+///   invariant.
+pub type JumpPreview {
+  JumpPreview(
+    source_page: Int,
+    prior_engine_state: EngineState,
+    prior_next_word_index: Option(Int),
+  )
+}
+
 /// One visual line of the current page, measured against the live
 /// DOM. The line spans the rendered word spans whose
 /// `getBoundingClientRect().top` rounds to the same y-coordinate;
@@ -612,5 +667,38 @@ pub type Model {
     /// id (which would resolve as a 404 and surface a confusing
     /// FetchError on a successful deletion).
     deleting_book_ids: Set(String),
+    /// `True` while the Jump Ahead modal is visible. `ToggleJumpMenu`
+    /// flips it. Opening fires no fetch — the chapter list lives on
+    /// `chapter_entries`, which is refreshed whenever pagination runs.
+    /// Closing the menu while a preview is in flight is independent of
+    /// the preview's lifecycle: the modal is dismissed without
+    /// committing, but the reader stays on the previewed page until
+    /// they tap Lock In or Go Back. Holding the modal closed during
+    /// preview keeps the scrim/sheet markup off the DOM so the bottom
+    /// banner is unobstructed.
+    jump_menu_open: Bool,
+    /// `Some(_)` while the reader is previewing a target page from
+    /// the Jump Ahead menu; `None` otherwise. The snapshot is the
+    /// pre-jump position, engine state, and word pointer — exactly
+    /// what `UndoJump` needs to restore, and exactly what
+    /// `LockInJump` discards.
+    jump_preview: Option(JumpPreview),
+    /// Forward-only chapter list rendered by the Jump Ahead menu.
+    /// Refreshed whenever pagination changes (`ParagraphsMeasured`)
+    /// or the current page advances, so opening the menu sees an
+    /// up-to-date "chapters after where I am" list. Entries are
+    /// strictly ahead of `current_page` — backward navigation is
+    /// disabled across the app, and showing already-visited
+    /// chapters in this menu would invite a tap that the reducer
+    /// would silently reject.
+    chapter_entries: List(ChapterEntry),
+    /// Controlled input value for the Jump Ahead menu's page-number
+    /// field. The input is bound to this field so both the Enter-
+    /// key handler and the Go button read the same value — without a
+    /// controlled binding, the Go button would have to reach into
+    /// the live DOM through an FFI escape hatch. Cleared whenever
+    /// the menu closes or a fresh book loads so a stale value never
+    /// pre-populates the next session's input.
+    jump_page_input: String,
   )
 }

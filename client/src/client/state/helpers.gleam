@@ -14,7 +14,9 @@ import gleam/set
 
 import client/navigation
 import client/pagination.{type Page}
-import client/state.{type Model, Manual, Model, RealTime}
+import client/state.{
+  type ChapterEntry, type Model, ChapterEntry, Manual, Model, RealTime,
+}
 import shared/segmenter.{type SegmentedText}
 
 /// Clamp `value` into `[lo, hi]`. Defensive helper for slider /
@@ -169,6 +171,16 @@ pub fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
 /// need the same "no page change, no undo-stack clear" invariant
 /// and pulling the logic into one helper stops the two callers
 /// from drifting apart.
+///
+/// Refreshes both `current_chapter_title` (the page may have
+/// crossed a chapter boundary) and `chapter_entries` (the Jump
+/// Ahead menu's forward-only chapter list, which now needs to
+/// drop any chapter the reader has just paged past). Centralising
+/// both refreshes here means every caller — the touch/arrow path
+/// through `go_to_page`, the vim path through `move_focus`, the
+/// engine's `advance_to_next_page_loop`, and the Jump Ahead path
+/// through `apply_jump_to_page` — gets the cached fields kept in
+/// lock-step for free.
 pub fn change_page(model: Model, candidate: Int) -> Model {
   // Read the cached `total_pages` — same rationale as
   // `advance_to_next_page`: the invariant
@@ -185,11 +197,13 @@ pub fn change_page(model: Model, candidate: Int) -> Model {
       // trigger.
       let chapter_title =
         compute_current_chapter_title(model.text, model.pages, clamped)
+      let chapter_entries = compute_chapter_entries(model.pages, clamped)
       Model(
         ..model,
         current_page: clamped,
         undo_stack: [],
         current_chapter_title: chapter_title,
+        chapter_entries: chapter_entries,
       )
     }
   }
@@ -233,4 +247,79 @@ pub fn go_to_page(model: Model, candidate: Int) -> Model {
       Model(..after, focused_sentence: focused)
     }
   }
+}
+
+/// Walk a paginated page list once and return one `ChapterEntry`
+/// per titled chapter whose first page sits strictly after
+/// `current_page`. The returned entries are in page-ascending order
+/// — the same order the Jump Ahead menu renders them in.
+///
+/// Only titled chapters appear: untitled chapters carry
+/// `chapter_title: None` on their first `PageParagraph` and have no
+/// label to show in the menu. A reader who wants to skip into an
+/// untitled chapter uses the page-number input below the chapter
+/// list instead.
+///
+/// "First occurrence" is enforced by `seen_chapters`: a chapter
+/// whose first paragraph straddles two pages (rare — only when the
+/// page break lands inside a single paragraph) only emits the
+/// page where the title rides. Subsequent pages of the same
+/// chapter never carry `chapter_title: Some(_)`, so the guard is
+/// belt-and-braces for the pagination invariant.
+pub fn compute_chapter_entries(
+  pages: List(Page),
+  current_page: Int,
+) -> List(ChapterEntry) {
+  pages
+  |> list.fold(#([], []), fn(acc, page) {
+    let #(entries_rev, seen_chapters) = acc
+    case page.index > current_page {
+      False -> #(entries_rev, seen_chapters)
+      True ->
+        case first_titled_chapter(page.paragraphs, seen_chapters) {
+          option.None -> #(entries_rev, seen_chapters)
+          option.Some(#(title, chapter_index)) -> {
+            let entry =
+              ChapterEntry(
+                title: title,
+                page_index: page.index,
+                chapter_index: chapter_index,
+              )
+            #([entry, ..entries_rev], [chapter_index, ..seen_chapters])
+          }
+        }
+    }
+  })
+  |> pair_first
+  |> list.reverse
+}
+
+/// Read the first titled paragraph on a page whose chapter is not
+/// already in `seen_chapters`. Returns `Some(#(title, chapter_index))`
+/// when one is found and `None` otherwise. Pulled into its own helper
+/// so `compute_chapter_entries`'s fold body stays short.
+fn first_titled_chapter(
+  paragraphs: List(pagination.PageParagraph),
+  seen_chapters: List(Int),
+) -> option.Option(#(String, Int)) {
+  case paragraphs {
+    [] -> option.None
+    [first, ..rest] ->
+      case first.chapter_title {
+        option.Some(title) ->
+          case list.contains(seen_chapters, first.chapter_index) {
+            True -> first_titled_chapter(rest, seen_chapters)
+            False -> option.Some(#(title, first.chapter_index))
+          }
+        option.None -> first_titled_chapter(rest, seen_chapters)
+      }
+  }
+}
+
+/// Return the first element of a `#(a, b)` tuple. Local because
+/// `gleam/pair` is not yet imported here and threading a one-line
+/// helper through the import surface costs more than the helper.
+fn pair_first(pair: #(a, b)) -> a {
+  let #(a, _) = pair
+  a
 }

@@ -140,6 +140,10 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       book_settings: None,
       confirm_delete_id: None,
       deleting_book_ids: set.new(),
+      jump_menu_open: False,
+      jump_preview: None,
+      chapter_entries: [],
+      jump_page_input: "",
     )
 
   // Boot effects:

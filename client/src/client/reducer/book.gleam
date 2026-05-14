@@ -162,9 +162,16 @@ pub fn apply_book_loaded(
 /// the paginated state (`pages` / `current_page`), every per-book
 /// scratch field (`erased` sentence bitset, `erased_words` word
 /// bitset, undo stack, touch origin, vim focus, measured line
-/// boxes, active-line index), and the cached totals + chapter
-/// title. Callers layer on view / library bookkeeping on top of the
-/// returned `Model`.
+/// boxes, active-line index, Jump Ahead menu state and preview
+/// snapshot, forward-chapter cache), and the cached totals +
+/// chapter title. Callers layer on view / library bookkeeping on
+/// top of the returned `Model`.
+///
+/// The Jump Ahead fields (`jump_menu_open`, `jump_preview`,
+/// `chapter_entries`) reset here so a mid-preview navigation away
+/// from one book cannot leave a `JumpPreview` whose `source_page`
+/// points at the prior book's index, nor leave an open menu
+/// painting over the new book's bottom bar.
 pub fn apply_text_load(model: Model, text: SegmentedText) -> Model {
   let #(sentences, words) = total_counts(text)
   Model(
@@ -184,6 +191,10 @@ pub fn apply_text_load(model: Model, text: SegmentedText) -> Model {
     total_word_count: words,
     current_chapter_title: "",
     total_pages: 0,
+    jump_menu_open: False,
+    jump_preview: None,
+    chapter_entries: [],
+    jump_page_input: "",
   )
 }
 
@@ -200,6 +211,14 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
   // the clear would silently drop the final reading-state PUT. This is
   // the final save for the session; subsequent state mutations happen
   // in the library and have no `book_id` to attach to.
+  //
+  // Returning to the library mid-preview deliberately produces NO
+  // save: `should_save_reading_state` blocks any save while
+  // `jump_preview: Some(_)` so the previewed page is never persisted
+  // as the reader's position. The server retains the pre-preview
+  // page from the last committed save, which is the right outcome —
+  // closing the reader without locking in is morally equivalent to
+  // an implicit `UndoJump`.
   let save_effect = save_reading_state(model)
   let defaults = model.global_defaults
   let cleared =
@@ -224,6 +243,13 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       engine_state: Stopped,
       next_word_index: None,
       settings_open: False,
+      // Tear down Jump Ahead state alongside the rest of the per-
+      // book scratch surface — the menu is per-book and the preview
+      // snapshot points at the outgoing book's page index.
+      jump_menu_open: False,
+      jump_preview: None,
+      chapter_entries: [],
+      jump_page_input: "",
       // Returning to the library re-pins the four overridable fields
       // to the global defaults so the settings panel — which can be
       // opened from the library appbar — shows the user-wide

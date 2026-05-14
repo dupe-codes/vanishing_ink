@@ -49,13 +49,14 @@ import client/msg.{
   BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
   EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
-  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
-  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
-  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  ViewportResized,
+  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
+  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SetFontSize, SetGhostOpacity, SetJumpPageInput, SetLineSpacing,
+  SetMode, SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitJumpPage, SubmitPaste,
+  TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized,
 }
 import client/navigation
 import client/pagination
@@ -65,6 +66,11 @@ import client/reducer/book.{
 }
 import client/reducer/focus.{
   apply_erase_focused, focus_paragraph_step, focus_sentence_step,
+}
+import client/reducer/jump.{
+  apply_jump_to_chapter, apply_jump_to_page, apply_lock_in_jump,
+  apply_set_jump_page_input, apply_submit_jump_page, apply_toggle_jump_menu,
+  apply_undo_jump,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -79,7 +85,9 @@ import client/reducer/touch.{apply_erase, apply_touch_end, apply_undo}
 import client/state.{
   type Model, Library, Manual, Model, Paused, RealTime, Running, Stopped,
 }
-import client/state/helpers.{compute_current_chapter_title, go_to_page}
+import client/state/helpers.{
+  compute_chapter_entries, compute_current_chapter_title, go_to_page,
+}
 import client/types
 
 /// Transition the reader to the next state given a message.
@@ -380,6 +388,26 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+
+    ToggleJumpMenu -> apply_toggle_jump_menu(model)
+
+    JumpToPage(page_index) -> apply_jump_to_page(model, page_index)
+
+    JumpToChapter(chapter_index) -> apply_jump_to_chapter(model, chapter_index)
+
+    LockInJump -> apply_lock_in_jump(model)
+
+    UndoJump -> apply_undo_jump(model)
+
+    SetJumpPageInput(value) -> apply_set_jump_page_input(model, value)
+
+    SubmitJumpPage -> apply_submit_jump_page(model)
+
+    // Sentinel: see `Msg.NoOp` for the rationale. No dispatch site
+    // ever fires this; the arm is required so the pattern match
+    // stays exhaustive after introducing the variant for the
+    // `decode.failure` placeholders in the view layer.
+    NoOp -> #(model, effect.none())
   }
 }
 
@@ -442,6 +470,12 @@ fn apply_paragraphs_measured(
   // pagination repacked paragraphs or the clamp moved the
   // current page.
   let chapter_title = compute_current_chapter_title(model.text, pages, clamped)
+  // Refresh the cached chapter list whenever pagination re-runs.
+  // The list filters to chapters strictly ahead of `clamped`, so
+  // opening the menu after a re-pagination always sees an accurate
+  // "where can I jump to from here" set rather than entries that
+  // pagination has since invalidated.
+  let chapter_entries = compute_chapter_entries(pages, clamped)
   #(
     Model(
       ..model,
@@ -462,6 +496,7 @@ fn apply_paragraphs_measured(
       active_line: None,
       current_chapter_title: chapter_title,
       total_pages: total,
+      chapter_entries: chapter_entries,
     ),
     // Pagination ran — chain a line measurement so the active-line
     // overlay re-anchors to the post-repagination geometry. The
@@ -493,6 +528,9 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
     // place once `LinesMeasured` lands. The cleared state mirrors
     // the engine's own cross-page tick in `advance_to_next_page_loop`.
     False -> {
+      // `go_to_page` (via `change_page`) already refreshed the
+      // chapter list against the new page; only the overlay caches
+      // remain to clear here.
       let with_cleared_overlay =
         Model(..updated, line_boxes: [], active_line: None)
       #(
