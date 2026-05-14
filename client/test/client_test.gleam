@@ -66,6 +66,7 @@ import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/jump as jump_reducer
 import client/sample
+import client/search
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
   Model, Paused, Reader, RealTime, Running, SearchResult, Stopped,
@@ -7235,16 +7236,17 @@ pub fn update_set_jump_search_query_caches_query_and_results_test() {
   // A non-empty query lands on `jump_search_query` and the cached
   // result list is populated by `search.search_forward` against the
   // pages strictly ahead of `current_page`. The fixture's page 2
-  // contains "Two charlie." so "two" produces one hit on page 2.
+  // contains "Two charlie." (12 chars — shorter than the 50-char
+  // snippet window), so the snippet collapses to the full page text
+  // with no ellipses. Whole-payload assertion so a regression in the
+  // snippet algorithm cannot slip past a field-level case match.
   let prior = jump_model()
 
   let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("two"))
 
   assert updated.jump_search_query == "two"
-  assert case updated.jump_search_results {
-    [SearchResult(page_index: 2, snippet: _)] -> True
-    _ -> False
-  }
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
 }
 
 pub fn update_set_jump_search_query_empty_clears_results_test() {
@@ -7279,15 +7281,15 @@ pub fn update_set_jump_search_query_whitespace_clears_results_test() {
 pub fn update_set_jump_search_query_is_case_insensitive_test() {
   // The fixture's page 2 contains "Two charlie." Typing "TWO" (upper
   // case) must still match — both the query and the page text are
-  // lowercased before the substring check.
+  // lowercased before the substring check. The snippet preserves the
+  // original-case haystack, so the rendered prefix is `"Two"` even
+  // though the query was upper-case.
   let prior = jump_model()
 
   let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("TWO"))
 
-  assert case updated.jump_search_results {
-    [SearchResult(page_index: 2, snippet: _)] -> True
-    _ -> False
-  }
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
 }
 
 pub fn update_set_jump_search_query_only_searches_forward_pages_test() {
@@ -7319,6 +7321,12 @@ pub fn update_set_jump_search_query_caps_results_at_limit_test() {
   // one contains the search needle. The cap is the reducer's
   // authority: a 30-page run on a popular needle ("the") must
   // produce exactly `jump_search_result_limit` hits, not 30.
+  //
+  // Pin the full window — every page index from 1 to 20 — so a
+  // regression that walks from the wrong end (e.g., a stray
+  // `list.reverse` applied *before* the cap rather than after) or
+  // skips alternate pages can never produce the right length with
+  // the wrong contents.
   let pages = many_matching_pages(30)
   let prior =
     Model(
@@ -7332,11 +7340,15 @@ pub fn update_set_jump_search_query_caps_results_at_limit_test() {
 
   assert list.length(updated.jump_search_results)
     == state.jump_search_result_limit
-  // Cap is the *first* 20 forward pages (1..20), not the last 20.
-  assert case updated.jump_search_results {
-    [first, ..] -> first.page_index == 1
-    _ -> False
-  }
+  // Pin both ends of the window. Asserting only the first element
+  // would let a regression that walks from the wrong end (e.g.,
+  // `list.reverse` applied *before* the cap, surfacing pages 10..29)
+  // still produce a `first.page_index == 1` if the bug also skipped
+  // pages; pinning both rails closes the gap.
+  assert list.first(updated.jump_search_results)
+    == Ok(SearchResult(page_index: 1, snippet: "needle"))
+  assert list.last(updated.jump_search_results)
+    == Ok(SearchResult(page_index: 20, snippet: "needle"))
 }
 
 pub fn update_select_search_result_dispatches_jump_test() {
@@ -7573,4 +7585,183 @@ pub fn view_omits_search_results_for_whitespace_query_test() {
 
   assert !string.contains(rendered, "jump-search-results")
   assert !string.contains(rendered, "No matches found")
+}
+
+// ---------------------------------------------------------------------------
+// search.search_forward — direct snippet-algorithm coverage
+//
+// The reducer-level tests above exercise the dispatching machinery
+// (query lands on the model, results are cached, forward-only guard
+// holds). They do *not* pin the snippet algorithm — every snippet
+// helper in `client/search` (`collect_matches`, `find_match`,
+// `snippet_around`, `snap_left_to_boundary`,
+// `snap_right_to_boundary`, etc.) is reachable only through
+// `search_forward`, so a regression in (say) the left/right
+// whitespace snap or an off-by-one in `snippet_half_window` would
+// produce a SearchResult with the wrong snippet string but the
+// right page index, and the reducer-level case patterns would not
+// notice.
+//
+// The tests below construct deterministic single-page fixtures
+// with hand-computed expected snippets so any drift in the
+// algorithm surfaces as a string-equality failure rather than a
+// silent regression. Cases covered:
+//
+//   * haystack shorter than 2 × snippet_half_window — full text,
+//     no ellipses;
+//   * match at position 0 of a long haystack — no leading ellipsis,
+//     trailing ellipsis;
+//   * match at the end of a long haystack — leading ellipsis, no
+//     trailing ellipsis;
+//   * match in the middle of a long haystack — both ellipses, with
+//     window snapping to word boundaries;
+//   * empty page mid-document — the empty haystack collapses to
+//     `Error(_)` in `find_match` and produces no SearchResult.
+// ---------------------------------------------------------------------------
+
+pub fn search_forward_returns_full_text_when_haystack_shorter_than_window_test() {
+  // Haystack "Two charlie." is 12 chars — well below the
+  // 2 × snippet_half_window (50-char) threshold. The window
+  // clamps to the full string, both `snap_left` and `snap_right`
+  // collapse to the rails (cursor <= 0 and cursor >= total), and
+  // neither ellipsis prefix nor suffix is produced.
+  let pages = [search_test_page(1, ["Two", "charlie."])]
+
+  let results = search.search_forward(pages, 0, "two")
+
+  assert results
+    == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+}
+
+pub fn search_forward_no_leading_ellipsis_when_match_starts_haystack_test() {
+  // Match at position 0 — `snap_left_to_boundary` short-circuits
+  // on the `cursor <= 0` rail, the prefix is empty. The right
+  // edge clips inside the long haystack, so the trailing ellipsis
+  // *is* present. Position 30 lands on the space after "echo",
+  // so the right snap returns the cursor unchanged.
+  let pages =
+    [
+      search_test_page(1, [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+      ]),
+    ]
+
+  let results = search.search_forward(pages, 0, "alpha")
+
+  assert results
+    == [
+      SearchResult(
+        page_index: 1,
+        snippet: "alpha bravo charlie delta echo…",
+      ),
+    ]
+}
+
+pub fn search_forward_no_trailing_ellipsis_when_match_ends_haystack_test() {
+  // Match at the tail of the page. The right edge clamps to
+  // `total`, `snap_right` short-circuits on `cursor >= total`,
+  // and the suffix is empty. The left edge snaps forward past
+  // the partial word "charlie" so the snippet starts on a clean
+  // word boundary ("delta") rather than mid-token.
+  let pages =
+    [
+      search_test_page(1, [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
+      ]),
+    ]
+
+  let results = search.search_forward(pages, 0, "needle")
+
+  assert results
+    == [
+      SearchResult(
+        page_index: 1,
+        snippet: "…delta echo foxtrot needle",
+      ),
+    ]
+}
+
+pub fn search_forward_brackets_centered_match_with_both_ellipses_test() {
+  // Match in the interior of a long haystack. Both edges clip
+  // inside `[0, total)`, both ellipses are emitted, and the
+  // whitespace snap pulls each edge onto a word boundary — the
+  // left edge moves rightward through "charlie" until the space
+  // before "delta", the right edge moves leftward through "kilo"
+  // back to the space after "juliet". The snippet body therefore
+  // contains exactly the whole-word tokens from "delta" through
+  // "juliet" centred on "needle".
+  let pages =
+    [
+      search_test_page(1, [
+        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
+        "golf", "hotel", "india", "juliet", "kilo",
+      ]),
+    ]
+
+  let results = search.search_forward(pages, 0, "needle")
+
+  assert results
+    == [
+      SearchResult(
+        page_index: 1,
+        snippet: "…delta echo foxtrot needle golf hotel india juliet…",
+      ),
+    ]
+}
+
+pub fn search_forward_skips_pages_with_empty_text_test() {
+  // A page with no paragraphs (chapter heading row, blank spine
+  // entry, malformed import) joins to the empty string. The
+  // empty-haystack arm in `find_match` (`scan_for_needle` →
+  // `pop_grapheme("")` → `Error(Nil)`) collapses to no match, the
+  // page is skipped without a SearchResult, and the next forward
+  // page's hit still surfaces — empty pages must not short-circuit
+  // the walk.
+  let empty_page = Page(index: 1, paragraphs: [])
+  let next_page = search_test_page(2, ["Two", "charlie."])
+  let pages = [empty_page, next_page]
+
+  let results = search.search_forward(pages, 0, "two")
+
+  assert results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn search_forward_preserves_original_case_in_snippet_test() {
+  // Matching is case-insensitive — both sides lowercased — but
+  // the snippet is sliced from the *original* haystack, so the
+  // reader sees the prose as it was authored. Querying "TWO"
+  // must surface the snippet starting with capital "T", not the
+  // lower-cased shadow string `find_match` walks internally.
+  let pages = [search_test_page(1, ["Two", "charlie."])]
+
+  let results = search.search_forward(pages, 0, "TWO")
+
+  assert results
+    == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+}
+
+// Construct a single-paragraph, single-sentence page from a list of
+// word texts. Each word's index and global_index walk from zero so
+// the resulting page is internally consistent (a future engine pass
+// over the page would not trip on duplicate indices), but the values
+// are unobserved by `search_forward` — only the `text` field and the
+// `page.index` matter to the algorithm. Used by the
+// `search_forward_*` tests above to fabricate deterministic haystacks
+// with hand-computed expected snippets.
+fn search_test_page(index: Int, word_texts: List(String)) -> Page {
+  let words =
+    list.index_map(word_texts, fn(text, i) {
+      Word(index: i, global_index: i, text: text)
+    })
+  let sentence = Sentence(index: 0, global_index: 0, words: words)
+  let paragraph = Paragraph(index: 0, sentences: [sentence])
+  let page_paragraph =
+    pagination.PageParagraph(
+      global_index: 0,
+      chapter_index: 0,
+      chapter_title: None,
+      paragraph: paragraph,
+    )
+  Page(index: index, paragraphs: [page_paragraph])
 }
