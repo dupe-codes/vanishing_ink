@@ -7453,6 +7453,124 @@ pub fn update_book_metadata_updated_error_keeps_sheet_open_test() {
     )
 }
 
+pub fn update_book_metadata_updated_ok_is_noop_when_no_draft_open_test() {
+  // Stale-response race: the reader submitted the PATCH for book A,
+  // then cancelled the sheet before the response arrived. The Ok
+  // arrives with `editing_metadata: None`. The reducer must not
+  // mutate `books` from under the reader — they have visibly moved
+  // on and would be surprised by a library list update they did not
+  // ask for. The PATCH did fire and the disk reflects it; the local
+  // view will catch up on the next refresh.
+  let original = metadata_sample_book("book-1", "Dune", None, None)
+  let updated_meta =
+    metadata_sample_book("book-1", "Dune (revised)", None, Some("Sci-Fi"))
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [original],
+      editing_metadata: None,
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-1", Ok(updated_meta)))
+
+  assert updated.books == [original]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_ok_is_noop_when_draft_id_differs_test() {
+  // Stale-response race (the one Critic Lockwood named): reader opens
+  // Edit on book A, fires PATCH, cancels, opens Edit on book B, then
+  // A's response lands. Without the gate, B's sheet closes with no
+  // warning. The gate makes A's response a no-op so B's draft stays
+  // intact — the reader can finish editing B without surprise.
+  let book_a = metadata_sample_book("book-a", "Alpha", None, None)
+  let book_b = metadata_sample_book("book-b", "Beta", None, None)
+  let updated_a =
+    metadata_sample_book("book-a", "Alpha (revised)", None, Some("Sci-Fi"))
+  let draft_b =
+    MetadataEdit(
+      book_id: "book-b",
+      title: "Beta",
+      author: "",
+      genre: "",
+      submitting: False,
+      error: None,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book_a, book_b],
+      editing_metadata: Some(draft_b),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-a", Ok(updated_a)))
+
+  // Neither the library list nor the open B-draft are touched.
+  assert updated.books == [book_a, book_b]
+  assert updated.editing_metadata == Some(draft_b)
+}
+
+pub fn update_book_metadata_updated_error_is_noop_when_no_draft_open_test() {
+  // Symmetric to the Ok case: a failed PATCH whose draft has been
+  // cancelled cannot leave a popup or stamp an error message
+  // anywhere — there is nothing open to stamp.
+  let book = metadata_sample_book("book-1", "Dune", None, None)
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book],
+      editing_metadata: None,
+    )
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      BookMetadataUpdated("book-1", Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.books == [book]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_error_is_noop_when_draft_id_differs_test() {
+  // The error-arm half of the stale-response race: A's failure must
+  // not stamp its error message onto B's draft. Pre-fix, the error
+  // arm discarded `id` entirely and unconditionally stamped onto
+  // whatever draft was open — the gate keeps B's draft clean.
+  let book_a = metadata_sample_book("book-a", "Alpha", None, None)
+  let book_b = metadata_sample_book("book-b", "Beta", None, None)
+  let draft_b =
+    MetadataEdit(
+      book_id: "book-b",
+      title: "Beta",
+      author: "",
+      genre: "",
+      submitting: False,
+      error: None,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book_a, book_b],
+      editing_metadata: Some(draft_b),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      BookMetadataUpdated("book-a", Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.books == [book_a, book_b]
+  assert updated.editing_metadata == Some(draft_b)
+}
+
 pub fn update_epub_parsed_ok_populates_paste_author_when_empty_test() {
   // The ePub OPF can carry a `<dc:creator>` we want to surface on the
   // paste form — fills the `paste_author` slot when the reader has not

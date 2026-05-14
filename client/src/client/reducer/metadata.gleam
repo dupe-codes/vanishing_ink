@@ -171,29 +171,50 @@ fn trim_to_option(value: String) -> Option(String) {
   }
 }
 
-/// Resolve the PATCH response. On `Ok(meta)`, replace the matching
-/// row in `model.books` with the server's authoritative copy and
-/// close the sheet. On `Error(_)`, leave the sheet open with a
-/// human-readable error message so the reader can retry.
+/// Resolve the PATCH response. Gated on the currently-open draft
+/// matching the response's `id` so a stale response cannot pollute
+/// an unrelated draft.
+///
+/// Scenario being defended against: reader opens Edit on book A,
+/// submits the PATCH, cancels (`editing_metadata: None`), opens Edit
+/// on book B (`editing_metadata: Some(draft_B)`), and only then does
+/// A's response arrive. Without the gate, an `Ok` response would
+/// close B's sheet with no warning and an `Error` response would
+/// stamp A's error message onto `draft_B`. The gate makes both
+/// outcomes no-ops — the PATCH did fire and the disk reflects it,
+/// but the reader has visibly moved on, so we don't surprise them
+/// with a library mutation or an error popup they didn't ask for.
 pub fn apply_book_metadata_updated(
   model: Model,
   id: String,
   result: Result(BookMeta, FetchError),
 ) -> #(Model, Effect(Msg)) {
-  case result {
-    Ok(updated) -> apply_metadata_updated_ok(model, id, updated)
-    Error(error) -> apply_metadata_updated_error(model, error)
+  case model.editing_metadata {
+    None -> #(model, effect.none())
+    Some(draft) ->
+      case draft.book_id == id {
+        False -> #(model, effect.none())
+        True ->
+          case result {
+            Ok(updated) -> apply_metadata_updated_ok(model, updated)
+            Error(error) -> apply_metadata_updated_error(model, draft, error)
+          }
+      }
   }
 }
 
+/// Replace the matching row in `model.books` with the server's
+/// authoritative copy and close the sheet. The caller has already
+/// verified the open draft is for this id; `updated.id` is the same
+/// value the wire carried back, so it is the natural key for the
+/// row match.
 fn apply_metadata_updated_ok(
   model: Model,
-  id: String,
   updated: BookMeta,
 ) -> #(Model, Effect(Msg)) {
   let books =
     list.map(model.books, fn(book) {
-      case book.id == id {
+      case book.id == updated.id {
         True -> updated
         False -> book
       }
@@ -204,24 +225,25 @@ fn apply_metadata_updated_ok(
   )
 }
 
+/// Stamp the error onto the open draft. The caller has already
+/// verified `draft.book_id == id` so the error message lands on the
+/// draft that actually triggered the failed PATCH.
 fn apply_metadata_updated_error(
   model: Model,
+  draft: MetadataEdit,
   error: FetchError,
 ) -> #(Model, Effect(Msg)) {
-  case model.editing_metadata {
-    None -> #(model, effect.none())
-    Some(draft) -> #(
-      Model(
-        ..model,
-        editing_metadata: Some(
-          MetadataEdit(
-            ..draft,
-            submitting: False,
-            error: Some(describe_fetch_error(error)),
-          ),
+  #(
+    Model(
+      ..model,
+      editing_metadata: Some(
+        MetadataEdit(
+          ..draft,
+          submitting: False,
+          error: Some(describe_fetch_error(error)),
         ),
       ),
-      effect.none(),
-    )
-  }
+    ),
+    effect.none(),
+  )
 }
