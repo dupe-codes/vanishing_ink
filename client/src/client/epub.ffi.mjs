@@ -161,7 +161,6 @@ function extractSection(doc, chunks) {
   if (!body) return false;
 
   let emittedHeading = false;
-  let emittedParagraph = false;
 
   // Two passes through the same tree: the first finds the section's
   // title (first non-empty `<h1>` or `<h2>`), the second extracts the
