@@ -40,20 +40,25 @@ import shared/segmenter.{
   SegmentedText, Sentence, Word,
 }
 
+import gleam/dynamic
+
 import client/effects
+import client/epub.{
+  DrmEncrypted, EmptyText, EpubExtract, ParseFailed, UnsupportedFormat,
+}
 import client/ffi
 import client/gestures
 import client/msg.{
   AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
-  BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused, EraseSentence,
-  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
-  GoToLibrary, LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
-  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
-  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
-  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  ViewportResized,
+  BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected, EpubParsed,
+  EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
+  FocusParagraphUp, FocusPrevious, GoToLibrary, LinesMeasured, NextPage,
+  OpenBook, ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitPaste, TextLoaded,
+  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
 }
 import client/pagination.{type Page, Page}
 import client/reducer
@@ -5588,6 +5593,130 @@ pub fn update_submit_paste_with_valid_input_marks_submitting_test() {
 }
 
 // ---------------------------------------------------------------------------
+// ePub import — reducer arms
+// ---------------------------------------------------------------------------
+
+pub fn update_epub_file_selected_marks_submitting_and_clears_error_test() {
+  // Picking a file kicks off the parse — the form is locked
+  // (`paste_submitting: True`) so a second pick during the parse
+  // cannot orphan the first result, and any prior error is wiped
+  // so the in-flight surface starts clean.
+  let prior = Model(..empty_model(), paste_error: Some("stale"))
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubFileSelected(dynamic.nil()))
+
+  assert updated.paste_submitting == True
+  assert updated.paste_error == None
+}
+
+pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
+  // The reader hasn't typed a title yet, so the extracted ePub
+  // title takes the slot. The body text replaces whatever was in
+  // `paste_text` because the ePub import is "load the whole book."
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_title: "",
+      paste_text: "draft",
+      paste_submitting: True,
+      paste_error: Some("old"),
+    )
+
+  let extract =
+    EpubExtract("Walden", "Henry David Thoreau", "# Walden\n\nProse.\n\n")
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  assert updated.paste_title == "Walden"
+  assert updated.paste_text == "# Walden\n\nProse.\n\n"
+  assert updated.paste_submitting == False
+  assert updated.paste_error == None
+}
+
+pub fn update_epub_parsed_ok_preserves_existing_title_test() {
+  // A reader who typed a title before picking the file probably
+  // wants their title to stick — the extractor's guess is a
+  // fallback, not a clobber.
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_title: "My Custom Title",
+      paste_text: "",
+      paste_submitting: True,
+    )
+
+  let extract = EpubExtract("Walden", "", "Some text.\n\n")
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  assert updated.paste_title == "My Custom Title"
+  assert updated.paste_text == "Some text.\n\n"
+}
+
+pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
+  // A whitespace-only title is treated as empty — the reader did not
+  // type a meaningful title, so the extractor's guess fills in.
+  let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
+
+  let extract = EpubExtract("Walden", "", "Body.\n\n")
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  assert updated.paste_title == "Walden"
+}
+
+pub fn update_epub_parsed_error_unsupported_format_surfaces_message_test() {
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubParsed(Error(UnsupportedFormat)))
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error
+    == Some("This file does not look like a valid ePub.")
+}
+
+pub fn update_epub_parsed_error_drm_surfaces_message_test() {
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubParsed(Error(DrmEncrypted)))
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error
+    == Some("This ePub is DRM-protected and cannot be imported.")
+}
+
+pub fn update_epub_parsed_error_empty_text_surfaces_message_test() {
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Error(EmptyText)))
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error == Some("No readable text was found in this ePub.")
+}
+
+pub fn update_epub_parsed_error_parse_failed_surfaces_detail_test() {
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubParsed(Error(ParseFailed("malformed OPF"))))
+
+  assert updated.paste_submitting == False
+  assert updated.paste_error == Some("Could not parse this ePub: malformed OPF")
+}
+
+pub fn update_epub_parsed_error_parse_failed_falls_back_when_detail_blank_test() {
+  // An empty detail string would render as "Could not parse this
+  // ePub: " — keep the colon out of the user-facing message when the
+  // JS-side error had no message.
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubParsed(Error(ParseFailed("   "))))
+
+  assert updated.paste_error == Some("Could not parse this ePub.")
+}
+
+// ---------------------------------------------------------------------------
 // library — view rendering
 // ---------------------------------------------------------------------------
 
@@ -5769,6 +5898,55 @@ pub fn view_library_add_book_button_shows_submitting_label_test() {
   assert lustre_query.has(
     in: rendered_tree,
     matching: lustre_query.class("btn-add-book")
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+pub fn view_library_renders_epub_file_picker_in_sheet_test() {
+  let model = Model(..library_model(), add_book_open: True)
+  let rendered = view.view(model)
+
+  // The file input is rendered with `accept=".epub,application/epub+zip"`
+  // so the OS picker filters to ePub files. The `.epub-import-button`
+  // wrapper carries the visual chrome — confirming both elements
+  // are present pins the structural contract the FFI listener
+  // depends on.
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("epub-import-input"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("epub-import-input")
+      |> lustre_query.and(lustre_query.attribute("type", "file")),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("epub-import-input")
+      |> lustre_query.and(lustre_query.attribute(
+        "accept",
+        ".epub,application/epub+zip",
+      )),
+  )
+}
+
+pub fn view_library_epub_file_picker_disables_during_submit_test() {
+  // While `paste_submitting` is `True`, the picker label carries the
+  // `is-loading` modifier and the input itself is disabled so a
+  // second pick cannot orphan the in-flight parse.
+  let model =
+    Model(..library_model(), add_book_open: True, paste_submitting: True)
+  let rendered = view.view(model)
+  let rendered_string = element.to_string(rendered)
+
+  assert string.contains(rendered_string, "Importing ePub")
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("epub-import-button is-loading"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("epub-import-input")
       |> lustre_query.and(lustre_query.attribute("disabled", "")),
   )
 }

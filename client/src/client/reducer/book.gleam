@@ -260,10 +260,7 @@ pub fn apply_epub_file_selected(
   model: Model,
   file: Dynamic,
 ) -> #(Model, Effect(Msg)) {
-  #(
-    Model(..model, paste_submitting: True, paste_error: None),
-    parse_epub(file),
-  )
+  #(Model(..model, paste_submitting: True, paste_error: None), parse_epub(file))
 }
 
 /// Stamp the parsed ePub onto the paste form so the reader sees the
