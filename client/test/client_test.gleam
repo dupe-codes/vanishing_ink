@@ -7623,23 +7623,29 @@ pub fn view_filters_stale_search_results_below_current_page_test() {
   // reader never sees a row that does nothing on tap. When every
   // cached row is stale, the section falls back to the same
   // "No matches found" line a genuine zero-match query produces.
+  //
+  // `current_page: 1` with a 3-page fixture means the terminal-page
+  // guard in `view_search_section` still permits the section to
+  // render (there is at least one forward page), so the stale-row
+  // filter — not the section guard — is what produces the empty
+  // state asserted below.
   let model =
     Model(
       ..jump_model(),
       view: Reader,
       jump_menu_open: True,
-      current_page: 3,
+      current_page: 1,
       jump_search_query: "stale",
       jump_search_results: [
-        SearchResult(page_index: 1, snippet: "…stale-row-one…"),
-        SearchResult(page_index: 2, snippet: "…stale-row-two…"),
+        SearchResult(page_index: 0, snippet: "…stale-row-zero…"),
+        SearchResult(page_index: 1, snippet: "…stale-row-equal…"),
       ],
     )
 
   let rendered = view.view(model) |> element.to_string
 
-  assert !string.contains(rendered, "stale-row-one")
-  assert !string.contains(rendered, "stale-row-two")
+  assert !string.contains(rendered, "stale-row-zero")
+  assert !string.contains(rendered, "stale-row-equal")
   assert string.contains(rendered, "No matches found")
 }
 
@@ -7669,6 +7675,34 @@ pub fn view_keeps_live_results_and_drops_stale_results_test() {
   // threshold — the section must still render the results region,
   // not the empty-state line, because at least one live row remains.
   assert !string.contains(rendered, "No matches found")
+}
+
+pub fn view_omits_search_section_on_terminal_page_test() {
+  // No forward page → no search target → no search section. The
+  // guard mirrors `view_page_section`'s terminal-page guard so the
+  // two forward-navigation surfaces in the menu behave consistently.
+  // Without this, the reader on the final page sees a search input
+  // that can only ever render "No matches found" — a phantom
+  // affordance that promises a search will work and then fails it
+  // for any query.
+  //
+  // `jump_pages()` is a 3-page fixture; `current_page: 2` is the
+  // last valid page (0-based), so `total_pages - current_page == 1`
+  // and no `page_index > current_page` is reachable.
+  let model =
+    Model(..jump_model(), view: Reader, jump_menu_open: True, current_page: 2)
+
+  let rendered = view.view(model) |> element.to_string
+
+  // Neither the input nor the section label appears.
+  assert !string.contains(rendered, "jump-search-input")
+  assert !string.contains(rendered, "Search ahead")
+  // Sanity: the chapter section is also gone for the same reason
+  // (no forward chapters), so the only `jump-section` left would be
+  // the page input — and that one is also guarded by the same
+  // terminal-page condition, so it is absent too. The menu shell
+  // (header + close button) still renders.
+  assert string.contains(rendered, "Jump ahead")
 }
 
 pub fn view_omits_search_results_for_whitespace_query_test() {

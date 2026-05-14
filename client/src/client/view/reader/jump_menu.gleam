@@ -186,10 +186,8 @@ fn view_page_section(model: Model) -> Element(Msg) {
   }
 }
 
-/// Search section. Renders the controlled input unconditionally
-/// (so a reader who has not yet typed still sees the affordance) and
-/// the results region underneath. The results region is one of three
-/// shapes:
+/// Search section. Renders the controlled input plus the results
+/// region underneath. The results region is one of three shapes:
 ///
 /// * Empty query — nothing rendered, so the panel does not jump in
 ///   height the moment focus lands on the input.
@@ -198,22 +196,38 @@ fn view_page_section(model: Model) -> Element(Msg) {
 /// * Non-empty query, matches — a vertical list of result rows, each
 ///   carrying the page number and a snippet of prose around the first
 ///   match on that page.
+///
+/// Renders nothing when there is no forward page to search — every
+/// match the reducer is allowed to produce must satisfy
+/// `page_index > current_page`, and the only page the reader can be
+/// on with no forward target is the final page. Hiding the section
+/// mirrors `view_page_section`'s terminal-page guard so the two
+/// forward-navigation surfaces in the menu behave consistently; an
+/// always-rendered input that can only ever return "No matches
+/// found" is a phantom affordance.
 fn view_search_section(model: Model) -> Element(Msg) {
-  html.div([attribute.class("jump-section")], [
-    html.div([attribute.class("jump-section-label")], [html.text("Search")]),
-    html.input([
-      attribute.class("jump-search-input"),
-      attribute.type_("search"),
-      attribute.attribute("inputmode", "search"),
-      attribute.attribute("placeholder", "Search ahead..."),
-      attribute.attribute("autocomplete", "off"),
-      attribute.attribute("spellcheck", "false"),
-      attribute.aria_label("Search ahead"),
-      attribute.value(model.jump_search_query),
-      event.on_input(SetJumpSearchQuery),
-    ]),
-    view_search_results(model),
-  ])
+  let next_page_one_based = model.current_page + 2
+  case model.total_pages < next_page_one_based {
+    True -> element.none()
+    False ->
+      html.div([attribute.class("jump-section")], [
+        html.div([attribute.class("jump-section-label")], [
+          html.text("Search"),
+        ]),
+        html.input([
+          attribute.class("jump-search-input"),
+          attribute.type_("search"),
+          attribute.attribute("inputmode", "search"),
+          attribute.attribute("placeholder", "Search ahead..."),
+          attribute.attribute("autocomplete", "off"),
+          attribute.attribute("spellcheck", "false"),
+          attribute.aria_label("Search ahead"),
+          attribute.value(model.jump_search_query),
+          event.on_input(SetJumpSearchQuery),
+        ]),
+        view_search_results(model),
+      ])
+  }
 }
 
 /// Render the search-results region. An empty trimmed query returns
@@ -260,12 +274,16 @@ fn view_search_results(model: Model) -> Element(Msg) {
   }
 }
 
-/// Render one search result. Dispatches `SelectSearchResult(page_index)`
-/// — the same code path the page-number input feeds into via
-/// `SubmitJumpPage`, just routed through a different controller. The
-/// 1-based page label is shown to the reader (matching the bottom-bar
-/// page indicator's convention); the dispatch payload remains the
-/// 0-based reducer index.
+/// Render one search result. Dispatches `SelectSearchResult(page_index)`,
+/// whose reducer arm delegates to `apply_jump_to_page` — the same arm
+/// the page-number input's `SubmitJumpPage` delegates to after parsing
+/// its 1-based string into a 0-based index. The two surfaces are
+/// peers: each owns its own controller Msg (`SelectSearchResult` /
+/// `SubmitJumpPage`) and funnels through `apply_jump_to_page`, where
+/// the forward-only guard, engine pause, preview snapshot, and
+/// chapter-cache refresh all live. The 1-based page label is shown to
+/// the reader (matching the bottom-bar page indicator's convention);
+/// the dispatch payload remains the 0-based reducer index.
 ///
 /// The `aria-label` carries both the page number and the snippet so
 /// a screen-reader user navigating the results list hears *what*
