@@ -360,6 +360,21 @@ body.vi-reduced-motion .reader-progress-fill {
    * share an identical content-area width — paragraph line
    * wrapping (and therefore measured heights) are accurate.
    *
+   * `display: flex; flex-direction: column` sets up a nested flex
+   * context so `.reader-page-content` can size itself via
+   * `flex: 1 1 0; min-height: 0` (a deterministic fill of the
+   * content-box) rather than the prior `height: 100%`. Some
+   * browsers resolve a flex child's `height: 100%` against the
+   * parent's border-box rather than its content-box, handing the
+   * FFI a budget that exceeded the actual content area by the
+   * parent's vertical padding (48px here). That over-count let the
+   * last paragraph of a page render past `.reader-page-content`'s
+   * bottom edge into the bottom padding strip, where the next
+   * overflow pixel was clipped at the parent's `overflow: hidden`
+   * boundary (= the top of `.reader-bottom-bar`), making the final
+   * lines appear cut off by the bottom bar on mobile. The
+   * flex-child sizing below bypasses percentage resolution entirely.
+   *
    * `touch-action: pan-y` keeps vertical scrolls native (no purpose
    * today but ensures the browser doesn't intercept horizontal
    * swipes for back/forward navigation). */
@@ -368,6 +383,8 @@ body.vi-reduced-motion .reader-progress-fill {
   padding: var(--vi-reading-padding-y) var(--vi-reading-padding-x);
   overflow: hidden;
   touch-action: pan-y;
+  display: flex;
+  flex-direction: column;
 }
 
 .reader-page-content {
@@ -376,13 +393,26 @@ body.vi-reduced-motion .reader-progress-fill {
    * is intentionally zero so the measurement is a clean
    * content-box height with no chrome to subtract.
    *
+   * Sized as a flex child of `.reader-page`: `flex: 1 1 0` gives
+   * a zero flex-basis with grow=1, so the child stretches to fill
+   * the parent's content area exactly. `min-height: 0` lets the
+   * flex algorithm shrink below content size if pagination ever
+   * places more paragraphs than fit (defensive — the algorithm
+   * gates on `available_height`, so this is a no-op in practice).
+   * Replaces the older `height: 100%` formulation, which some
+   * browsers resolve against the flex parent's border-box rather
+   * than its content-box — inflating the measured budget by the
+   * parent's padding height and clipping the last lines behind
+   * the bottom bar.
+   *
    * `position: relative` anchors the absolutely-positioned
    * `.reader-active-line` overlay against this container so its
    * inline `top` / `height` resolve against the page's content
    * area — the same coordinate space the FFI normalises each
    * `LineBox.top` into. */
   position: relative;
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .reader-active-line {
