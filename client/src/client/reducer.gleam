@@ -84,7 +84,9 @@ import client/reducer/touch.{apply_erase, apply_touch_end, apply_undo}
 import client/state.{
   type Model, Library, Manual, Model, Paused, RealTime, Running, Stopped,
 }
-import client/state/helpers.{compute_current_chapter_title, go_to_page}
+import client/state/helpers.{
+  compute_chapter_entries, compute_current_chapter_title, go_to_page,
+}
 import client/types
 
 /// Transition the reader to the next state given a message.
@@ -457,6 +459,12 @@ fn apply_paragraphs_measured(
   // pagination repacked paragraphs or the clamp moved the
   // current page.
   let chapter_title = compute_current_chapter_title(model.text, pages, clamped)
+  // Refresh the cached chapter list whenever pagination re-runs.
+  // The list filters to chapters strictly ahead of `clamped`, so
+  // opening the menu after a re-pagination always sees an accurate
+  // "where can I jump to from here" set rather than entries that
+  // pagination has since invalidated.
+  let chapter_entries = compute_chapter_entries(pages, clamped)
   #(
     Model(
       ..model,
@@ -477,6 +485,7 @@ fn apply_paragraphs_measured(
       active_line: None,
       current_chapter_title: chapter_title,
       total_pages: total,
+      chapter_entries: chapter_entries,
     ),
     // Pagination ran — chain a line measurement so the active-line
     // overlay re-anchors to the post-repagination geometry. The
@@ -509,7 +518,15 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
     // the engine's own cross-page tick in `advance_to_next_page_loop`.
     False -> {
       let with_cleared_overlay =
-        Model(..updated, line_boxes: [], active_line: None)
+        Model(
+          ..updated,
+          line_boxes: [],
+          active_line: None,
+          chapter_entries: compute_chapter_entries(
+            updated.pages,
+            updated.current_page,
+          ),
+        )
       #(
         with_cleared_overlay,
         effect.batch([

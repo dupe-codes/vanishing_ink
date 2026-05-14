@@ -19,6 +19,7 @@ import client/msg.{type Msg}
 import client/state.{type Model, Library, Reader}
 import client/view/library as library_view
 import client/view/reader as reader_view
+import client/view/reader/jump_menu
 import client/view/settings as settings_view
 
 pub fn view(model: Model) -> Element(Msg) {
@@ -32,8 +33,19 @@ pub fn view(model: Model) -> Element(Msg) {
     False -> element.none()
   }
 
+  // The jump menu overlays the reader only — there is nothing to
+  // jump in the library, so the overlay is gated on `view == Reader`
+  // even though `jump_menu_open` is a `Bool` independent of `view`.
+  // A `GoToLibrary` dispatch flips the view back and the menu
+  // disappears without needing to clear `jump_menu_open` explicitly.
+  let jump_overlay = case model.view {
+    Reader -> jump_menu.view(model)
+    Library -> element.none()
+  }
+
   html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
     body,
     overlay,
+    jump_overlay,
   ])
 }

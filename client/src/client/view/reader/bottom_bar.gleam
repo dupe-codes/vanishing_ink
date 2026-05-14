@@ -1,34 +1,100 @@
-//// Reader bottom bar — mode-aware. Extracted from
-//// `client/view/reader.gleam` so that file stays under the 800-line
-//// hard budget while the Jump Ahead modal and preview banner can
-//// land their own markup against this same outer frame.
+//// Reader bottom bar — mode-aware, with two side-rails:
+////
+//// * **Preview banner** — when `model.jump_preview` is `Some(_)` the
+////   inner row swaps to `[← Go Back]  Previewing page N  [Lock In ✓]`
+////   so the reader resolves the preview rather than turning pages
+////   underneath it.
+//// * **Jump button** — both mode branches render a small `Jump`
+////   affordance via `view_jump_button` so the menu is reachable
+////   without leaving the bottom bar.
 ////
 //// The outer `.reader-bottom-bar` carries the safe-area-bottom
-//// padding and the warm chrome background. The inner row swaps
-//// shape with `model.mode`:
+//// padding and the warm chrome background. Outside the preview
+//// state, the inner row swaps shape with `model.mode`:
 ////
-//// * Manual — `[↩ Undo]   Page N of M   [Turn Page →]`
-//// * RealTime — `WPM readout   [▶ / ⏸]   (spacer)`
+//// * Manual — `[↩ Undo]   Page N of M   [Jump]   [Turn Page →]`
+//// * RealTime — `WPM readout   [▶ / ⏸]   [Jump]`
 
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 
-import client/msg.{type Msg, NextPage, PauseFade, ResumeFade, StartFade, Undo}
+import client/msg.{
+  type Msg, LockInJump, NextPage, PauseFade, ResumeFade, StartFade,
+  ToggleJumpMenu, Undo, UndoJump,
+}
 import client/state.{type Model, Manual, Paused, RealTime, Running, Stopped}
 
-/// Render the outer bottom bar. The reducer never lands the reader
-/// view without a `model.mode` value, so the case is exhaustive on
-/// the two real variants.
+/// Render the outer bottom bar. While a Jump Ahead preview is in
+/// flight the bar swaps to the preview banner — "Go Back" /
+/// "Lock In" — instead of the mode-aware inner row, so the reader
+/// can resolve the preview without the regular page-turn affordance
+/// stealing focus.
+///
+/// The reducer never lands the reader view without a `model.mode`
+/// value, so the case is exhaustive on the two real variants.
 pub fn view(model: Model, total: Int) -> Element(Msg) {
-  let inner = case model.mode {
-    Manual -> view_bottom_manual(model, total)
-    RealTime -> view_bottom_realtime(model)
+  let inner = case model.jump_preview {
+    Some(_) -> view_preview_banner(model)
+    None ->
+      case model.mode {
+        Manual -> view_bottom_manual(model, total)
+        RealTime -> view_bottom_realtime(model, total)
+      }
   }
   html.div([attribute.class("reader-bottom-bar")], [inner])
+}
+
+/// Preview banner shown while `model.jump_preview` is `Some(_)`.
+/// Layout: `[← Go Back]  Previewing page N  [Lock In ✓]`. Distinct
+/// background tone via `.reader-bottom-preview` so the reader can
+/// see at a glance that the bar has switched out of regular reading.
+fn view_preview_banner(model: Model) -> Element(Msg) {
+  let label = "Previewing page " <> int.to_string(model.current_page + 1)
+  html.div([attribute.class("reader-bottom-preview")], [
+    html.button(
+      [
+        attribute.class("btn-bar"),
+        attribute.type_("button"),
+        attribute.aria_label("Undo jump and go back"),
+        event.on_click(UndoJump),
+      ],
+      [html.text("← Go Back")],
+    ),
+    html.div([attribute.class("reader-preview-label")], [html.text(label)]),
+    html.button(
+      [
+        attribute.class("btn-bar primary"),
+        attribute.type_("button"),
+        attribute.aria_label("Lock in jump"),
+        event.on_click(LockInJump),
+      ],
+      [html.text("Lock In ✓")],
+    ),
+  ])
+}
+
+/// Render the secondary "Jump" affordance. Disabled when there's
+/// nowhere to jump (`current_page` is already on the last page or
+/// pagination hasn't yet produced any pages). Shared between the
+/// manual and real-time bottom-bar branches so the affordance reads
+/// consistently across modes.
+fn view_jump_button(model: Model, total: Int) -> Element(Msg) {
+  let disabled = total <= 1 || model.current_page >= total - 1
+  html.button(
+    [
+      attribute.class("btn-bar jump"),
+      attribute.type_("button"),
+      attribute.disabled(disabled),
+      attribute.aria_label("Open jump menu"),
+      event.on_click(ToggleJumpMenu),
+    ],
+    [html.text("Jump")],
+  )
 }
 
 /// Manual-mode bottom bar inner row.
@@ -72,6 +138,7 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
       [html.text("↩ Undo")],
     ),
     html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
+    view_jump_button(model, total),
     html.button(
       [
         attribute.class("btn-bar primary"),
@@ -110,7 +177,7 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 /// `.reader-text`, not ancestor and descendant — DOM events bubble
 /// up through ancestors only, so a tap on the play button never
 /// reaches the reading-area touch handler.
-fn view_bottom_realtime(model: Model) -> Element(Msg) {
+fn view_bottom_realtime(model: Model, total: Int) -> Element(Msg) {
   let #(button_label, button_class, play_msg, aria_label) = case
     model.engine_state
   {
@@ -146,12 +213,6 @@ fn view_bottom_realtime(model: Model) -> Element(Msg) {
       ],
       [html.text(button_label)],
     ),
-    html.div(
-      [
-        attribute.class("btn-play-spacer"),
-        attribute.aria_hidden(True),
-      ],
-      [],
-    ),
+    view_jump_button(model, total),
   ])
 }

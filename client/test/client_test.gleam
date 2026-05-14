@@ -4742,9 +4742,13 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
 }
 
 pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
-  // RealTime mode bottom bar: WPM readout, play button, spacer.
-  // Manual chrome (undo, turn-page) must not appear — the bar is
-  // mode-conditional.
+  // RealTime mode bottom bar: WPM readout, play button, Jump button.
+  // The play button stays centred between the wpm readout and the
+  // jump affordance — the trailing spacer was replaced by the Jump
+  // button when the Jump Ahead surface landed, so the inner row now
+  // carries three real children rather than two children plus a
+  // ghost spacer. Manual chrome (undo, turn-page) must not appear —
+  // the bar is mode-conditional.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
 
   let rendered = view.view(model) |> element.to_string
@@ -4753,7 +4757,7 @@ pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
   assert string.contains(rendered, "class=\"wpm-readout\"")
   assert string.contains(rendered, "250 wpm")
   assert string.contains(rendered, "btn-play")
-  assert string.contains(rendered, "btn-play-spacer")
+  assert string.contains(rendered, "class=\"btn-bar jump\"")
   // Manual-only chrome must not appear in RealTime mode.
   assert !string.contains(rendered, "reader-bottom-manual")
   assert !string.contains(rendered, "↩ Undo")

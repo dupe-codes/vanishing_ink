@@ -31,7 +31,9 @@ import client/effects.{measure_lines_after_paint, save_reading_state}
 import client/msg.{type Msg}
 import client/pagination.{type Page}
 import client/state.{type Model, JumpPreview, Model, Paused, Running, Stopped}
-import client/state/helpers.{change_page}
+import client/state/helpers.{
+  change_page, compute_chapter_entries, compute_current_chapter_title,
+}
 
 /// Flip `Model.jump_menu_open`. Closing the menu does not touch
 /// `jump_preview` — a reader who closes the menu while previewing
@@ -78,9 +80,19 @@ pub fn apply_jump_to_page(
       // Clear the cached line geometry on a real page change — the
       // overlay anchors to the new page's word spans, not the old
       // page's coordinates. Mirrors `apply_next_page`'s cross-page
-      // cleanup.
+      // cleanup. The chapter list is also refreshed so chapters that
+      // are now behind the jumped-to page drop out of the menu the
+      // next time it opens.
       let with_cleared_overlay =
-        Model(..advanced, line_boxes: [], active_line: None)
+        Model(
+          ..advanced,
+          line_boxes: [],
+          active_line: None,
+          chapter_entries: compute_chapter_entries(
+            advanced.pages,
+            advanced.current_page,
+          ),
+        )
       #(with_cleared_overlay, measure_lines_after_paint())
     }
   }
@@ -136,15 +148,25 @@ pub fn apply_undo_jump(model: Model) -> #(Model, Effect(Msg)) {
   case model.jump_preview {
     None -> #(model, effect.none())
     Some(preview) -> {
-      let with_page = change_page(model, preview.source_page)
+      // `change_page` rejects backward navigation, so a direct call
+      // would no-op here. Bypass the helper and reseat the page
+      // index plus the cached chapter title directly — undo is the
+      // explicit exception to the forward-only rule, and the title
+      // cache needs to mirror whichever page is now visible.
+      let restored_page = preview.source_page
+      let chapter_title =
+        compute_current_chapter_title(model.text, model.pages, restored_page)
       let restored =
         Model(
-          ..with_page,
+          ..model,
+          current_page: restored_page,
+          current_chapter_title: chapter_title,
           engine_state: preview.prior_engine_state,
           next_word_index: preview.prior_next_word_index,
           jump_preview: None,
           line_boxes: [],
           active_line: None,
+          chapter_entries: compute_chapter_entries(model.pages, restored_page),
         )
       #(restored, measure_lines_after_paint())
     }
