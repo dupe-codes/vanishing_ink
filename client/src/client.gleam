@@ -5021,6 +5021,9 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
   html.div([attribute.class("hero-card-wrapper")], [
+    html.div([attribute.class("section-label")], [
+      html.text("Continue Reading"),
+    ]),
     html.button(
       [
         attribute.class("hero-card"),
@@ -5029,9 +5032,6 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
         event.on_click(OpenBook(book.id)),
       ],
       [
-        html.div([attribute.class("section-label")], [
-          html.text("Continue Reading"),
-        ]),
         html.div(
           [
             attribute.class("hero-cover"),

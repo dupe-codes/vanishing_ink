@@ -219,6 +219,14 @@ body.vi-dyslexia-font .settings-panel {
   height: 100dvh;
   display: flex;
   flex-direction: column;
+  /* Clip the absolutely-positioned `.reader-measurement` container
+   * that renders every paragraph in the book for height measurement.
+   * Without this, the measurement container extends thousands of
+   * pixels below the viewport and makes the document scrollable —
+   * creating a black void below the reading surface. Clipping here
+   * is safe: `getBoundingClientRect()` still measures hidden
+   * overflow, so the FFI paragraph measurement is unaffected. */
+  overflow: hidden;
   background-color: var(--vi-bg);
   transition: background-color var(--vi-theme-transition);
 }
@@ -1111,12 +1119,11 @@ body.vi-reduced-motion .settings-toggle-input::after {
   transform: scale(0.98);
 }
 
-.hero-card .section-label {
-  /* The label rides above the cover; raise it out of the card chrome
-   * with a small margin so it doesn't run flush against the corner. */
-  margin: 0 0 8px;
-  padding-left: 2px;
-}
+/* The "Continue Reading" section label now sits outside the card
+ * (in `.hero-card-wrapper`) so it is not clipped by the card's
+ * `overflow: hidden` + `border-radius: 16px`. No `.hero-card
+ * .section-label` override is needed — the default `.section-label`
+ * `margin-bottom: 12px` spaces the label above the card. */
 
 .hero-cover {
   position: relative;
@@ -1527,13 +1534,14 @@ body.vi-light-mode .btn-delete-book:focus-visible {
 }
 
 /* Hero × badge — slightly larger than the grid-card badge to match the
- * hero's prominence, and offset to clear the `.section-label` text
- * row that sits above the cover. Must follow `.btn-delete-book` so its
+ * hero's prominence. `top` accounts for the `.section-label` sibling
+ * above the card inside the wrapper (~32px of label + margin) plus
+ * ~8px into the cover area. Must follow `.btn-delete-book` so its
  * overrides win the source-order tiebreak: both selectors share (0,1,0)
  * specificity, and the hero badge carries both classes per
  * `view_delete_badge` in `client/src/client.gleam`. */
 .btn-delete-hero {
-  top: 32px;
+  top: 40px;
   right: 10px;
   width: 32px;
   height: 32px;
