@@ -62,6 +62,7 @@ import client/msg.{
   ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
   TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
 }
+import client/numeric
 import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/jump as jump_reducer
@@ -2224,54 +2225,57 @@ pub fn update_toggle_dyslexia_font_flips_field_test() {
 // clamp helpers
 // ---------------------------------------------------------------------------
 //
-// `clamp_int` and `clamp_float` are exposed for testing because every
-// settings-slider reducer arm delegates to them; pinning the boundary
-// behaviour here means a future refactor that swaps the comparison
-// operators (e.g. inclusive vs. exclusive bounds) will fail at this
-// unit level rather than producing surprising slider behaviour at the
-// rails.
+// `clamp_int` and `clamp_float` live in the pure-leaf `client/numeric`
+// module. They are exposed for testing because every settings-slider
+// reducer arm delegates to them, and `client/search` uses
+// `clamp_int` to bracket its snippet window into the haystack;
+// pinning the boundary behaviour here means a future refactor that
+// swaps the comparison operators (e.g. inclusive vs. exclusive
+// bounds) will fail at this unit level rather than producing
+// surprising slider behaviour at the rails or off-by-one snippets at
+// the head and tail of a page.
 
 pub fn clamp_int_below_lo_returns_lo_test() {
-  assert state_helpers.clamp_int(-5, 0, 10) == 0
+  assert numeric.clamp_int(-5, 0, 10) == 0
 }
 
 pub fn clamp_int_above_hi_returns_hi_test() {
-  assert state_helpers.clamp_int(99, 0, 10) == 10
+  assert numeric.clamp_int(99, 0, 10) == 10
 }
 
 pub fn clamp_int_in_range_returns_value_test() {
-  assert state_helpers.clamp_int(7, 0, 10) == 7
+  assert numeric.clamp_int(7, 0, 10) == 7
 }
 
 pub fn clamp_int_at_lo_returns_lo_test() {
   // Boundary inclusivity: `value < lo` not `value <= lo`, so the lo
   // rail itself is "in range" and passes through.
-  assert state_helpers.clamp_int(0, 0, 10) == 0
+  assert numeric.clamp_int(0, 0, 10) == 0
 }
 
 pub fn clamp_int_at_hi_returns_hi_test() {
   // Mirror inclusivity check at the hi rail.
-  assert state_helpers.clamp_int(10, 0, 10) == 10
+  assert numeric.clamp_int(10, 0, 10) == 10
 }
 
 pub fn clamp_float_below_lo_returns_lo_test() {
-  assert state_helpers.clamp_float(-1.5, 0.0, 1.0) == 0.0
+  assert numeric.clamp_float(-1.5, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_above_hi_returns_hi_test() {
-  assert state_helpers.clamp_float(2.5, 0.0, 1.0) == 1.0
+  assert numeric.clamp_float(2.5, 0.0, 1.0) == 1.0
 }
 
 pub fn clamp_float_in_range_returns_value_test() {
-  assert state_helpers.clamp_float(0.42, 0.0, 1.0) == 0.42
+  assert numeric.clamp_float(0.42, 0.0, 1.0) == 0.42
 }
 
 pub fn clamp_float_at_lo_returns_lo_test() {
-  assert state_helpers.clamp_float(0.0, 0.0, 1.0) == 0.0
+  assert numeric.clamp_float(0.0, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_at_hi_returns_hi_test() {
-  assert state_helpers.clamp_float(1.0, 0.0, 1.0) == 1.0
+  assert numeric.clamp_float(1.0, 0.0, 1.0) == 1.0
 }
 
 // ---------------------------------------------------------------------------

@@ -1,14 +1,23 @@
 //// Application-state types and compile-time constants. This module
-//// sits at the foundation of the client's dependency graph: it
-//// depends only on `client/types`, `client/pagination`, and
-//// `shared/segmenter`, and is imported by every other client module
-//// that touches the model.
+//// sits near the foundation of the client's dependency graph: it
+//// depends only on `client/types`, `client/pagination`, `client/search`
+//// (for the `SearchResult` type embedded in `Model.jump_search_results`),
+//// and `shared/segmenter`, and is imported by every other client
+//// module that touches the model. `client/search` is itself a pure
+//// leaf module — it imports `client/pagination` plus the pure-leaf
+//// `client/numeric` for its clamp helper, so pulling its type into
+//// the model does not enlarge the import graph beyond what was here
+//// before the search field landed.
 ////
 //// The pure model-mutation helpers (`go_to_page`, `change_page`,
 //// `total_counts`, `progress_percentage`, `compute_current_chapter_title`,
-//// `chapter_title_at`, `clamp_int`, `clamp_float`, `erased_opacity_value`)
-//// live in the sibling `client/state/helpers` module so this file
-//// stays within the 800-line file budget.
+//// `chapter_title_at`, `erased_opacity_value`) live in the sibling
+//// `client/state/helpers` module so this file stays within the 800-
+//// line file budget. The numeric clamp primitives (`clamp_int`,
+//// `clamp_float`) used to live in `client/state/helpers` but were
+//// extracted to the pure-leaf `client/numeric` module so
+//// `client/search` could reuse them without forming a
+//// `search → state/helpers → state → search` import cycle.
 ////
 //// **Cached-field invariant.** Several `Model` fields are caches over
 //// other fields; the reducer is responsible for keeping them in

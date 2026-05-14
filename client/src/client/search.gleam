@@ -36,6 +36,7 @@
 import gleam/list
 import gleam/string
 
+import client/numeric.{clamp_int}
 import client/pagination.{type Page}
 
 /// Half-window for snippet extraction, in characters. The final
@@ -258,12 +259,4 @@ fn grapheme_at(haystack: String, index: Int) -> Result(String, Nil) {
 
 fn is_whitespace(grapheme: String) -> Bool {
   grapheme == " " || grapheme == "\t" || grapheme == "\n" || grapheme == "\r"
-}
-
-fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
-  case value < lo, value > hi {
-    True, _ -> lo
-    _, True -> hi
-    _, _ -> value
-  }
 }
