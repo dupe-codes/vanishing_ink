@@ -7729,8 +7729,7 @@ pub fn search_forward_returns_full_text_when_haystack_shorter_than_window_test()
 
   let results = search.search_forward(pages, 0, "two")
 
-  assert results
-    == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+  assert results == [SearchResult(page_index: 1, snippet: "Two charlie.")]
 }
 
 pub fn search_forward_no_leading_ellipsis_when_match_starts_haystack_test() {
@@ -7739,21 +7738,17 @@ pub fn search_forward_no_leading_ellipsis_when_match_starts_haystack_test() {
   // edge clips inside the long haystack, so the trailing ellipsis
   // *is* present. Position 30 lands on the space after "echo",
   // so the right snap returns the cursor unchanged.
-  let pages =
-    [
-      search_test_page(1, [
-        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
-      ]),
-    ]
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+    ]),
+  ]
 
   let results = search.search_forward(pages, 0, "alpha")
 
   assert results
     == [
-      SearchResult(
-        page_index: 1,
-        snippet: "alpha bravo charlie delta echo…",
-      ),
+      SearchResult(page_index: 1, snippet: "alpha bravo charlie delta echo…"),
     ]
 }
 
@@ -7763,21 +7758,17 @@ pub fn search_forward_no_trailing_ellipsis_when_match_ends_haystack_test() {
   // and the suffix is empty. The left edge snaps forward past
   // the partial word "charlie" so the snippet starts on a clean
   // word boundary ("delta") rather than mid-token.
-  let pages =
-    [
-      search_test_page(1, [
-        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
-      ]),
-    ]
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
+    ]),
+  ]
 
   let results = search.search_forward(pages, 0, "needle")
 
   assert results
     == [
-      SearchResult(
-        page_index: 1,
-        snippet: "…delta echo foxtrot needle",
-      ),
+      SearchResult(page_index: 1, snippet: "…delta echo foxtrot needle"),
     ]
 }
 
@@ -7790,13 +7781,12 @@ pub fn search_forward_brackets_centered_match_with_both_ellipses_test() {
   // back to the space after "juliet". The snippet body therefore
   // contains exactly the whole-word tokens from "delta" through
   // "juliet" centred on "needle".
-  let pages =
-    [
-      search_test_page(1, [
-        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
-        "golf", "hotel", "india", "juliet", "kilo",
-      ]),
-    ]
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle", "golf",
+      "hotel", "india", "juliet", "kilo",
+    ]),
+  ]
 
   let results = search.search_forward(pages, 0, "needle")
 
@@ -7823,8 +7813,7 @@ pub fn search_forward_skips_pages_with_empty_text_test() {
 
   let results = search.search_forward(pages, 0, "two")
 
-  assert results
-    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+  assert results == [SearchResult(page_index: 2, snippet: "Two charlie.")]
 }
 
 pub fn search_forward_preserves_original_case_in_snippet_test() {
@@ -7837,8 +7826,7 @@ pub fn search_forward_preserves_original_case_in_snippet_test() {
 
   let results = search.search_forward(pages, 0, "TWO")
 
-  assert results
-    == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+  assert results == [SearchResult(page_index: 1, snippet: "Two charlie.")]
 }
 
 // Construct a single-paragraph, single-sentence page from a list of
