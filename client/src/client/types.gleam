@@ -178,3 +178,54 @@ pub fn book_settings_decoder() -> decode.Decoder(BookSettings) {
     ghost_opacity: ghost_opacity,
   ))
 }
+
+/// Per-book reading progress. Mirrors `server/types.gleam:ReadingState`
+/// field-for-field, with one wire concession: the bitsets ride as
+/// `Option(String)` here rather than `Option(BitArray)`. The server
+/// emits base64 on the wire (so JSON consumers stay transport-safe) and
+/// the client decodes them lazily — the `Set(Int)` projection lives in
+/// the reducer rather than the decoder so the wire shape stays close
+/// to the JSON literally received.
+///
+/// `mode` is a closed vocabulary on the server side (`"manual"` /
+/// `"ghost"`); the decoder accepts any string and the reducer maps it
+/// to the typed `Mode` variant so an unknown value can fall back to a
+/// safe default rather than failing the decode.
+///
+/// `updated_at` is `Option` because a `GET` for a book that has never
+/// been written to surfaces an empty default — the wire shape emits
+/// `null` rather than a 1970 sentinel.
+pub type ReadingState {
+  ReadingState(
+    book_id: String,
+    mode: String,
+    sentence_bitset: Option(String),
+    word_bitset: Option(String),
+    current_page: Int,
+    updated_at: Option(String),
+  )
+}
+
+/// Decoder for `GET /api/books/:id/state`. Pairs field-for-field with
+/// `server/types.gleam:reading_state_to_json`; a drift in either
+/// direction surfaces as a decode failure in tests rather than as a
+/// silent shape mismatch at runtime.
+pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
+  use book_id <- decode.field("book_id", decode.string)
+  use mode <- decode.field("mode", decode.string)
+  use sentence_bitset <- decode.field(
+    "sentence_bitset",
+    decode.optional(decode.string),
+  )
+  use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
+  use current_page <- decode.field("current_page", decode.int)
+  use updated_at <- decode.field("updated_at", decode.optional(decode.string))
+  decode.success(ReadingState(
+    book_id: book_id,
+    mode: mode,
+    sentence_bitset: sentence_bitset,
+    word_bitset: word_bitset,
+    current_page: current_page,
+    updated_at: updated_at,
+  ))
+}

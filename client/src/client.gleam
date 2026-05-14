@@ -61,8 +61,8 @@ import client/gestures
 import client/navigation
 import client/pagination.{type Page, type PageParagraph}
 import client/types.{
-  type BookMeta, type BookSettings, type UserSettings, BookSettings,
-  UserSettings,
+  type BookMeta, type BookSettings, type ReadingState, type UserSettings,
+  BookSettings, UserSettings,
 }
 import shared/segmenter.{
   type Paragraph, type SegmentedText, type Sentence, type Word,
@@ -903,6 +903,23 @@ pub type Msg {
   /// stamp A's overrides onto B's session.
   BookSettingsLoaded(book_id: String, result: Result(String, ffi.FetchError))
 
+  /// `GET /api/books/:id/state` resolved. The success arm decodes the
+  /// body as a `ReadingState`, unpacks the base64 bitsets back into
+  /// `Set(Int)` projections, maps `mode` onto the typed `Mode` variant,
+  /// and stamps `current_page`, `erased`, `erased_words`, and `mode`
+  /// onto the model. The error arm logs and continues with the empty
+  /// defaults `apply_text_load` already installed — a stuck request
+  /// leaves the reader on page 0 with no erasures, the same state a
+  /// fresh book would carry.
+  ///
+  /// The `book_id` round-trips the originating request id so the
+  /// reducer can drop responses whose id no longer matches
+  /// `model.active_book_id` (or whose view has flipped back to
+  /// `Library`). Same race-guard shape as `BookSettingsLoaded` —
+  /// "open A → back → open B → A's GET lands" cannot stamp A's
+  /// progress onto B's session.
+  ReadingStateLoaded(book_id: String, result: Result(String, ffi.FetchError))
+
   /// Reader pressed "Reset to default" in the per-book section of
   /// the settings panel. Clears every per-book override (writes
   /// `BookSettings(None, None, None, None)` to the server and the
@@ -1184,21 +1201,31 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         // and the 250ms `top` CSS transition glides the band into
         // place once `LinesMeasured` lands. The cleared state mirrors
         // the engine's own cross-page tick in `advance_to_next_page_loop`.
-        False -> #(
-          Model(..updated, line_boxes: [], active_line: None),
-          measure_lines_after_paint(),
-        )
+        False -> {
+          let with_cleared_overlay =
+            Model(..updated, line_boxes: [], active_line: None)
+          #(
+            with_cleared_overlay,
+            effect.batch([
+              measure_lines_after_paint(),
+              save_reading_state(with_cleared_overlay),
+            ]),
+          )
+        }
       }
     }
 
     ViewportResized -> #(model, measure_after_paint())
 
-    EraseSentence(global_index) -> #(
-      apply_erase(model, global_index),
-      effect.none(),
-    )
+    EraseSentence(global_index) -> {
+      let new_model = apply_erase(model, global_index)
+      #(new_model, save_reading_state(new_model))
+    }
 
-    Undo -> #(apply_undo(model), effect.none())
+    Undo -> {
+      let new_model = apply_undo(model)
+      #(new_model, save_reading_state(new_model))
+    }
 
     FocusPrevious -> #(
       focus_sentence_step(model, navigation.Backward),
@@ -1220,7 +1247,10 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
 
-    EraseFocused -> #(apply_erase_focused(model), effect.none())
+    EraseFocused -> {
+      let new_model = apply_erase_focused(model)
+      #(new_model, save_reading_state(new_model))
+    }
 
     TouchStart(x, y) -> #(
       Model(..model, touch_start: Some(#(x, y))),
@@ -1387,6 +1417,22 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(model, effect.none())
     }
 
+    ReadingStateLoaded(book_id, Ok(body)) ->
+      case json.parse(body, types.reading_state_decoder()) {
+        Ok(state) -> apply_reading_state_loaded(model, book_id, state)
+        Error(_) -> {
+          io.println("Failed to decode /api/books/:id/state response")
+          #(model, effect.none())
+        }
+      }
+
+    ReadingStateLoaded(_book_id, Error(error)) -> {
+      io.println(
+        "Failed to load reading state: " <> describe_fetch_error(error),
+      )
+      #(model, effect.none())
+    }
+
     ResetBookSettings -> apply_reset_book_settings(model)
   }
 }
@@ -1505,6 +1551,15 @@ fn apply_book_loaded(
         )
       }),
       fetch_book_settings(meta.id),
+      // Kick the reading-state fetch alongside the settings fetch.
+      // `apply_text_load` reset `erased` / `erased_words` /
+      // `current_page` / `mode` to empty defaults; the in-flight GET
+      // may arrive before or after `ParagraphsMeasured`. The
+      // staleness guard inside `apply_reading_state_loaded` mirrors
+      // the one on `apply_book_settings_loaded` (book_id round-trip
+      // + view check) so a late response from a previous book never
+      // stamps the wrong progress.
+      fetch_reading_state(meta.id),
     ]),
   )
 }
@@ -1549,6 +1604,12 @@ fn apply_text_load(model: Model, text: SegmentedText) -> Model {
 /// per-book setting; `books` / `books_loading` are untouched so
 /// the library renders immediately on the swap.
 fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
+  // Capture the save effect BEFORE clearing `active_book_id` — the
+  // save guard short-circuits on `None`, so building the effect after
+  // the clear would silently drop the final reading-state PUT. This is
+  // the final save for the session; subsequent state mutations happen
+  // in the library and have no `book_id` to attach to.
+  let save_effect = save_reading_state(model)
   let defaults = model.global_defaults
   let cleared =
     Model(
@@ -1585,6 +1646,7 @@ fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
   #(
     cleared,
     effect.batch([
+      save_effect,
       effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
       // Push the restored `ghost_opacity` into the CSS cascade so the
       // settings panel slider and any visible ghosted prose pick up
@@ -1724,6 +1786,161 @@ fn save_global_settings(settings: UserSettings) -> Effect(Msg) {
       }
     })
   })
+}
+
+/// `GET /api/books/:id/state` and dispatch `ReadingStateLoaded`. Same
+/// shape as `fetch_book_settings` — the raw body is forwarded so the
+/// reducer branches on the decode result inline, and the id is closed
+/// over and re-emitted on the dispatched Msg so a stale response that
+/// lands after the reader has navigated away or opened a different
+/// book can be dropped.
+fn fetch_reading_state(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/books/" <> id <> "/state", fn(result) {
+      dispatch(ReadingStateLoaded(id, result))
+    })
+  })
+}
+
+/// Persist the current per-book reading progress via
+/// `PUT /api/books/:id/state`. Fire-and-forget — the JS callback logs
+/// failures to the console so a future operator session can
+/// investigate, but the UI does not surface a banner because the saves
+/// race with rapid erases / page turns and a queued error toast would
+/// feel noisier than the bug it indicates.
+///
+/// A no-op when `model.active_book_id` is `None` — there's no row to
+/// write to. The guard means callers can chain this effect
+/// unconditionally without first inspecting the model; library-view
+/// dispatches collapse to `effect.none()` for free.
+///
+/// ORDERING — same caveat as `save_book_settings`: rapid erases /
+/// page turns fire one PUT per dispatch with no debounce and no
+/// sequence number. The server's last-write-wins guard rejects
+/// out-of-order writes via the `updated_at` comparison, so a delayed
+/// PUT that arrives after a newer one is silently dropped on the
+/// server side rather than clobbering the latest state.
+fn save_reading_state(model: Model) -> Effect(Msg) {
+  case model.active_book_id {
+    None -> effect.none()
+    Some(id) -> {
+      let mode_value = case model.mode {
+        Manual -> "manual"
+        RealTime -> "ghost"
+      }
+      let body =
+        json.object([
+          #("book_id", json.string(id)),
+          #("mode", json.string(mode_value)),
+          #(
+            "sentence_bitset",
+            json.nullable(encode_indices_to_base64(model.erased), json.string),
+          ),
+          #(
+            "word_bitset",
+            json.nullable(
+              encode_indices_to_base64(model.erased_words),
+              json.string,
+            ),
+          ),
+          #("current_page", json.int(model.current_page)),
+          #("updated_at", json.string(ffi.now_iso8601())),
+        ])
+        |> json.to_string
+      effect.from(fn(_dispatch) {
+        ffi.fetch_json_put("/api/books/" <> id <> "/state", body, fn(result) {
+          case result {
+            Ok(_) -> Nil
+            Error(error) ->
+              io.println(
+                "Failed to save reading state: " <> describe_fetch_error(error),
+              )
+          }
+        })
+      })
+    }
+  }
+}
+
+/// Project a `Set(Int)` of indices into the wire-format optional
+/// base64 string. An empty set rides as `None` so the JSON encoder
+/// emits `null` — symmetric with the server's empty-default shape and
+/// cheaper than transmitting an empty BitArray. Non-empty sets feed
+/// through the FFI bit-packer.
+fn encode_indices_to_base64(indices: Set(Int)) -> Option(String) {
+  case set.is_empty(indices) {
+    True -> None
+    False -> Some(ffi.pack_indices_to_base64(set.to_list(indices)))
+  }
+}
+
+/// Inverse of `encode_indices_to_base64`. A `None` payload (the
+/// server's default for a book with no recorded progress) decodes to
+/// the empty set; a `Some(base64)` payload is unpacked through the
+/// FFI bit-decoder and projected back into a `Set(Int)`.
+fn decode_base64_to_indices(encoded: Option(String)) -> Set(Int) {
+  case encoded {
+    None -> set.new()
+    Some(value) ->
+      value
+      |> ffi.unpack_base64_to_indices
+      |> set.from_list
+  }
+}
+
+/// Apply a freshly-loaded `ReadingState` to the running model.
+/// Guarded against stale responses the same way
+/// `apply_book_settings_loaded` is: the originating `book_id` must
+/// match `model.active_book_id` and the view must still be `Reader`,
+/// otherwise the response is dropped.
+///
+/// Decoded fields are applied as follows:
+///   * `sentence_bitset` / `word_bitset` — base64 → `Set(Int)`, stamped
+///     onto `model.erased` / `model.erased_words` directly.
+///   * `current_page` — written raw. The clamp against `total_pages`
+///     happens inside `ParagraphsMeasured`; if that has already run
+///     for this book, we clamp here too so a saved value past the
+///     current page count doesn't park the reader off-screen.
+///   * `mode` — the closed vocabulary on the wire is `"manual"` /
+///     `"ghost"`. Unknown values fall back to `Manual` so a future
+///     server vocabulary expansion can't strand the client on an
+///     undecodable mode.
+///
+/// The fade engine is kept at rest (`Stopped`, `next_word_index: None`)
+/// regardless of the loaded mode — the reader has to press
+/// Space/tap to start the engine, matching the
+/// `apply_book_loaded`-initial state. Restoring the engine to
+/// `Running` on load would surprise a reader who tabbed away from a
+/// running engine.
+fn apply_reading_state_loaded(
+  model: Model,
+  book_id: String,
+  state: ReadingState,
+) -> #(Model, Effect(Msg)) {
+  case model.view, model.active_book_id {
+    Reader, Some(active_id) if active_id == book_id -> {
+      let mode = case state.mode {
+        "ghost" -> RealTime
+        _ -> Manual
+      }
+      let target_page = case model.total_pages > 0 {
+        True ->
+          pagination.clamp_page_index(state.current_page, model.total_pages)
+        False -> state.current_page
+      }
+      #(
+        Model(
+          ..model,
+          mode: mode,
+          erased: decode_base64_to_indices(state.sentence_bitset),
+          erased_words: decode_base64_to_indices(state.word_bitset),
+          current_page: target_page,
+        ),
+        effect.none(),
+      )
+    }
+    _, _ -> #(model, effect.none())
+  }
 }
 
 /// Persist the current per-book overrides via
@@ -2367,15 +2584,27 @@ fn apply_set_mode(model: Model, mode: Mode) -> #(Model, Effect(Msg)) {
           next_word_index: None,
           active_line: None,
         )
-      #(cleared, effect.from(fn(_dispatch) { ffi.clear_word_timer() }))
+      #(
+        cleared,
+        effect.batch([
+          effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+          save_reading_state(cleared),
+        ]),
+      )
     }
-    RealTime -> #(Model(..model, mode: RealTime), effect.none())
+    RealTime -> {
+      let switched = Model(..model, mode: RealTime)
+      #(switched, save_reading_state(switched))
+    }
   }
 }
 
 fn apply_space_pressed(model: Model) -> #(Model, Effect(Msg)) {
   case model.mode {
-    Manual -> #(apply_erase_focused(model), effect.none())
+    Manual -> {
+      let new_model = apply_erase_focused(model)
+      #(new_model, save_reading_state(new_model))
+    }
     RealTime ->
       case model.engine_state {
         Running -> apply_pause_fade(model)
@@ -2409,10 +2638,21 @@ fn apply_start_fade(model: Model) -> #(Model, Effect(Msg)) {
 
 fn apply_pause_fade(model: Model) -> #(Model, Effect(Msg)) {
   case model.engine_state {
-    Running -> #(
-      Model(..model, engine_state: Paused),
-      effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
-    )
+    Running -> {
+      let paused = Model(..model, engine_state: Paused)
+      #(
+        paused,
+        effect.batch([
+          effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+          // Pause is a natural save point — the engine has burned
+          // through a stretch of words since the last save, and the
+          // reader is about to look away. Re-running the save here
+          // catches the word-bitset progress that `AdvanceWord`
+          // deliberately skips on every tick.
+          save_reading_state(paused),
+        ]),
+      )
+    }
     _ -> #(model, effect.none())
   }
 }
@@ -2428,7 +2668,7 @@ fn apply_resume_fade(model: Model) -> #(Model, Effect(Msg)) {
 }
 
 fn apply_stop_fade(model: Model) -> #(Model, Effect(Msg)) {
-  #(
+  let stopped =
     // `active_line: None` so the overlay disappears when the engine
     // halts — there's no active word for it to track. Keeping the
     // last position visible across a Stop would mislead the reader
@@ -2438,8 +2678,18 @@ fn apply_stop_fade(model: Model) -> #(Model, Effect(Msg)) {
       engine_state: Stopped,
       next_word_index: None,
       active_line: None,
-    ),
-    effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+    )
+  #(
+    stopped,
+    effect.batch([
+      effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
+      // End-of-book save: the engine has consumed every remaining
+      // word and is shutting down. Flush the final `erased_words`
+      // state so a page reload after engine exhaustion lands the
+      // reader on the same last page rather than rewinding to the
+      // last cross-page save.
+      save_reading_state(stopped),
+    ]),
   )
 }
 
@@ -2540,6 +2790,14 @@ fn advance_to_next_page_loop(
             effect.batch([
               schedule_advance_word(on_page.page_delay_ms),
               measure_lines_after_paint(),
+              // The engine just consumed a full page of words and is
+              // crossing into a new one. This is the debounce point
+              // for real-time fade saves: the per-tick `AdvanceWord`
+              // path deliberately skips persistence, so the
+              // page-boundary tick is what flushes the accumulated
+              // `erased_words` progress to the server alongside the
+              // updated `current_page`.
+              save_reading_state(scheduled),
             ]),
           )
         }
@@ -2758,11 +3016,21 @@ fn apply_touch_end(model: Model, x: Float, y: Float) -> #(Model, Effect(Msg)) {
             Manual -> #(cleared, effect.none())
             RealTime -> apply_space_pressed(cleared)
           }
-        gestures.SwipeLeft -> #(
-          go_to_page(cleared, cleared.current_page + 1),
-          effect.none(),
-        )
-        gestures.SwipeRight -> #(apply_undo(cleared), effect.none())
+        gestures.SwipeLeft -> {
+          let advanced = go_to_page(cleared, cleared.current_page + 1)
+          let save_effect = case advanced.current_page == cleared.current_page {
+            // Clamped to the last page — no real navigation, so no
+            // state change to persist. Matches the `NextPage` arm's
+            // own "no-op when already on the last page" branch.
+            True -> effect.none()
+            False -> save_reading_state(advanced)
+          }
+          #(advanced, save_effect)
+        }
+        gestures.SwipeRight -> {
+          let undone = apply_undo(cleared)
+          #(undone, save_reading_state(undone))
+        }
       }
   }
 }
