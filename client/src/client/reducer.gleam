@@ -49,14 +49,14 @@ import client/msg.{
   BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
   EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp,
-  OpenBook, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
-  ResetBookSettings, ResumeFade, SetFontSize, SetGhostOpacity, SetJumpPageInput,
-  SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay, SetPasteText,
-  SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
+  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
+  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SetFontSize, SetGhostOpacity, SetJumpPageInput, SetLineSpacing,
+  SetMode, SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitJumpPage, SubmitPaste,
+  TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
+  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized,
 }
 import client/navigation
 import client/pagination

@@ -55,11 +55,7 @@ import client/state/helpers.{
 /// chrome after the menu closes.
 pub fn apply_toggle_jump_menu(model: Model) -> #(Model, Effect(Msg)) {
   #(
-    Model(
-      ..model,
-      jump_menu_open: !model.jump_menu_open,
-      jump_page_input: "",
-    ),
+    Model(..model, jump_menu_open: !model.jump_menu_open, jump_page_input: ""),
     effect.none(),
   )
 }

@@ -6903,11 +6903,7 @@ pub fn should_save_reading_state_allows_committed_active_book_test() {
   // Positive-space pin: when the book is active AND no preview is in
   // flight, the gate is open and the save effect actually fires.
   let active =
-    Model(
-      ..jump_model(),
-      active_book_id: Some("the-iliad"),
-      jump_preview: None,
-    )
+    Model(..jump_model(), active_book_id: Some("the-iliad"), jump_preview: None)
 
   assert effects.should_save_reading_state(active) == True
 }
@@ -6932,8 +6928,7 @@ pub fn update_submit_jump_page_dispatches_jump_test() {
   // SubmitJumpPage reads `jump_page_input`, parses as 1-based, and
   // routes through `apply_jump_to_page`. The fixture has 3 pages —
   // submitting "3" jumps from page 0 to page 2.
-  let prior =
-    Model(..jump_model(), jump_menu_open: True, jump_page_input: "3")
+  let prior = Model(..jump_model(), jump_menu_open: True, jump_page_input: "3")
 
   let #(updated, _effect) = reducer.update(prior, SubmitJumpPage)
 
