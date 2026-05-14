@@ -1391,63 +1391,10 @@ pub fn get_library_book_stats_returns_per_book_entries_test() {
   assert sorted == expected
 }
 
-pub fn compute_current_streak_days_counts_consecutive_back_from_today_test() {
-  let is_next_day = fn(a: String, b: String) -> Bool {
-    case a, b {
-      "2026-05-10", "2026-05-11" -> True
-      "2026-05-11", "2026-05-12" -> True
-      "2026-05-12", "2026-05-13" -> True
-      _, _ -> False
-    }
-  }
-  let days = ["2026-05-13", "2026-05-12", "2026-05-11", "2026-05-10"]
-  assert stats.compute_current_streak_days(
-      session_days: days,
-      today: "2026-05-13",
-      is_next_day: is_next_day,
-    )
-    == 4
-}
-
-pub fn compute_current_streak_days_handles_yesterday_today_gap_test() {
-  let is_next_day = fn(a: String, b: String) -> Bool {
-    case a, b {
-      "2026-05-12", "2026-05-13" -> True
-      _, _ -> False
-    }
-  }
-  // No session today, but yesterday counts — the streak survives
-  // until the reader actually misses a day.
-  let days = ["2026-05-12"]
-  assert stats.compute_current_streak_days(
-      session_days: days,
-      today: "2026-05-13",
-      is_next_day: is_next_day,
-    )
-    == 1
-}
-
-pub fn compute_current_streak_days_breaks_on_gap_test() {
-  let is_next_day = fn(_a: String, _b: String) -> Bool { False }
-  // Most recent session is from "long ago"; the streak is zero.
-  let days = ["2026-05-01"]
-  assert stats.compute_current_streak_days(
-      session_days: days,
-      today: "2026-05-13",
-      is_next_day: is_next_day,
-    )
-    == 0
-}
-
-pub fn compute_current_streak_days_empty_list_is_zero_test() {
-  let is_next_day = fn(_a: String, _b: String) -> Bool { False }
-  assert stats.compute_current_streak_days(
-      session_days: [],
-      today: "2026-05-13",
-      is_next_day: is_next_day,
-    )
-    == 0
-}
+// The four `compute_current_streak_days_*` tests live in
+// `shared/test/stats_test.gleam` — the function under test is pure
+// shared logic and its tests now live next to the function rather
+// than across the shared / server package boundary.
 
 // ---------------------------------------------------------------------------
 // Helpers
