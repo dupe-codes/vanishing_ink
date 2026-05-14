@@ -40,24 +40,32 @@ import shared/segmenter.{
   SegmentedText, Sentence, Word,
 }
 
-import client.{
-  type LineBox, type Model, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused,
-  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
-  FocusPrevious, GoToLibrary, LineBox, LinesMeasured, Manual, Model, NextPage,
-  OpenBook, ParagraphsMeasured, PauseFade, Paused, ReadingStateLoaded, RealTime,
-  ResumeFade, Running,
-  SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
-  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
-  SpacePressed, StartFade, Stopped, SubmitPaste, TextLoaded, ToggleAddBook,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
-}
+import client/effects
 import client/ffi
 import client/gestures
+import client/msg.{
+  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
+  BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused, EraseSentence,
+  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
+  GoToLibrary, LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
+  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  ViewportResized,
+}
 import client/pagination.{type Page, Page}
+import client/reducer
 import client/sample
+import client/state.{
+  type LineBox, type Model, Library, LineBox, Manual, Model, Paused, Reader,
+  RealTime, Running, Stopped,
+}
+import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
+import client/view
+import client/view/reader as view_reader
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -101,20 +109,20 @@ fn empty_model() -> Model {
     touch_start: None,
     focused_sentence: None,
     dark_mode: True,
-    font_size: client.default_font_size,
-    line_spacing: client.default_line_spacing,
+    font_size: state.default_font_size,
+    line_spacing: state.default_line_spacing,
     ghost_mode: False,
-    ghost_opacity: client.default_ghost_opacity,
+    ghost_opacity: state.default_ghost_opacity,
     dyslexia_font: False,
     reduced_motion: False,
     settings_open: False,
-    mode: client.Manual,
-    wpm: client.default_wpm,
-    engine_state: client.Stopped,
+    mode: Manual,
+    wpm: state.default_wpm,
+    engine_state: Stopped,
     next_word_index: None,
     erased_words: set.new(),
-    paragraph_delay_ms: client.default_paragraph_delay_ms,
-    page_delay_ms: client.default_page_delay_ms,
+    paragraph_delay_ms: state.default_paragraph_delay_ms,
+    page_delay_ms: state.default_page_delay_ms,
     line_boxes: [],
     active_line: None,
     total_sentence_count: 0,
@@ -124,9 +132,9 @@ fn empty_model() -> Model {
     // Default the fixture to the `Reader` view so the long-standing
     // reader-tree tests (which built models off this helper before
     // the library view existed) continue to render the reader.
-    // Library-specific tests opt in by passing `view: client.Library`
+    // Library-specific tests opt in by passing `view: Library`
     // explicitly through `Model(..empty_model(), ...)`.
-    view: client.Reader,
+    view: Reader,
     books: [],
     books_loading: False,
     library_error: None,
@@ -138,14 +146,14 @@ fn empty_model() -> Model {
     add_book_open: False,
     created_book_segments: None,
     global_defaults: types.UserSettings(
-      font_size: client.default_font_size,
-      line_spacing: client.default_line_spacing,
+      font_size: state.default_font_size,
+      line_spacing: state.default_line_spacing,
       dark_mode: True,
       ghost_mode: False,
-      ghost_opacity: client.default_ghost_opacity,
-      default_wpm: client.default_wpm,
-      default_paragraph_delay_ms: client.default_paragraph_delay_ms,
-      default_page_delay_ms: client.default_page_delay_ms,
+      ghost_opacity: state.default_ghost_opacity,
+      default_wpm: state.default_wpm,
+      default_paragraph_delay_ms: state.default_paragraph_delay_ms,
+      default_page_delay_ms: state.default_page_delay_ms,
     ),
     book_settings: None,
     confirm_delete_id: None,
@@ -232,7 +240,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       ]),
     ])
 
-  let #(updated, _effect) = client.update(empty_model(), TextLoaded(payload))
+  let #(updated, _effect) = reducer.update(empty_model(), TextLoaded(payload))
 
   // The payload carries one chapter → one paragraph → one sentence
   // → one word, so the cached `total_sentence_count` /
@@ -273,7 +281,7 @@ pub fn update_text_loaded_overwrites_existing_text_and_resets_pagination_test() 
       total_pages: 1,
     )
 
-  let #(updated, _effect) = client.update(prior, TextLoaded(second))
+  let #(updated, _effect) = reducer.update(prior, TextLoaded(second))
 
   assert updated
     == Model(
@@ -304,7 +312,7 @@ pub fn update_paragraphs_measured_calculates_pages_from_text_test() {
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 250.0),
     )
@@ -331,7 +339,7 @@ pub fn update_paragraphs_measured_clamps_current_page_into_new_total_test() {
   // 25px budget forces one paragraph per page → 3 pages total.
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 25.0),
     )
@@ -346,7 +354,7 @@ pub fn update_paragraphs_measured_with_no_text_produces_no_pages_test() {
   // panic; the reducer just leaves pages empty so the view stays
   // on the loading placeholder.
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       empty_model(),
       ParagraphsMeasured(heights: [], available_height: 380.0),
     )
@@ -388,14 +396,14 @@ pub fn update_paragraphs_measured_reanchors_focused_sentence_when_repagination_m
       flat_paragraphs: pagination.flatten(text),
     )
   let #(measured, _) =
-    client.update(
+    reducer.update(
       initial,
       ParagraphsMeasured(heights: heights_narrow, available_height: 200.0),
     )
   let prior = Model(..measured, current_page: 1, focused_sentence: Some(2))
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights_narrow, available_height: 400.0),
     )
@@ -429,7 +437,7 @@ pub fn update_paragraphs_measured_preserves_focused_sentence_when_it_stays_on_cu
       flat_paragraphs: pagination.flatten(text),
     )
   let #(measured, _) =
-    client.update(
+    reducer.update(
       initial,
       ParagraphsMeasured(heights: heights, available_height: 200.0),
     )
@@ -437,7 +445,7 @@ pub fn update_paragraphs_measured_preserves_focused_sentence_when_it_stays_on_cu
 
   // Re-measure with the same heights and budget.
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 200.0),
     )
@@ -481,7 +489,7 @@ pub fn update_paragraphs_measured_clears_line_boxes_and_active_line_test() {
     )
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 400.0),
     )
@@ -516,7 +524,7 @@ pub fn update_paragraphs_measured_with_no_focused_sentence_keeps_focus_none_test
     )
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 400.0),
     )
@@ -538,7 +546,7 @@ pub fn update_paragraphs_measured_caches_total_pages_test() {
   let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
 
   let #(updated, _) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 250.0),
     )
@@ -562,7 +570,7 @@ pub fn update_paragraphs_measured_updates_total_pages_on_repagination_test() {
 
   // 25px budget forces one paragraph per page → 3 pages.
   let #(updated, _) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: heights, available_height: 25.0),
     )
@@ -577,7 +585,7 @@ pub fn update_paragraphs_measured_sets_total_pages_zero_when_no_text_test() {
   let prior = Model(..empty_model(), total_pages: 5)
 
   let #(updated, _) =
-    client.update(
+    reducer.update(
       prior,
       ParagraphsMeasured(heights: [], available_height: 380.0),
     )
@@ -602,7 +610,7 @@ pub fn update_next_page_advances_one_when_not_on_last_page_test() {
       total_pages: 3,
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 1
 }
@@ -620,7 +628,7 @@ pub fn update_next_page_holds_on_last_page_test() {
       total_pages: 2,
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 1
 }
@@ -631,7 +639,7 @@ pub fn update_next_page_holds_when_no_pages_yet_test() {
   // `total <= 0` to short-circuit and avoids producing -1.
   let prior = Model(..empty_model(), pages: [], current_page: 0)
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 0
 }
@@ -662,7 +670,7 @@ pub fn update_next_page_clears_line_boxes_and_active_line_on_real_turn_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 1
   assert updated.line_boxes == []
@@ -688,7 +696,7 @@ pub fn update_next_page_preserves_line_boxes_on_no_op_turn_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 1
   assert updated.line_boxes == fade_line_boxes()
@@ -716,7 +724,7 @@ pub fn update_viewport_resized_leaves_model_unchanged_test() {
       total_pages: 1,
     )
 
-  let #(updated, _effect) = client.update(prior, ViewportResized)
+  let #(updated, _effect) = reducer.update(prior, ViewportResized)
 
   assert updated == prior
 }
@@ -732,7 +740,7 @@ pub fn view_renders_loading_placeholder_when_text_is_none_test() {
   // not strand the reader — verified via `lustre_query.has` instead
   // of an HTML substring so a Lustre upgrade that reorders attributes
   // doesn't break the test.
-  let rendered = client.view(empty_model())
+  let rendered = view.view(empty_model())
 
   assert lustre_query.has(
     in: rendered,
@@ -760,8 +768,8 @@ pub fn view_placeholder_back_button_dispatches_go_to_library_test() {
   let app =
     simulate.application(
       init: fn(_) { #(empty_model(), effect.none()) },
-      update: client.update,
-      view: client.view,
+      update: reducer.update,
+      view: view.view,
     )
 
   let back_button =
@@ -772,7 +780,7 @@ pub fn view_placeholder_back_button_dispatches_go_to_library_test() {
     |> simulate.click(on: back_button)
     |> simulate.model
 
-  assert updated.view == client.Library
+  assert updated.view == Library
 }
 
 // ---------------------------------------------------------------------------
@@ -805,7 +813,7 @@ pub fn view_renders_measurement_container_and_preparing_when_pages_empty_test() 
       flat_paragraphs: pagination.flatten(text),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "<div class=\"reader-preparing\">")
   assert string.contains(rendered, "Preparing pages...")
@@ -847,7 +855,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
       total_pages: list.length(pages),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // Header chrome — back button + chapter title slot + settings
   // gear all appear in the top row. The back button's aria-label
@@ -904,7 +912,7 @@ pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
       current_page: 2,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "<h2 class=\"chapter-title\">Two</h2>")
   assert string.contains(rendered, "data-chapter-index=\"1\"")
@@ -944,7 +952,7 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
       pages: pages,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // The single paragraph appears twice in the rendered string —
   // once on the visible page and once in the measurement
@@ -969,7 +977,7 @@ pub fn update_erase_sentence_marks_sentence_and_pushes_undo_test() {
   // also fails here.
   let prior = empty_model()
 
-  let #(updated, _effect) = client.update(prior, EraseSentence(7))
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(7))
 
   assert updated == Model(..prior, erased: set.from_list([7]), undo_stack: [7])
 }
@@ -982,7 +990,7 @@ pub fn update_erase_sentence_is_idempotent_on_already_erased_test() {
   let prior =
     Model(..empty_model(), erased: set.from_list([3]), undo_stack: [3])
 
-  let #(updated, _effect) = client.update(prior, EraseSentence(3))
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(3))
 
   assert updated == prior
 }
@@ -999,11 +1007,11 @@ pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
   // other field is touched by EraseSentence.
   let after_5 =
     list.fold([0, 1, 2, 3, 4], empty_model(), fn(model, index) {
-      let #(updated, _) = client.update(model, EraseSentence(index))
+      let #(updated, _) = reducer.update(model, EraseSentence(index))
       updated
     })
 
-  let #(after_6, _) = client.update(after_5, EraseSentence(5))
+  let #(after_6, _) = reducer.update(after_5, EraseSentence(5))
 
   assert after_6
     == Model(
@@ -1027,7 +1035,7 @@ pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
   let prior =
     Model(..empty_model(), erased: set.from_list([2, 7]), undo_stack: [7, 2])
 
-  let #(updated, _effect) = client.update(prior, Undo)
+  let #(updated, _effect) = reducer.update(prior, Undo)
 
   assert updated == Model(..prior, erased: set.from_list([2]), undo_stack: [2])
 }
@@ -1039,7 +1047,7 @@ pub fn update_undo_is_noop_when_stack_empty_test() {
   // `erased` or accidentally introduce a phantom undo entry.
   let prior = empty_model()
 
-  let #(updated, _effect) = client.update(prior, Undo)
+  let #(updated, _effect) = reducer.update(prior, Undo)
 
   assert updated == prior
 }
@@ -1065,7 +1073,7 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
       undo_stack: [1, 0],
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated == Model(..prior, current_page: 1, undo_stack: [])
 }
@@ -1086,7 +1094,7 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
       undo_stack: [8],
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated == prior
 }
@@ -1107,7 +1115,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
     )
 
   // -150px horizontal, +5px vertical → SwipeLeft → NextPage path.
-  let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(150.0, 205.0))
 
   assert updated == Model(..prior, touch_start: None)
 }
@@ -1119,7 +1127,7 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
 pub fn update_touch_start_records_start_coordinates_test() {
   let prior = empty_model()
 
-  let #(updated, _effect) = client.update(prior, TouchStart(120.0, 240.0))
+  let #(updated, _effect) = reducer.update(prior, TouchStart(120.0, 240.0))
 
   assert updated == Model(..prior, touch_start: Some(#(120.0, 240.0)))
 }
@@ -1138,7 +1146,7 @@ pub fn update_touch_end_below_threshold_does_nothing_test() {
       touch_start: Some(#(100.0, 200.0)),
     )
 
-  let #(updated, _effect) = client.update(prior, TouchEnd(102.0, 199.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(102.0, 199.0))
 
   assert updated == Model(..prior, touch_start: None)
 }
@@ -1154,7 +1162,7 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
     )
 
   // -150px horizontal, +5px vertical → SwipeLeft → NextPage.
-  let #(updated, _effect) = client.update(prior, TouchEnd(150.0, 205.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(150.0, 205.0))
 
   assert updated == Model(..prior, current_page: 1, touch_start: None)
 }
@@ -1176,7 +1184,7 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
     )
 
   // +200px horizontal → SwipeRight.
-  let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(300.0, 198.0))
 
   assert updated
     == Model(..prior, erased: set.new(), undo_stack: [], touch_start: None)
@@ -1194,7 +1202,7 @@ pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
       touch_start: Some(#(100.0, 200.0)),
     )
 
-  let #(updated, _effect) = client.update(prior, TouchEnd(300.0, 198.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(300.0, 198.0))
 
   assert updated == Model(..prior, touch_start: None)
 }
@@ -1218,7 +1226,7 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
       touch_start: Some(#(100.0, 200.0)),
     )
 
-  let #(updated, _effect) = client.update(prior, TouchCancel)
+  let #(updated, _effect) = reducer.update(prior, TouchCancel)
 
   assert updated == Model(..prior, touch_start: None)
 }
@@ -1233,9 +1241,9 @@ pub fn update_touch_end_after_cancel_is_safe_test() {
   // `touch_start`; end-after-cancel keeps everything else inert).
   let prior = Model(..empty_model(), touch_start: Some(#(100.0, 200.0)))
 
-  let #(after_cancel, _effect) = client.update(prior, TouchCancel)
+  let #(after_cancel, _effect) = reducer.update(prior, TouchCancel)
   let #(after_end, _effect) =
-    client.update(after_cancel, TouchEnd(500.0, 200.0))
+    reducer.update(after_cancel, TouchEnd(500.0, 200.0))
 
   assert after_end == Model(..prior, touch_start: None)
 }
@@ -1247,7 +1255,7 @@ pub fn update_touch_end_without_matching_start_is_safe_test() {
   // gesture classifier would still fire with bogus coordinates.
   let prior = empty_model()
 
-  let #(updated, _effect) = client.update(prior, TouchEnd(500.0, 100.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(500.0, 100.0))
 
   assert updated == prior
 }
@@ -1308,7 +1316,7 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       undo_stack: [1],
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   let opacity_chunks = rendered |> string.split("opacity:0;") |> list.length
   assert opacity_chunks == 2
@@ -1331,7 +1339,7 @@ pub fn view_sentence_attaches_click_handler_when_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(
+    view_reader.view_sentence(
       sentence,
       set.new(),
       None,
@@ -1357,7 +1365,7 @@ pub fn view_sentence_omits_click_handler_when_not_interactive_test() {
     ])
 
   let click_events =
-    client.view_sentence(
+    view_reader.view_sentence(
       sentence,
       set.new(),
       None,
@@ -1414,7 +1422,7 @@ pub fn view_paginated_attaches_touch_handlers_to_reading_area_test() {
     )
 
   let assert Ok(reading_area) =
-    client.view(model) |> find_element_by_id("vi-reading-area")
+    view.view(model) |> find_element_by_id("vi-reading-area")
   // Lustre's `attribute.prepare` sorts attributes by name on insert,
   // so the rendered tree carries the three Event attributes in
   // alphabetical order. Asserting the whole sorted list catches both
@@ -1495,7 +1503,7 @@ pub fn view_omits_opacity_when_no_sentences_erased_test() {
       total_pages: list.length(pages),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert !string.contains(rendered, "opacity")
 }
@@ -1628,7 +1636,7 @@ pub fn update_focus_next_initialises_cursor_when_dormant_test() {
   // exactly where it would expect.
   let prior = vim_model_on_page(0)
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == Model(..prior, focused_sentence: Some(0))
 }
@@ -1641,7 +1649,7 @@ pub fn update_focus_previous_initialises_cursor_when_dormant_test() {
   // would skip past the visible current page entirely.
   let prior = vim_model_on_page(1)
 
-  let #(updated, _) = client.update(prior, FocusPrevious)
+  let #(updated, _) = reducer.update(prior, FocusPrevious)
 
   assert updated == Model(..prior, focused_sentence: Some(3))
 }
@@ -1653,7 +1661,7 @@ pub fn update_focus_next_initialises_skipping_erased_test() {
   let prior =
     Model(..vim_model_on_page(0), erased: set.from_list([0]), undo_stack: [0])
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == Model(..prior, focused_sentence: Some(1))
 }
@@ -1665,7 +1673,7 @@ pub fn update_focus_next_initialises_skipping_erased_test() {
 pub fn update_focus_next_advances_one_sentence_test() {
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == Model(..prior, focused_sentence: Some(1))
 }
@@ -1682,7 +1690,7 @@ pub fn update_focus_next_skips_erased_sentence_test() {
       focused_sentence: Some(0),
     )
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == Model(..prior, focused_sentence: Some(2))
 }
@@ -1692,7 +1700,7 @@ pub fn update_focus_next_at_end_holds_test() {
   // cursor stays put rather than wrapping around to the start.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(5))
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == prior
 }
@@ -1700,7 +1708,7 @@ pub fn update_focus_next_at_end_holds_test() {
 pub fn update_focus_previous_steps_back_one_sentence_test() {
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
 
-  let #(updated, _) = client.update(prior, FocusPrevious)
+  let #(updated, _) = reducer.update(prior, FocusPrevious)
 
   assert updated == Model(..prior, focused_sentence: Some(1))
 }
@@ -1708,7 +1716,7 @@ pub fn update_focus_previous_steps_back_one_sentence_test() {
 pub fn update_focus_previous_at_start_holds_test() {
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, FocusPrevious)
+  let #(updated, _) = reducer.update(prior, FocusPrevious)
 
   assert updated == prior
 }
@@ -1726,7 +1734,7 @@ pub fn update_focus_next_crosses_page_forward_test() {
   // ArrowRight press.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
@@ -1737,7 +1745,7 @@ pub fn update_focus_previous_at_page_start_stops_test() {
   // so FocusPrevious is a no-op rather than crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
-  let #(updated, _) = client.update(prior, FocusPrevious)
+  let #(updated, _) = reducer.update(prior, FocusPrevious)
 
   assert updated == prior
 }
@@ -1756,7 +1764,7 @@ pub fn update_focus_next_crossing_page_clears_undo_stack_test() {
       focused_sentence: Some(2),
     )
 
-  let #(updated, _) = client.update(prior, FocusNext)
+  let #(updated, _) = reducer.update(prior, FocusNext)
 
   assert updated
     == Model(
@@ -1777,7 +1785,7 @@ pub fn update_focus_paragraph_down_jumps_to_next_paragraph_test() {
   // the current paragraph (sentence 1).
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, FocusParagraphDown)
+  let #(updated, _) = reducer.update(prior, FocusParagraphDown)
 
   assert updated == Model(..prior, focused_sentence: Some(2))
 }
@@ -1788,7 +1796,7 @@ pub fn update_focus_paragraph_down_crosses_page_test() {
   // paragraph 2.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
 
-  let #(updated, _) = client.update(prior, FocusParagraphDown)
+  let #(updated, _) = reducer.update(prior, FocusParagraphDown)
 
   assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
@@ -1799,7 +1807,7 @@ pub fn update_focus_paragraph_up_lands_on_first_of_previous_test() {
   // closest sentence in the previous paragraph going backward.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(2))
 
-  let #(updated, _) = client.update(prior, FocusParagraphUp)
+  let #(updated, _) = reducer.update(prior, FocusParagraphUp)
 
   assert updated == Model(..prior, focused_sentence: Some(0))
 }
@@ -1811,7 +1819,7 @@ pub fn update_focus_paragraph_up_at_page_start_stops_test() {
   // crossing to page 0.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(3))
 
-  let #(updated, _) = client.update(prior, FocusParagraphUp)
+  let #(updated, _) = reducer.update(prior, FocusParagraphUp)
 
   assert updated == prior
 }
@@ -1831,7 +1839,7 @@ pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
       focused_sentence: Some(0),
     )
 
-  let #(updated, _) = client.update(prior, FocusParagraphDown)
+  let #(updated, _) = reducer.update(prior, FocusParagraphDown)
 
   assert updated
     == Model(
@@ -1855,7 +1863,7 @@ pub fn update_erase_focused_erases_and_advances_test() {
   // three would break the keyboard-erase flow.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, EraseFocused)
+  let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated
     == Model(
@@ -1885,7 +1893,7 @@ pub fn update_erase_focused_advances_page_when_last_visible_test() {
       focused_sentence: Some(2),
     )
 
-  let #(updated, _) = client.update(prior, EraseFocused)
+  let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated
     == Model(
@@ -1903,7 +1911,7 @@ pub fn update_erase_focused_with_no_focus_is_noop_test() {
   // rather than initialising the cursor first.
   let prior = vim_model_on_page(0)
 
-  let #(updated, _) = client.update(prior, EraseFocused)
+  let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated == prior
 }
@@ -1914,7 +1922,7 @@ pub fn update_erase_focused_at_end_of_document_clears_cursor_test() {
   // the next vim key from the reader re-initialises.
   let prior = Model(..vim_model_on_page(1), focused_sentence: Some(5))
 
-  let #(updated, _) = client.update(prior, EraseFocused)
+  let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated
     == Model(
@@ -1937,7 +1945,7 @@ pub fn update_erase_sentence_does_not_move_focused_cursor_test() {
   // position every time they clicked.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, EraseSentence(1))
+  let #(updated, _) = reducer.update(prior, EraseSentence(1))
 
   assert updated
     == Model(
@@ -1960,7 +1968,7 @@ pub fn update_next_page_resets_cursor_when_vim_mode_active_test() {
   // without an obvious recovery.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
-  let #(updated, _) = client.update(prior, NextPage)
+  let #(updated, _) = reducer.update(prior, NextPage)
 
   assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
@@ -1972,7 +1980,7 @@ pub fn update_next_page_keeps_dormant_cursor_dormant_test() {
   // because the page turned.
   let prior = vim_model_on_page(0)
 
-  let #(updated, _) = client.update(prior, NextPage)
+  let #(updated, _) = reducer.update(prior, NextPage)
 
   assert updated == Model(..prior, current_page: 1)
 }
@@ -1990,7 +1998,7 @@ pub fn view_renders_sentence_focused_class_for_cursor_test() {
   // matches `focused_sentence`.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(1))
 
-  let rendered = client.view(prior) |> element.to_string
+  let rendered = view.view(prior) |> element.to_string
 
   let focused_chunks =
     rendered |> string.split("sentence sentence-focused") |> list.length
@@ -2008,7 +2016,7 @@ pub fn view_omits_focused_class_when_cursor_dormant_test() {
   // always emitted (e.g. defaulting to sentence 0).
   let prior = vim_model_on_page(0)
 
-  let rendered = client.view(prior) |> element.to_string
+  let rendered = view.view(prior) |> element.to_string
 
   assert !string.contains(rendered, "sentence-focused")
 }
@@ -2025,10 +2033,10 @@ pub fn update_toggle_settings_opens_then_closes_panel_test() {
   // refactor cannot accidentally reset font size on every gear tap.
   let initial = empty_model()
 
-  let #(opened, _e1) = client.update(initial, ToggleSettings)
+  let #(opened, _e1) = reducer.update(initial, ToggleSettings)
   assert opened == Model(..initial, settings_open: True)
 
-  let #(closed, _e2) = client.update(opened, ToggleSettings)
+  let #(closed, _e2) = reducer.update(opened, ToggleSettings)
   assert closed == initial
 }
 
@@ -2044,7 +2052,7 @@ pub fn update_toggle_dark_mode_flips_dark_field_test() {
   // — which is what we pin.
   let initial = empty_model()
 
-  let #(light, _) = client.update(initial, ToggleDarkMode)
+  let #(light, _) = reducer.update(initial, ToggleDarkMode)
   assert light
     == Model(
       ..initial,
@@ -2055,7 +2063,7 @@ pub fn update_toggle_dark_mode_flips_dark_field_test() {
       ),
     )
 
-  let #(dark_again, _) = client.update(light, ToggleDarkMode)
+  let #(dark_again, _) = reducer.update(light, ToggleDarkMode)
   assert dark_again == initial
 }
 
@@ -2068,20 +2076,20 @@ pub fn update_set_font_size_clamps_below_min_test() {
   // call (or a malformed event) bypassing the `min=14` HTML attribute
   // must not poison the model. Clamps at the lo rail and stamps the
   // global defaults so the next round-trip persists the clamped value.
-  let #(updated, _) = client.update(empty_model(), SetFontSize(8))
-  assert updated == with_global_font_size(empty_model(), client.min_font_size)
+  let #(updated, _) = reducer.update(empty_model(), SetFontSize(8))
+  assert updated == with_global_font_size(empty_model(), state.min_font_size)
 }
 
 pub fn update_set_font_size_clamps_above_max_test() {
   // Same clamp invariant at the hi rail.
-  let #(updated, _) = client.update(empty_model(), SetFontSize(48))
-  assert updated == with_global_font_size(empty_model(), client.max_font_size)
+  let #(updated, _) = reducer.update(empty_model(), SetFontSize(48))
+  assert updated == with_global_font_size(empty_model(), state.max_font_size)
 }
 
 pub fn update_set_font_size_stores_in_range_value_test() {
   // A mid-range value is written verbatim — the clamp is a guard,
   // not a quantiser.
-  let #(updated, _) = client.update(empty_model(), SetFontSize(22))
+  let #(updated, _) = reducer.update(empty_model(), SetFontSize(22))
   assert updated == with_global_font_size(empty_model(), 22)
 }
 
@@ -2101,19 +2109,19 @@ fn with_global_font_size(model: Model, size: Int) -> Model {
 // ---------------------------------------------------------------------------
 
 pub fn update_set_line_spacing_clamps_below_min_test() {
-  let #(updated, _) = client.update(empty_model(), SetLineSpacing(0.5))
+  let #(updated, _) = reducer.update(empty_model(), SetLineSpacing(0.5))
   assert updated
-    == with_global_line_spacing(empty_model(), client.min_line_spacing)
+    == with_global_line_spacing(empty_model(), state.min_line_spacing)
 }
 
 pub fn update_set_line_spacing_clamps_above_max_test() {
-  let #(updated, _) = client.update(empty_model(), SetLineSpacing(3.5))
+  let #(updated, _) = reducer.update(empty_model(), SetLineSpacing(3.5))
   assert updated
-    == with_global_line_spacing(empty_model(), client.max_line_spacing)
+    == with_global_line_spacing(empty_model(), state.max_line_spacing)
 }
 
 pub fn update_set_line_spacing_stores_in_range_value_test() {
-  let #(updated, _) = client.update(empty_model(), SetLineSpacing(1.8))
+  let #(updated, _) = reducer.update(empty_model(), SetLineSpacing(1.8))
   assert updated == with_global_line_spacing(empty_model(), 1.8)
 }
 
@@ -2135,7 +2143,7 @@ fn with_global_line_spacing(model: Model, value: Float) -> Model {
 pub fn update_toggle_ghost_mode_flips_field_test() {
   let initial = empty_model()
 
-  let #(on, _) = client.update(initial, ToggleGhostMode)
+  let #(on, _) = reducer.update(initial, ToggleGhostMode)
   assert on
     == Model(
       ..initial,
@@ -2146,7 +2154,7 @@ pub fn update_toggle_ghost_mode_flips_field_test() {
       ),
     )
 
-  let #(off, _) = client.update(on, ToggleGhostMode)
+  let #(off, _) = reducer.update(on, ToggleGhostMode)
   assert off == initial
 }
 
@@ -2155,19 +2163,19 @@ pub fn update_set_ghost_opacity_clamps_below_min_test() {
   // clamped — the lo-rail guard is the same shape as the int case.
   // The fixture has no active book, so the change persists to the
   // global defaults rather than landing as a per-book override.
-  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(-0.1))
+  let #(updated, _) = reducer.update(empty_model(), SetGhostOpacity(-0.1))
   assert updated
-    == with_global_ghost_opacity(empty_model(), client.min_ghost_opacity)
+    == with_global_ghost_opacity(empty_model(), state.min_ghost_opacity)
 }
 
 pub fn update_set_ghost_opacity_clamps_above_max_test() {
-  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.9))
+  let #(updated, _) = reducer.update(empty_model(), SetGhostOpacity(0.9))
   assert updated
-    == with_global_ghost_opacity(empty_model(), client.max_ghost_opacity)
+    == with_global_ghost_opacity(empty_model(), state.max_ghost_opacity)
 }
 
 pub fn update_set_ghost_opacity_stores_in_range_value_test() {
-  let #(updated, _) = client.update(empty_model(), SetGhostOpacity(0.12))
+  let #(updated, _) = reducer.update(empty_model(), SetGhostOpacity(0.12))
   assert updated == with_global_ghost_opacity(empty_model(), 0.12)
 }
 
@@ -2189,10 +2197,10 @@ fn with_global_ghost_opacity(model: Model, value: Float) -> Model {
 pub fn update_toggle_dyslexia_font_flips_field_test() {
   let initial = empty_model()
 
-  let #(on, _) = client.update(initial, ToggleDyslexiaFont)
+  let #(on, _) = reducer.update(initial, ToggleDyslexiaFont)
   assert on == Model(..initial, dyslexia_font: True)
 
-  let #(off, _) = client.update(on, ToggleDyslexiaFont)
+  let #(off, _) = reducer.update(on, ToggleDyslexiaFont)
   assert off == initial
 }
 
@@ -2208,46 +2216,46 @@ pub fn update_toggle_dyslexia_font_flips_field_test() {
 // rails.
 
 pub fn clamp_int_below_lo_returns_lo_test() {
-  assert client.clamp_int(-5, 0, 10) == 0
+  assert state_helpers.clamp_int(-5, 0, 10) == 0
 }
 
 pub fn clamp_int_above_hi_returns_hi_test() {
-  assert client.clamp_int(99, 0, 10) == 10
+  assert state_helpers.clamp_int(99, 0, 10) == 10
 }
 
 pub fn clamp_int_in_range_returns_value_test() {
-  assert client.clamp_int(7, 0, 10) == 7
+  assert state_helpers.clamp_int(7, 0, 10) == 7
 }
 
 pub fn clamp_int_at_lo_returns_lo_test() {
   // Boundary inclusivity: `value < lo` not `value <= lo`, so the lo
   // rail itself is "in range" and passes through.
-  assert client.clamp_int(0, 0, 10) == 0
+  assert state_helpers.clamp_int(0, 0, 10) == 0
 }
 
 pub fn clamp_int_at_hi_returns_hi_test() {
   // Mirror inclusivity check at the hi rail.
-  assert client.clamp_int(10, 0, 10) == 10
+  assert state_helpers.clamp_int(10, 0, 10) == 10
 }
 
 pub fn clamp_float_below_lo_returns_lo_test() {
-  assert client.clamp_float(-1.5, 0.0, 1.0) == 0.0
+  assert state_helpers.clamp_float(-1.5, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_above_hi_returns_hi_test() {
-  assert client.clamp_float(2.5, 0.0, 1.0) == 1.0
+  assert state_helpers.clamp_float(2.5, 0.0, 1.0) == 1.0
 }
 
 pub fn clamp_float_in_range_returns_value_test() {
-  assert client.clamp_float(0.42, 0.0, 1.0) == 0.42
+  assert state_helpers.clamp_float(0.42, 0.0, 1.0) == 0.42
 }
 
 pub fn clamp_float_at_lo_returns_lo_test() {
-  assert client.clamp_float(0.0, 0.0, 1.0) == 0.0
+  assert state_helpers.clamp_float(0.0, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_at_hi_returns_hi_test() {
-  assert client.clamp_float(1.0, 0.0, 1.0) == 1.0
+  assert state_helpers.clamp_float(1.0, 0.0, 1.0) == 1.0
 }
 
 // ---------------------------------------------------------------------------
@@ -2259,7 +2267,7 @@ pub fn erased_opacity_value_false_branch_returns_zero_test() {
   // this branch via `style="opacity:0"` substrings, but having a
   // direct assertion here makes the contract explicit.
   let model = Model(..empty_model(), ghost_mode: False, ghost_opacity: 0.25)
-  assert client.erased_opacity_value(model) == "0"
+  assert state_helpers.erased_opacity_value(model) == "0"
 }
 
 pub fn erased_opacity_value_true_branch_returns_ghost_opacity_test() {
@@ -2269,7 +2277,7 @@ pub fn erased_opacity_value_true_branch_returns_ghost_opacity_test() {
   // replaced `float.to_string(model.ghost_opacity)` with the literal
   // `"0"` would have passed CI; this assertion catches that.
   let model = Model(..empty_model(), ghost_mode: True, ghost_opacity: 0.18)
-  assert client.erased_opacity_value(model) == "0.18"
+  assert state_helpers.erased_opacity_value(model) == "0.18"
 }
 
 pub fn erased_opacity_value_true_branch_at_default_test() {
@@ -2277,7 +2285,7 @@ pub fn erased_opacity_value_true_branch_at_default_test() {
   // — pin the exact string form so a future locale change in the
   // stdlib (e.g. comma decimal separator) is caught.
   let model = Model(..empty_model(), ghost_mode: True)
-  assert client.erased_opacity_value(model) == "0.06"
+  assert state_helpers.erased_opacity_value(model) == "0.06"
 }
 
 // ---------------------------------------------------------------------------
@@ -2293,7 +2301,7 @@ pub fn erased_opacity_value_true_branch_at_default_test() {
 // accessibility or detune a slider's range.
 
 pub fn view_omits_settings_panel_when_closed_test() {
-  let rendered = client.view(empty_model()) |> element.to_string
+  let rendered = view.view(empty_model()) |> element.to_string
   assert !string.contains(rendered, "settings-overlay")
   assert !string.contains(rendered, "settings-panel")
 }
@@ -2305,7 +2313,7 @@ pub fn view_renders_settings_overlay_when_open_test() {
   // refactor might make without realising.
   let model = Model(..empty_model(), settings_open: True)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Reader settings\"")
   assert string.contains(rendered, "aria-modal=\"true\"")
@@ -2322,7 +2330,7 @@ pub fn view_settings_close_button_has_accessible_label_test() {
   // L10n quest that eventually replaces it has one place to update.
   let model = Model(..empty_model(), settings_open: True)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Close settings\"")
 }
@@ -2335,18 +2343,18 @@ pub fn view_settings_font_size_slider_carries_bounds_from_constants_test() {
   // single source of truth.
   let model = Model(..empty_model(), settings_open: True, font_size: 22)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // The aria-label uniquely identifies this slider; from there we
   // can pin every attribute on the same element.
   assert string.contains(rendered, "aria-label=\"Font size in pixels\"")
   assert string.contains(
     rendered,
-    "max=\"" <> int.to_string(client.max_font_size) <> "\"",
+    "max=\"" <> int.to_string(state.max_font_size) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> int.to_string(client.min_font_size) <> "\"",
+    "min=\"" <> int.to_string(state.min_font_size) <> "\"",
   )
   assert string.contains(rendered, "step=\"1\"")
   assert string.contains(rendered, "value=\"22\"")
@@ -2358,16 +2366,16 @@ pub fn view_settings_font_size_slider_carries_bounds_from_constants_test() {
 pub fn view_settings_line_spacing_slider_carries_bounds_test() {
   let model = Model(..empty_model(), settings_open: True, line_spacing: 1.8)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Line spacing multiplier\"")
   assert string.contains(
     rendered,
-    "max=\"" <> float.to_string(client.max_line_spacing) <> "\"",
+    "max=\"" <> float.to_string(state.max_line_spacing) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> float.to_string(client.min_line_spacing) <> "\"",
+    "min=\"" <> float.to_string(state.min_line_spacing) <> "\"",
   )
   assert string.contains(rendered, "step=\"0.1\"")
   assert string.contains(rendered, "value=\"1.8\"")
@@ -2376,16 +2384,16 @@ pub fn view_settings_line_spacing_slider_carries_bounds_test() {
 pub fn view_settings_ghost_opacity_slider_carries_bounds_test() {
   let model = Model(..empty_model(), settings_open: True, ghost_opacity: 0.12)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Ghost mode opacity\"")
   assert string.contains(
     rendered,
-    "max=\"" <> float.to_string(client.max_ghost_opacity) <> "\"",
+    "max=\"" <> float.to_string(state.max_ghost_opacity) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> float.to_string(client.min_ghost_opacity) <> "\"",
+    "min=\"" <> float.to_string(state.min_ghost_opacity) <> "\"",
   )
   assert string.contains(rendered, "step=\"0.01\"")
   assert string.contains(rendered, "value=\"0.12\"")
@@ -2407,7 +2415,7 @@ pub fn view_settings_toggles_reflect_model_state_test() {
       dyslexia_font: True,
     )
 
-  let rendered = client.view(all_on) |> element.to_string
+  let rendered = view.view(all_on) |> element.to_string
 
   // All three toggle labels are present, in any order.
   assert string.contains(rendered, "Dark mode")
@@ -2426,7 +2434,7 @@ pub fn view_settings_dyslexia_toggle_unchecked_when_field_false_test() {
   // checkboxes default to checked regardless of model state.
   let model = Model(..empty_model(), settings_open: True)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   let checked_chunks = rendered |> string.split(" checked") |> list.length
   assert checked_chunks == 2
@@ -2518,7 +2526,7 @@ pub fn update_set_mode_realtime_flips_mode_only_test() {
   // refactor that decides to start the engine on the mode change.
   let prior = empty_model()
 
-  let #(updated, _effect) = client.update(prior, SetMode(RealTime))
+  let #(updated, _effect) = reducer.update(prior, SetMode(RealTime))
 
   assert updated == Model(..prior, mode: RealTime)
 }
@@ -2538,7 +2546,7 @@ pub fn update_set_mode_manual_stops_running_engine_test() {
       erased_words: set.from_list([0, 1]),
     )
 
-  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+  let #(updated, _effect) = reducer.update(prior, SetMode(Manual))
 
   assert updated.mode == Manual
   assert updated.engine_state == Stopped
@@ -2559,7 +2567,7 @@ pub fn update_start_fade_initialises_to_first_eligible_word_test() {
   // first fade target.
   let prior = fade_model()
 
-  let #(updated, _effect) = client.update(prior, StartFade)
+  let #(updated, _effect) = reducer.update(prior, StartFade)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(0)
@@ -2574,7 +2582,7 @@ pub fn update_start_fade_skips_already_faded_individual_words_test() {
   // document order.
   let prior = Model(..fade_model(), erased_words: set.from_list([0]))
 
-  let #(updated, _effect) = client.update(prior, StartFade)
+  let #(updated, _effect) = reducer.update(prior, StartFade)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(1)
@@ -2589,7 +2597,7 @@ pub fn update_start_fade_is_noop_when_no_eligible_word_on_page_test() {
   // first AdvanceWord would no-op forever.
   let prior = Model(..fade_model(), erased_words: set.from_list([0, 1]))
 
-  let #(updated, _effect) = client.update(prior, StartFade)
+  let #(updated, _effect) = reducer.update(prior, StartFade)
 
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
@@ -2605,7 +2613,7 @@ pub fn update_pause_fade_transitions_running_to_paused_test() {
   let prior =
     Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
 
-  let #(updated, _effect) = client.update(prior, PauseFade)
+  let #(updated, _effect) = reducer.update(prior, PauseFade)
 
   assert updated.engine_state == Paused
   assert updated.next_word_index == Some(2)
@@ -2619,8 +2627,8 @@ pub fn update_pause_fade_is_noop_when_not_running_test() {
   let prior_paused = Model(..fade_model(), engine_state: Paused)
   let prior_stopped = Model(..fade_model(), engine_state: Stopped)
 
-  let #(after_pause_on_paused, _) = client.update(prior_paused, PauseFade)
-  let #(after_pause_on_stopped, _) = client.update(prior_stopped, PauseFade)
+  let #(after_pause_on_paused, _) = reducer.update(prior_paused, PauseFade)
+  let #(after_pause_on_stopped, _) = reducer.update(prior_stopped, PauseFade)
 
   assert after_pause_on_paused == prior_paused
   assert after_pause_on_stopped == prior_stopped
@@ -2630,7 +2638,7 @@ pub fn update_resume_fade_transitions_paused_to_running_test() {
   let prior =
     Model(..fade_model(), engine_state: Paused, next_word_index: Some(1))
 
-  let #(updated, _effect) = client.update(prior, ResumeFade)
+  let #(updated, _effect) = reducer.update(prior, ResumeFade)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(1)
@@ -2642,8 +2650,8 @@ pub fn update_resume_fade_is_noop_when_not_paused_test() {
   let prior_running = Model(..fade_model(), engine_state: Running)
   let prior_stopped = Model(..fade_model(), engine_state: Stopped)
 
-  let #(after_resume_on_running, _) = client.update(prior_running, ResumeFade)
-  let #(after_resume_on_stopped, _) = client.update(prior_stopped, ResumeFade)
+  let #(after_resume_on_running, _) = reducer.update(prior_running, ResumeFade)
+  let #(after_resume_on_stopped, _) = reducer.update(prior_stopped, ResumeFade)
 
   assert after_resume_on_running == prior_running
   assert after_resume_on_stopped == prior_stopped
@@ -2662,7 +2670,7 @@ pub fn update_advance_word_fades_current_and_picks_next_on_page_test() {
   let prior =
     Model(..fade_model(), engine_state: Running, next_word_index: Some(0))
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(1)
@@ -2679,7 +2687,7 @@ pub fn update_advance_word_is_noop_when_engine_stopped_test() {
   let prior =
     Model(..fade_model(), engine_state: Stopped, next_word_index: None)
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated == prior
 }
@@ -2691,7 +2699,7 @@ pub fn update_advance_word_is_noop_when_engine_paused_test() {
   let prior =
     Model(..fade_model(), engine_state: Paused, next_word_index: Some(1))
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated == prior
 }
@@ -2711,7 +2719,7 @@ pub fn update_advance_word_advances_to_next_page_when_current_page_exhausted_tes
       erased_words: set.from_list([0]),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.engine_state == Running
   assert updated.current_page == 1
@@ -2748,7 +2756,7 @@ pub fn update_advance_word_crosses_paragraph_boundary_within_same_page_test() {
       erased_words: set.from_list([0]),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.engine_state == Running
   assert updated.current_page == 0
@@ -2773,7 +2781,7 @@ pub fn update_advance_word_skips_words_in_manually_erased_sentences_test() {
       erased_words: set.from_list([0]),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
@@ -2795,7 +2803,7 @@ pub fn update_advance_word_stops_engine_at_end_of_document_test() {
       erased_words: set.from_list([0, 1, 2]),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
@@ -2809,7 +2817,7 @@ pub fn update_advance_word_stops_engine_at_end_of_document_test() {
 pub fn update_space_pressed_in_realtime_starts_engine_when_stopped_test() {
   let prior = fade_model()
 
-  let #(updated, _effect) = client.update(prior, SpacePressed)
+  let #(updated, _effect) = reducer.update(prior, SpacePressed)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(0)
@@ -2819,7 +2827,7 @@ pub fn update_space_pressed_in_realtime_pauses_running_engine_test() {
   let prior =
     Model(..fade_model(), engine_state: Running, next_word_index: Some(1))
 
-  let #(updated, _effect) = client.update(prior, SpacePressed)
+  let #(updated, _effect) = reducer.update(prior, SpacePressed)
 
   assert updated.engine_state == Paused
   assert updated.next_word_index == Some(1)
@@ -2829,7 +2837,7 @@ pub fn update_space_pressed_in_realtime_resumes_paused_engine_test() {
   let prior =
     Model(..fade_model(), engine_state: Paused, next_word_index: Some(2))
 
-  let #(updated, _effect) = client.update(prior, SpacePressed)
+  let #(updated, _effect) = reducer.update(prior, SpacePressed)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(2)
@@ -2844,7 +2852,7 @@ pub fn update_space_pressed_in_manual_mode_invokes_erase_focused_test() {
   // `Stopped`, so the fade machinery is fully bypassed.
   let prior = Model(..fade_model(), mode: Manual, focused_sentence: Some(0))
 
-  let #(updated, _effect) = client.update(prior, SpacePressed)
+  let #(updated, _effect) = reducer.update(prior, SpacePressed)
 
   assert updated.mode == Manual
   assert updated.engine_state == Stopped
@@ -2858,34 +2866,34 @@ pub fn update_space_pressed_in_manual_mode_invokes_erase_focused_test() {
 
 pub fn update_set_wpm_clamps_into_range_test() {
   let prior = empty_model()
-  let #(low, _) = client.update(prior, SetWpm(0))
-  let #(high, _) = client.update(prior, SetWpm(10_000))
-  let #(mid, _) = client.update(prior, SetWpm(220))
+  let #(low, _) = reducer.update(prior, SetWpm(0))
+  let #(high, _) = reducer.update(prior, SetWpm(10_000))
+  let #(mid, _) = reducer.update(prior, SetWpm(220))
 
-  assert low.wpm == client.min_wpm
-  assert high.wpm == client.max_wpm
+  assert low.wpm == state.min_wpm
+  assert high.wpm == state.max_wpm
   assert mid.wpm == 220
 }
 
 pub fn update_set_paragraph_delay_clamps_into_range_test() {
   let prior = empty_model()
-  let #(low, _) = client.update(prior, SetParagraphDelay(-500))
-  let #(high, _) = client.update(prior, SetParagraphDelay(99_999))
-  let #(mid, _) = client.update(prior, SetParagraphDelay(1500))
+  let #(low, _) = reducer.update(prior, SetParagraphDelay(-500))
+  let #(high, _) = reducer.update(prior, SetParagraphDelay(99_999))
+  let #(mid, _) = reducer.update(prior, SetParagraphDelay(1500))
 
-  assert low.paragraph_delay_ms == client.min_paragraph_delay_ms
-  assert high.paragraph_delay_ms == client.max_paragraph_delay_ms
+  assert low.paragraph_delay_ms == state.min_paragraph_delay_ms
+  assert high.paragraph_delay_ms == state.max_paragraph_delay_ms
   assert mid.paragraph_delay_ms == 1500
 }
 
 pub fn update_set_page_delay_clamps_into_range_test() {
   let prior = empty_model()
-  let #(low, _) = client.update(prior, SetPageDelay(-100))
-  let #(high, _) = client.update(prior, SetPageDelay(99_999))
-  let #(mid, _) = client.update(prior, SetPageDelay(2500))
+  let #(low, _) = reducer.update(prior, SetPageDelay(-100))
+  let #(high, _) = reducer.update(prior, SetPageDelay(99_999))
+  let #(mid, _) = reducer.update(prior, SetPageDelay(2500))
 
-  assert low.page_delay_ms == client.min_page_delay_ms
-  assert high.page_delay_ms == client.max_page_delay_ms
+  assert low.page_delay_ms == state.min_page_delay_ms
+  assert high.page_delay_ms == state.max_page_delay_ms
   assert mid.page_delay_ms == 2500
 }
 
@@ -2911,7 +2919,7 @@ pub fn update_set_wpm_with_active_book_sets_per_book_override_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       book_settings: Some(types.BookSettings(
         wpm: None,
@@ -2921,7 +2929,7 @@ pub fn update_set_wpm_with_active_book_sets_per_book_override_test() {
       )),
     )
 
-  let #(updated, _) = client.update(prior, SetWpm(275))
+  let #(updated, _) = reducer.update(prior, SetWpm(275))
 
   assert updated
     == Model(
@@ -2939,9 +2947,9 @@ pub fn update_set_wpm_with_active_book_sets_per_book_override_test() {
 pub fn update_set_wpm_in_library_view_updates_global_defaults_test() {
   // No active book → SetWpm updates the global defaults instead of
   // creating a stray per-book override against a stale id.
-  let prior = Model(..empty_model(), view: client.Library)
+  let prior = Model(..empty_model(), view: Library)
 
-  let #(updated, _) = client.update(prior, SetWpm(180))
+  let #(updated, _) = reducer.update(prior, SetWpm(180))
 
   assert updated.wpm == 180
   assert updated.global_defaults.default_wpm == 180
@@ -2967,7 +2975,7 @@ pub fn update_reset_book_settings_restores_globals_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       global_defaults: defaults,
       book_settings: Some(types.BookSettings(
@@ -2982,7 +2990,7 @@ pub fn update_reset_book_settings_restores_globals_test() {
       ghost_opacity: 0.25,
     )
 
-  let #(updated, _) = client.update(prior, client.ResetBookSettings)
+  let #(updated, _) = reducer.update(prior, ResetBookSettings)
 
   assert updated
     == Model(
@@ -3016,7 +3024,7 @@ pub fn update_go_to_library_restores_global_pacing_fields_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       global_defaults: defaults,
       book_settings: Some(types.BookSettings(
@@ -3031,9 +3039,9 @@ pub fn update_go_to_library_restores_global_pacing_fields_test() {
       ghost_opacity: 0.25,
     )
 
-  let #(updated, _) = client.update(prior, GoToLibrary)
+  let #(updated, _) = reducer.update(prior, GoToLibrary)
 
-  assert updated.view == client.Library
+  assert updated.view == Library
   assert updated.wpm == 175
   assert updated.paragraph_delay_ms == 600
   assert updated.page_delay_ms == 1200
@@ -3090,7 +3098,7 @@ pub fn update_book_settings_loaded_merges_some_overrides_over_globals_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       global_defaults: defaults,
       book_settings: None,
@@ -3104,7 +3112,7 @@ pub fn update_book_settings_loaded_merges_some_overrides_over_globals_test() {
     <> "\"ghost_opacity\":0.25}"
 
   let #(updated, _effect) =
-    client.update(prior, BookSettingsLoaded("book-1", Ok(body)))
+    reducer.update(prior, BookSettingsLoaded("book-1", Ok(body)))
 
   assert updated
     == Model(
@@ -3143,7 +3151,7 @@ pub fn update_book_settings_loaded_with_all_null_falls_back_to_globals_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       global_defaults: defaults,
       wpm: 999,
@@ -3157,7 +3165,7 @@ pub fn update_book_settings_loaded_with_all_null_falls_back_to_globals_test() {
     <> "\"ghost_opacity\":null}"
 
   let #(updated, _effect) =
-    client.update(prior, BookSettingsLoaded("book-1", Ok(body)))
+    reducer.update(prior, BookSettingsLoaded("book-1", Ok(body)))
 
   assert updated
     == Model(
@@ -3205,7 +3213,7 @@ pub fn update_settings_loaded_remerges_against_existing_book_overrides_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       // Stale defaults — the load is about to replace these.
       global_defaults: stale_defaults,
@@ -3234,7 +3242,7 @@ pub fn update_settings_loaded_remerges_against_existing_book_overrides_test() {
     <> "\"ghost_mode\":true,\"ghost_opacity\":0.08,\"default_wpm\":250,"
     <> "\"default_paragraph_delay_ms\":900,\"default_page_delay_ms\":1800}"
 
-  let #(updated, _effect) = client.update(prior, SettingsLoaded(Ok(body)))
+  let #(updated, _effect) = reducer.update(prior, SettingsLoaded(Ok(body)))
 
   // Whole-payload form. Non-overridable globals (font_size, line_spacing,
   // dark_mode, ghost_mode) take the server values; the four overridable
@@ -3271,7 +3279,7 @@ pub fn update_settings_loaded_without_overrides_takes_all_global_values_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       active_book_id: None,
       book_settings: None,
       // Pre-stamp every effective field with a value that does NOT
@@ -3291,7 +3299,7 @@ pub fn update_settings_loaded_without_overrides_takes_all_global_values_test() {
     <> "\"ghost_mode\":true,\"ghost_opacity\":0.08,\"default_wpm\":250,"
     <> "\"default_paragraph_delay_ms\":900,\"default_page_delay_ms\":1800}"
 
-  let #(updated, _effect) = client.update(prior, SettingsLoaded(Ok(body)))
+  let #(updated, _effect) = reducer.update(prior, SettingsLoaded(Ok(body)))
 
   // Whole-payload form. Every effective field takes the server value —
   // overridable and non-overridable alike, since there are no overrides
@@ -3356,7 +3364,7 @@ pub fn update_book_settings_loaded_after_go_to_library_is_dropped_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       active_book_id: None,
       global_defaults: defaults,
       book_settings: None,
@@ -3370,7 +3378,7 @@ pub fn update_book_settings_loaded_after_go_to_library_is_dropped_test() {
     <> "\"ghost_opacity\":0.25}"
 
   let #(updated, _effect) =
-    client.update(prior, BookSettingsLoaded("book-1", Ok(body)))
+    reducer.update(prior, BookSettingsLoaded("book-1", Ok(body)))
 
   // Whole-model equality: nothing about the library-view model
   // should have moved. A guard that wrote `book_settings: Some(_)`
@@ -3394,7 +3402,7 @@ pub fn update_book_settings_loaded_for_a_different_active_book_is_dropped_test()
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-B"),
       global_defaults: defaults,
       // Pre-stamp `book_settings` with B's already-merged record so
@@ -3414,7 +3422,7 @@ pub fn update_book_settings_loaded_for_a_different_active_book_is_dropped_test()
     <> "\"ghost_opacity\":0.25}"
 
   let #(updated, _effect) =
-    client.update(prior, BookSettingsLoaded("book-A", Ok(body)))
+    reducer.update(prior, BookSettingsLoaded("book-A", Ok(body)))
 
   assert updated == prior
 }
@@ -3477,11 +3485,11 @@ pub fn update_reading_state_loaded_applies_manual_progress_test() {
   // catches any silent drop of one field while exercising the
   // others.
   let prior =
-    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
   let body = reading_state_body("book-1", "manual", [0, 3, 7], [], 2)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated
     == Model(
@@ -3501,11 +3509,11 @@ pub fn update_reading_state_loaded_maps_ghost_to_realtime_test() {
   // here. The fade-engine word bitset is also exercised so the test
   // pins both bitset round-trips in one assertion.
   let prior =
-    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
   let body = reading_state_body("book-1", "ghost", [], [0, 1, 4], 0)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated.mode == RealTime
   assert updated.erased_words == set.from_list([0, 1, 4])
@@ -3522,7 +3530,7 @@ pub fn update_reading_state_loaded_with_null_bitsets_clears_progress_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       erased: set.from_list([99]),
       erased_words: set.from_list([99]),
@@ -3531,7 +3539,7 @@ pub fn update_reading_state_loaded_with_null_bitsets_clears_progress_test() {
   let body = reading_state_body("book-1", "manual", [], [], 0)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated.erased == set.new()
   assert updated.erased_words == set.new()
@@ -3548,14 +3556,14 @@ pub fn update_reading_state_loaded_clamps_current_page_to_total_pages_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       total_pages: 3,
     )
   let body = reading_state_body("book-1", "manual", [], [], 99)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated.current_page == 2
 }
@@ -3572,14 +3580,14 @@ pub fn update_reading_state_loaded_skips_clamp_when_total_pages_unknown_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-1"),
       total_pages: 0,
     )
   let body = reading_state_body("book-1", "manual", [], [], 5)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated.current_page == 5
 }
@@ -3591,11 +3599,11 @@ pub fn update_reading_state_loaded_unknown_mode_falls_back_to_manual_test() {
   // than panic; the bitsets still apply so the rest of the progress
   // round-trip survives the unknown mode.
   let prior =
-    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
   let body = reading_state_body("book-1", "review", [1], [], 0)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated.mode == Manual
   assert updated.erased == set.from_list([1])
@@ -3609,11 +3617,11 @@ pub fn update_reading_state_loaded_after_go_to_library_is_dropped_test() {
   // library-view cleared state that `apply_go_to_library` installed.
   // Without this guard, a late response would silently re-populate
   // reader state behind the library view.
-  let prior = Model(..empty_model(), view: client.Library, active_book_id: None)
+  let prior = Model(..empty_model(), view: Library, active_book_id: None)
   let body = reading_state_body("book-1", "manual", [0, 1], [], 2)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
 
   assert updated == prior
 }
@@ -3628,7 +3636,7 @@ pub fn update_reading_state_loaded_for_a_different_active_book_is_dropped_test()
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("book-B"),
       erased: set.from_list([42]),
       current_page: 7,
@@ -3636,7 +3644,7 @@ pub fn update_reading_state_loaded_for_a_different_active_book_is_dropped_test()
   let body = reading_state_body("book-A", "manual", [0, 1], [], 2)
 
   let #(updated, _effect) =
-    client.update(prior, ReadingStateLoaded("book-A", Ok(body)))
+    reducer.update(prior, ReadingStateLoaded("book-A", Ok(body)))
 
   assert updated == prior
 }
@@ -3648,10 +3656,10 @@ pub fn update_reading_state_loaded_decode_failure_leaves_model_unchanged_test() 
   // server bug that returned an unexpected shape would degrade the
   // session to "no saved progress" instead of crashing the SPA.
   let prior =
-    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ReadingStateLoaded("book-1", Ok("{not valid json here}")),
     )
@@ -3667,10 +3675,10 @@ pub fn update_reading_state_loaded_fetch_error_leaves_model_unchanged_test() {
   // reader on page 0 with no erasures, the same state a fresh book
   // would carry.
   let prior =
-    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       ReadingStateLoaded("book-1", Error(ffi.NetworkError("offline"))),
     )
@@ -3731,7 +3739,7 @@ pub fn update_touch_end_tap_in_realtime_mode_starts_fade_engine_test() {
   let prior = Model(..fade_model(), touch_start: Some(#(100.0, 100.0)))
 
   // Coordinates close to the start coordinate → classifies as Tap.
-  let #(updated, _effect) = client.update(prior, TouchEnd(101.0, 101.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(101.0, 101.0))
 
   assert updated.touch_start == None
   assert updated.engine_state == Running
@@ -3749,7 +3757,7 @@ pub fn update_touch_end_tap_in_realtime_mode_pauses_running_engine_test() {
       touch_start: Some(#(100.0, 100.0)),
     )
 
-  let #(updated, _effect) = client.update(prior, TouchEnd(102.0, 100.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(102.0, 100.0))
 
   assert updated.engine_state == Paused
   assert updated.next_word_index == Some(1)
@@ -3763,7 +3771,7 @@ pub fn update_touch_end_swipe_left_still_advances_page_in_realtime_mode_test() {
   let prior = Model(..fade_model(), touch_start: Some(#(200.0, 100.0)))
 
   // dx = -100 → SwipeLeft (> swipe_threshold, mostly horizontal).
-  let #(updated, _effect) = client.update(prior, TouchEnd(100.0, 100.0))
+  let #(updated, _effect) = reducer.update(prior, TouchEnd(100.0, 100.0))
 
   assert updated.current_page == 1
 }
@@ -3780,7 +3788,7 @@ pub fn view_word_in_erased_words_carries_opacity_style_test() {
   // hook the rule transitions against.
   let model = Model(..fade_model(), erased_words: set.from_list([0]))
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // Inline-styled word with global_index 0, opacity 0. Pinning
   // the substring against the rendered span verifies the
@@ -3810,7 +3818,7 @@ pub fn view_word_in_realtime_mode_disables_sentence_click_handler_test() {
     ])
 
   let click_events =
-    client.view_sentence(
+    view_reader.view_sentence(
       sentence,
       set.new(),
       None,
@@ -3843,7 +3851,7 @@ pub fn view_settings_mode_toggle_renders_with_realtime_off_by_default_test() {
   // by elimination.
   let model = Model(..empty_model(), settings_open: True)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "Real-time fade mode")
   let checked_chunks = rendered |> string.split(" checked") |> list.length
@@ -3860,7 +3868,7 @@ pub fn view_settings_mode_toggle_renders_checked_when_realtime_test() {
   // `attribute.checked(False)`.
   let model = Model(..empty_model(), settings_open: True, mode: RealTime)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   let checked_chunks = rendered |> string.split(" checked") |> list.length
   assert checked_chunks == 3
@@ -3869,16 +3877,16 @@ pub fn view_settings_mode_toggle_renders_checked_when_realtime_test() {
 pub fn view_settings_wpm_slider_carries_bounds_from_constants_test() {
   let model = Model(..empty_model(), settings_open: True, wpm: 250)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Words per minute\"")
   assert string.contains(
     rendered,
-    "max=\"" <> int.to_string(client.max_wpm) <> "\"",
+    "max=\"" <> int.to_string(state.max_wpm) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> int.to_string(client.min_wpm) <> "\"",
+    "min=\"" <> int.to_string(state.min_wpm) <> "\"",
   )
   assert string.contains(rendered, "step=\"10\"")
   assert string.contains(rendered, "value=\"250\"")
@@ -3889,7 +3897,7 @@ pub fn view_settings_paragraph_delay_slider_carries_bounds_test() {
   let model =
     Model(..empty_model(), settings_open: True, paragraph_delay_ms: 1500)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(
     rendered,
@@ -3897,11 +3905,11 @@ pub fn view_settings_paragraph_delay_slider_carries_bounds_test() {
   )
   assert string.contains(
     rendered,
-    "max=\"" <> int.to_string(client.max_paragraph_delay_ms) <> "\"",
+    "max=\"" <> int.to_string(state.max_paragraph_delay_ms) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> int.to_string(client.min_paragraph_delay_ms) <> "\"",
+    "min=\"" <> int.to_string(state.min_paragraph_delay_ms) <> "\"",
   )
   assert string.contains(rendered, "value=\"1500\"")
   assert string.contains(rendered, "1500 ms")
@@ -3910,16 +3918,16 @@ pub fn view_settings_paragraph_delay_slider_carries_bounds_test() {
 pub fn view_settings_page_delay_slider_carries_bounds_test() {
   let model = Model(..empty_model(), settings_open: True, page_delay_ms: 2500)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Page pause in milliseconds\"")
   assert string.contains(
     rendered,
-    "max=\"" <> int.to_string(client.max_page_delay_ms) <> "\"",
+    "max=\"" <> int.to_string(state.max_page_delay_ms) <> "\"",
   )
   assert string.contains(
     rendered,
-    "min=\"" <> int.to_string(client.min_page_delay_ms) <> "\"",
+    "min=\"" <> int.to_string(state.min_page_delay_ms) <> "\"",
   )
   assert string.contains(rendered, "value=\"2500\"")
   assert string.contains(rendered, "2500 ms")
@@ -3957,7 +3965,7 @@ pub fn update_lines_measured_stores_boxes_on_model_test() {
   let prior = empty_model()
 
   let #(updated, _effect) =
-    client.update(prior, LinesMeasured(boxes: fade_line_boxes()))
+    reducer.update(prior, LinesMeasured(boxes: fade_line_boxes()))
 
   assert updated.line_boxes == fade_line_boxes()
   assert updated.active_line == None
@@ -3972,7 +3980,7 @@ pub fn update_lines_measured_resolves_active_line_against_next_word_test() {
     Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
 
   let #(updated, _effect) =
-    client.update(prior, LinesMeasured(boxes: fade_line_boxes()))
+    reducer.update(prior, LinesMeasured(boxes: fade_line_boxes()))
 
   assert updated.active_line == Some(1)
 }
@@ -3990,7 +3998,7 @@ pub fn update_lines_measured_clears_active_line_when_word_not_in_any_line_test()
     Model(..fade_model(), engine_state: Running, next_word_index: Some(2))
 
   let #(updated, _effect) =
-    client.update(prior, LinesMeasured(boxes: stale_boxes))
+    reducer.update(prior, LinesMeasured(boxes: stale_boxes))
 
   assert updated.line_boxes == stale_boxes
   assert updated.active_line == None
@@ -4010,7 +4018,7 @@ pub fn update_lines_measured_with_empty_boxes_clears_active_line_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, LinesMeasured(boxes: []))
+  let #(updated, _effect) = reducer.update(prior, LinesMeasured(boxes: []))
 
   assert updated.line_boxes == []
   assert updated.active_line == None
@@ -4029,7 +4037,7 @@ pub fn update_start_fade_resolves_active_line_against_measured_boxes_test() {
   // without waiting for a separate measurement tick.
   let prior = Model(..fade_model(), line_boxes: fade_line_boxes())
 
-  let #(updated, _effect) = client.update(prior, StartFade)
+  let #(updated, _effect) = reducer.update(prior, StartFade)
 
   assert updated.engine_state == Running
   assert updated.next_word_index == Some(0)
@@ -4056,7 +4064,7 @@ pub fn update_advance_word_moves_active_line_when_crossing_line_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.next_word_index == Some(2)
   assert updated.active_line == Some(1)
@@ -4078,7 +4086,7 @@ pub fn update_advance_word_clears_active_line_on_page_advance_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, AdvanceWord)
+  let #(updated, _effect) = reducer.update(prior, AdvanceWord)
 
   assert updated.current_page == 1
   assert updated.next_word_index == Some(2)
@@ -4100,7 +4108,7 @@ pub fn update_pause_fade_keeps_active_line_visible_test() {
       active_line: Some(1),
     )
 
-  let #(updated, _effect) = client.update(prior, PauseFade)
+  let #(updated, _effect) = reducer.update(prior, PauseFade)
 
   assert updated.engine_state == Paused
   assert updated.next_word_index == Some(2)
@@ -4125,7 +4133,7 @@ pub fn update_set_mode_manual_clears_active_line_test() {
       active_line: Some(0),
     )
 
-  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+  let #(updated, _effect) = reducer.update(prior, SetMode(Manual))
 
   assert updated.mode == Manual
   assert updated.engine_state == Stopped
@@ -4146,7 +4154,7 @@ pub fn update_set_mode_manual_preserves_erased_words_and_sentences_test() {
       erased: set.from_list([0]),
     )
 
-  let #(updated, _effect) = client.update(prior, SetMode(Manual))
+  let #(updated, _effect) = reducer.update(prior, SetMode(Manual))
 
   assert updated.erased_words == set.from_list([0, 1])
   assert updated.erased == set.from_list([0])
@@ -4166,7 +4174,7 @@ pub fn update_set_mode_realtime_preserves_erased_words_and_sentences_test() {
       erased_words: set.from_list([2]),
     )
 
-  let #(updated, _effect) = client.update(prior, SetMode(RealTime))
+  let #(updated, _effect) = reducer.update(prior, SetMode(RealTime))
 
   assert updated.mode == RealTime
   assert updated.engine_state == Stopped
@@ -4192,7 +4200,7 @@ pub fn view_omits_active_line_overlay_in_manual_mode_test() {
       active_line: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert !string.contains(rendered, "reader-active-line")
 }
@@ -4210,7 +4218,7 @@ pub fn view_omits_active_line_overlay_when_engine_stopped_test() {
       active_line: None,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert !string.contains(rendered, "reader-active-line")
 }
@@ -4229,7 +4237,7 @@ pub fn view_renders_active_line_overlay_when_engine_running_test() {
       active_line: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-active-line\"")
   assert string.contains(rendered, "top:0.0px")
@@ -4251,7 +4259,7 @@ pub fn view_renders_active_line_overlay_when_engine_paused_test() {
       active_line: Some(1),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-active-line\"")
   assert string.contains(rendered, "top:28.0px")
@@ -4282,7 +4290,7 @@ pub fn view_renders_active_line_overlay_with_fractional_coordinates_test() {
       active_line: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-active-line\"")
   assert string.contains(rendered, "top:42.5px")
@@ -4305,7 +4313,7 @@ pub fn view_omits_active_line_overlay_when_line_boxes_empty_test() {
       active_line: None,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert !string.contains(rendered, "reader-active-line")
 }
@@ -4339,7 +4347,7 @@ pub fn view_sentence_level_erase_subsumes_word_level_opacity_test() {
       erased_words: set.from_list([0]),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // Sentence 0 is the erased one; its span must carry the
   // `opacity:0;` inline style. The substring pins the sentence
@@ -4372,7 +4380,7 @@ pub fn default_line_spacing_matches_warm_palette_mock_test() {
   // the engine's line measurement and the visible line spacing out
   // of phase. The exact float value is pinned rather than a range
   // because the spec is the contract.
-  assert client.default_line_spacing == 1.85
+  assert state.default_line_spacing == 1.85
 }
 
 pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
@@ -4403,7 +4411,7 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
       total_pages: list.length(pages),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-header\"")
   assert string.contains(rendered, "class=\"reader-header-inner\"")
@@ -4445,7 +4453,7 @@ pub fn view_reader_header_falls_back_to_book_title_when_chapter_untitled_test() 
       books: [meta],
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(
     rendered,
@@ -4473,7 +4481,7 @@ pub fn view_reader_header_prefers_chapter_title_over_book_title_test() {
       books: [meta],
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
   assert !string.contains(rendered, "The Tell-Tale Heart")
@@ -4491,7 +4499,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
   // view reads it directly rather than walking the page chain on
   // every render. The reducer arms keep the field in sync; this
   // test seeds it directly because it constructs the model via
-  // `..empty_model()` rather than through `client.update`.
+  // `..empty_model()` rather than through `reducer.update`.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -4506,7 +4514,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
       current_chapter_title: "Two",
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
 }
@@ -4533,7 +4541,7 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
       total_sentence_count: 3,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-progress-track\"")
   // `width:0.0%;` is the float-formatted zero — `float.to_string(0.0)`
@@ -4565,7 +4573,7 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
       total_sentence_count: 3,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-progress-fill\"")
   assert string.contains(rendered, "style=\"width:33.3%;\"")
@@ -4594,7 +4602,7 @@ pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
       total_word_count: 5,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "style=\"width:40.0%;\"")
 }
@@ -4625,7 +4633,7 @@ pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
       current_chapter_title: "",
     )
 
-  let #(updated, _effect) = client.update(prior, NextPage)
+  let #(updated, _effect) = reducer.update(prior, NextPage)
 
   assert updated.current_page == 2
   assert updated.current_chapter_title == "Two"
@@ -4639,7 +4647,8 @@ pub fn text_loaded_resets_cached_chapter_title_test() {
   let prior =
     Model(..empty_model(), current_chapter_title: "Lingering Old Chapter")
 
-  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+  let #(updated, _effect) =
+    reducer.update(prior, TextLoaded(two_chapter_text()))
 
   assert updated.current_chapter_title == ""
 }
@@ -4654,7 +4663,8 @@ pub fn text_loaded_resets_cached_total_pages_test() {
   // reset is designed to prevent.
   let prior = Model(..empty_model(), total_pages: 7)
 
-  let #(updated, _effect) = client.update(prior, TextLoaded(two_chapter_text()))
+  let #(updated, _effect) =
+    reducer.update(prior, TextLoaded(two_chapter_text()))
 
   assert updated.total_pages == 0
   assert updated.total_pages == list.length(updated.pages)
@@ -4685,7 +4695,7 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
       total_sentence_count: 3,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "role=\"progressbar\"")
   assert string.contains(rendered, "aria-valuemin=\"0\"")
@@ -4711,7 +4721,7 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
       mode: Manual,
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-bottom-manual\"")
   assert string.contains(rendered, "↩ Undo")
@@ -4728,7 +4738,7 @@ pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
   // mode-conditional.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-bottom-realtime\"")
   assert string.contains(rendered, "class=\"wpm-readout\"")
@@ -4770,7 +4780,7 @@ pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
       undo_stack: [],
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // The undo button carries its aria-label so we can grep around
   // it; the same span must contain the disabled attribute.
@@ -4805,7 +4815,7 @@ pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
       undo_stack: [0],
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // Undo button is enabled: aria-label present, but no `disabled`
   // attribute on the same button. We pin the absence of
@@ -4843,7 +4853,7 @@ pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
       total_pages: list.length(pages),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "✓ Finished")
   assert !string.contains(rendered, "Turn Page →")
@@ -4862,7 +4872,7 @@ pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_stopped_
   let model =
     Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">▶</button>")
@@ -4881,7 +4891,7 @@ pub fn view_realtime_play_button_shows_play_glyph_with_ready_class_when_paused_t
       next_word_index: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"btn-play ready\"")
   assert string.contains(rendered, ">▶</button>")
@@ -4898,7 +4908,7 @@ pub fn view_realtime_play_button_shows_pause_glyph_when_running_test() {
       next_word_index: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   // The button's class is exactly `btn-play` (no `ready`
   // modifier) while running. Pinning the exact class string also
@@ -4920,7 +4930,7 @@ pub fn view_realtime_play_button_aria_label_is_start_reading_when_stopped_test()
   let model =
     Model(..fade_model_single_page(), mode: RealTime, engine_state: Stopped)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Start reading\"")
   assert !string.contains(rendered, "aria-label=\"Resume reading\"")
@@ -4943,7 +4953,7 @@ pub fn view_realtime_play_button_aria_label_is_resume_reading_when_paused_test()
       next_word_index: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Resume reading\"")
   assert !string.contains(rendered, "aria-label=\"Start reading\"")
@@ -4961,7 +4971,7 @@ pub fn view_realtime_play_button_aria_label_is_pause_reading_when_running_test()
       next_word_index: Some(0),
     )
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Pause reading\"")
   assert !string.contains(rendered, "aria-label=\"Start reading\"")
@@ -4979,7 +4989,7 @@ pub fn view_realtime_wpm_readout_has_accessible_label_test() {
   // future refactor that strips it.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 200)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(
     rendered,
@@ -4997,7 +5007,7 @@ pub fn view_settings_sheet_carries_handle_and_dividers_test() {
   //   logical groups (pacing / appearance / reading-aids).
   let model = Model(..empty_model(), settings_open: True)
 
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"settings-sheet-handle\"")
   // Two dividers — count by splitting and asserting the resulting
@@ -5012,7 +5022,7 @@ pub fn view_settings_sheet_carries_handle_and_dividers_test() {
 pub fn view_back_button_dispatches_go_to_library_when_clicked_test() {
   // Walks the rendered view tree, locates the back-glyph button by
   // its unique `aria-label`, and simulates a click on it. The
-  // simulator routes the on_click payload through `client.update`,
+  // simulator routes the on_click payload through `reducer.update`,
   // so the resulting model state reflects whatever Msg the button
   // is *actually* wired to. The post-click assertions pin the
   // `GoToLibrary` postconditions against a Running RealTime engine —
@@ -5031,8 +5041,8 @@ pub fn view_back_button_dispatches_go_to_library_when_clicked_test() {
   let app =
     simulate.application(
       init: fn(_) { #(prior, effect.none()) },
-      update: client.update,
-      view: client.view,
+      update: reducer.update,
+      view: view.view,
     )
 
   let back_button =
@@ -5043,7 +5053,7 @@ pub fn view_back_button_dispatches_go_to_library_when_clicked_test() {
     |> simulate.click(on: back_button)
     |> simulate.model
 
-  assert updated.view == client.Library
+  assert updated.view == Library
   assert updated.engine_state == Stopped
   assert updated.next_word_index == None
   assert updated.text == None
@@ -5178,15 +5188,15 @@ pub fn describe_fetch_error_renders_each_variant_as_a_sentence_test() {
   // can be dropped straight onto an error banner. Pinning these
   // strings catches a refactor that accidentally exposes
   // `string.inspect`-style structured output instead.
-  assert client.describe_fetch_error(ffi.NetworkError("offline"))
+  assert effects.describe_fetch_error(ffi.NetworkError("offline"))
     == "Could not reach the server: offline"
-  assert client.describe_fetch_error(ffi.NetworkError(""))
+  assert effects.describe_fetch_error(ffi.NetworkError(""))
     == "Could not reach the server."
-  assert client.describe_fetch_error(ffi.HttpError(404, "Not found"))
+  assert effects.describe_fetch_error(ffi.HttpError(404, "Not found"))
     == "Server returned 404: Not found"
-  assert client.describe_fetch_error(ffi.HttpError(500, ""))
+  assert effects.describe_fetch_error(ffi.HttpError(500, ""))
     == "Server returned 500."
-  assert client.describe_fetch_error(ffi.DecodeError("bad shape"))
+  assert effects.describe_fetch_error(ffi.DecodeError("bad shape"))
     == "bad shape"
 }
 
@@ -5215,7 +5225,7 @@ pub fn update_books_loaded_ok_stores_books_and_clears_loading_flag_test() {
     Model(..empty_model(), books_loading: True, library_error: Some("stale"))
   let books = [sample_book("a", "Alpha", None), sample_book("b", "Beta", None)]
 
-  let #(updated, _effect) = client.update(prior, BooksLoaded(Ok(books)))
+  let #(updated, _effect) = reducer.update(prior, BooksLoaded(Ok(books)))
 
   // Asserting the whole model pins all three reducer-driven
   // transitions in one place (books landed, `books_loading` cleared,
@@ -5229,7 +5239,7 @@ pub fn update_books_loaded_error_unsets_loading_and_surfaces_error_test() {
   let prior = Model(..empty_model(), books_loading: True)
 
   let #(updated, _effect) =
-    client.update(prior, BooksLoaded(Error(ffi.NetworkError("offline"))))
+    reducer.update(prior, BooksLoaded(Error(ffi.NetworkError("offline"))))
 
   assert updated
     == Model(
@@ -5254,14 +5264,14 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       books_loading: True,
       library_error: Some("old"),
     )
   let text = two_chapter_text()
   let meta = sample_book("book-x", "X", None)
 
-  let #(updated, _effect) = client.update(prior, BookLoaded(Ok(#(meta, text))))
+  let #(updated, _effect) = reducer.update(prior, BookLoaded(Ok(#(meta, text))))
 
   assert updated
     == Model(
@@ -5276,15 +5286,15 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
 }
 
 pub fn update_book_loaded_error_returns_to_library_with_error_message_test() {
-  let prior = Model(..empty_model(), view: client.Reader)
+  let prior = Model(..empty_model(), view: Reader)
 
   let #(updated, _effect) =
-    client.update(prior, BookLoaded(Error(ffi.HttpError(404, "missing"))))
+    reducer.update(prior, BookLoaded(Error(ffi.HttpError(404, "missing"))))
 
   assert updated
     == Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       library_error: Some("Server returned 404: missing"),
     )
 }
@@ -5304,7 +5314,7 @@ pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       books: [existing],
       paste_title: "Beta",
       paste_text: "lorem",
@@ -5316,12 +5326,12 @@ pub fn update_book_created_ok_prepends_meta_and_clears_paste_form_test() {
   let text = two_chapter_text()
 
   let #(updated, _effect) =
-    client.update(prior, BookCreated(Ok(#(new_meta, text))))
+    reducer.update(prior, BookCreated(Ok(#(new_meta, text))))
 
   assert updated
     == Model(
       ..empty_model(),
-      view: client.Library,
+      view: Library,
       books: [new_meta, existing],
       created_book_segments: Some(#(new_meta, text)),
     )
@@ -5347,13 +5357,13 @@ pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
       created_book_segments: Some(#(meta, text)),
     )
 
-  let #(updated, _effect) = client.update(prior, OpenBook("x"))
+  let #(updated, _effect) = reducer.update(prior, OpenBook("x"))
 
   assert updated
     == Model(
       ..library_model(),
       books: [meta],
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("x"),
       text: Some(text),
       flat_paragraphs: pagination.flatten(text),
@@ -5382,13 +5392,13 @@ pub fn update_open_book_with_mismatched_cache_id_dispatches_fetch_test() {
       created_book_segments: Some(#(cached_meta, text)),
     )
 
-  let #(updated, _effect) = client.update(prior, OpenBook("b"))
+  let #(updated, _effect) = reducer.update(prior, OpenBook("b"))
 
   assert updated
     == Model(
       ..library_model(),
       books: [other_meta, cached_meta],
-      view: client.Reader,
+      view: Reader,
       library_error: None,
       created_book_segments: Some(#(cached_meta, text)),
     )
@@ -5404,7 +5414,7 @@ pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
     )
 
   let #(updated, _effect) =
-    client.update(
+    reducer.update(
       prior,
       BookCreated(Error(ffi.HttpError(400, "title must not be empty"))),
     )
@@ -5423,9 +5433,9 @@ pub fn update_book_created_error_unsets_submitting_and_surfaces_error_test() {
 
 pub fn update_open_book_flips_view_to_reader_test() {
   let prior =
-    Model(..empty_model(), view: client.Library, library_error: Some("stale"))
+    Model(..empty_model(), view: Library, library_error: Some("stale"))
 
-  let #(updated, _effect) = client.update(prior, OpenBook("book-x"))
+  let #(updated, _effect) = reducer.update(prior, OpenBook("book-x"))
 
   // empty_model() defaults to `view: Reader` and `library_error:
   // None`, so the whole-model equality also pins "OpenBook clears
@@ -5441,7 +5451,7 @@ pub fn update_open_book_dispatches_fetch_book_effect_test() {
   // effects!"), so we cannot run the fetch inside the simulator;
   // what we *can* do is verify the click path off a real book card
   // dispatches `OpenBook(id)` with the correct id all the way
-  // through `client.update` and `client.view`. A wiring regression
+  // through `reducer.update` and `view.view`. A wiring regression
   // that swapped `event.on_click(OpenBook(book.id))` for any other
   // Msg (or for the wrong id) would change the post-click model
   // state and fail this test, where a reducer-level dispatch test
@@ -5452,8 +5462,8 @@ pub fn update_open_book_dispatches_fetch_book_effect_test() {
   let app =
     simulate.application(
       init: fn(_) { #(prior, effect.none()) },
-      update: client.update,
-      view: client.view,
+      update: reducer.update,
+      view: view.view,
     )
 
   // The grid card carries `aria-label="Open <title>"` — selecting
@@ -5466,7 +5476,7 @@ pub fn update_open_book_dispatches_fetch_book_effect_test() {
     |> simulate.click(on: card)
     |> simulate.model
 
-  assert updated == Model(..library_model(), books: [book], view: client.Reader)
+  assert updated == Model(..library_model(), books: [book], view: Reader)
 }
 
 pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
@@ -5474,7 +5484,7 @@ pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
   let prior =
     Model(
       ..empty_model(),
-      view: client.Reader,
+      view: Reader,
       mode: RealTime,
       engine_state: Running,
       next_word_index: Some(0),
@@ -5489,7 +5499,7 @@ pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
       total_word_count: 99,
     )
 
-  let #(updated, _effect) = client.update(prior, GoToLibrary)
+  let #(updated, _effect) = reducer.update(prior, GoToLibrary)
 
   // GoToLibrary returns to a fully cleared reader state with only
   // the user's `mode` preference preserved — every other field on
@@ -5498,14 +5508,14 @@ pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
   // forgot to clear any field (the exact class of bug field-level
   // assertions invite) and also pins "mode preserved" against the
   // same equality the per-field clears ride on.
-  assert updated == Model(..empty_model(), view: client.Library, mode: RealTime)
+  assert updated == Model(..empty_model(), view: Library, mode: RealTime)
 }
 
 pub fn update_toggle_add_book_flips_sheet_and_clears_error_on_open_test() {
   let prior =
     Model(..empty_model(), add_book_open: False, paste_error: Some("old"))
 
-  let #(updated, _effect) = client.update(prior, ToggleAddBook)
+  let #(updated, _effect) = reducer.update(prior, ToggleAddBook)
 
   assert updated.add_book_open == True
   // Opening the sheet should clear the prior error so the form
@@ -5517,7 +5527,7 @@ pub fn update_toggle_add_book_closes_sheet_without_clearing_error_test() {
   let prior =
     Model(..empty_model(), add_book_open: True, paste_error: Some("keep"))
 
-  let #(updated, _effect) = client.update(prior, ToggleAddBook)
+  let #(updated, _effect) = reducer.update(prior, ToggleAddBook)
 
   assert updated.add_book_open == False
   // Closing leaves the prior error untouched — the user is
@@ -5528,7 +5538,7 @@ pub fn update_toggle_add_book_closes_sheet_without_clearing_error_test() {
 pub fn update_set_paste_title_writes_value_and_clears_error_test() {
   let prior = Model(..empty_model(), paste_error: Some("old"))
 
-  let #(updated, _effect) = client.update(prior, SetPasteTitle("My Book"))
+  let #(updated, _effect) = reducer.update(prior, SetPasteTitle("My Book"))
 
   assert updated.paste_title == "My Book"
   assert updated.paste_error == None
@@ -5537,7 +5547,7 @@ pub fn update_set_paste_title_writes_value_and_clears_error_test() {
 pub fn update_set_paste_text_writes_value_and_clears_error_test() {
   let prior = Model(..empty_model(), paste_error: Some("old"))
 
-  let #(updated, _effect) = client.update(prior, SetPasteText("hello world"))
+  let #(updated, _effect) = reducer.update(prior, SetPasteText("hello world"))
 
   assert updated.paste_text == "hello world"
   assert updated.paste_error == None
@@ -5547,7 +5557,7 @@ pub fn update_submit_paste_with_empty_title_sets_error_and_does_not_submit_test(
   let prior =
     Model(..empty_model(), paste_title: "   ", paste_text: "lorem ipsum")
 
-  let #(updated, _effect) = client.update(prior, SubmitPaste)
+  let #(updated, _effect) = reducer.update(prior, SubmitPaste)
 
   assert updated.paste_submitting == False
   assert updated.paste_error == Some("Please add a title.")
@@ -5556,7 +5566,7 @@ pub fn update_submit_paste_with_empty_title_sets_error_and_does_not_submit_test(
 pub fn update_submit_paste_with_empty_text_sets_error_and_does_not_submit_test() {
   let prior = Model(..empty_model(), paste_title: "Walden", paste_text: "   ")
 
-  let #(updated, _effect) = client.update(prior, SubmitPaste)
+  let #(updated, _effect) = reducer.update(prior, SubmitPaste)
 
   assert updated.paste_submitting == False
   assert updated.paste_error == Some("Please paste some text.")
@@ -5571,7 +5581,7 @@ pub fn update_submit_paste_with_valid_input_marks_submitting_test() {
       paste_error: Some("stale"),
     )
 
-  let #(updated, _effect) = client.update(prior, SubmitPaste)
+  let #(updated, _effect) = reducer.update(prior, SubmitPaste)
 
   assert updated.paste_submitting == True
   assert updated.paste_error == None
@@ -5582,11 +5592,11 @@ pub fn update_submit_paste_with_valid_input_marks_submitting_test() {
 // ---------------------------------------------------------------------------
 
 fn library_model() -> Model {
-  Model(..empty_model(), view: client.Library)
+  Model(..empty_model(), view: Library)
 }
 
 pub fn view_library_renders_appbar_with_wordmark_test() {
-  let rendered = client.view(library_model()) |> element.to_string
+  let rendered = view.view(library_model()) |> element.to_string
 
   assert string.contains(rendered, "class=\"lib-appbar\"")
   assert string.contains(rendered, "class=\"app-wordmark\"")
@@ -5597,7 +5607,7 @@ pub fn view_library_appbar_carries_settings_gear_test() {
   // Same affordance as the reader header: the gear button toggles the
   // settings panel from the library so global preferences (theme,
   // font, default pacing) can be tweaked before any book is open.
-  let rendered = client.view(library_model()) |> element.to_string
+  let rendered = view.view(library_model()) |> element.to_string
 
   assert string.contains(rendered, "aria-label=\"Open settings\"")
   assert string.contains(rendered, "⚙")
@@ -5608,7 +5618,7 @@ pub fn view_library_renders_empty_state_when_no_books_test() {
   // the only thing in the body (beyond the hero, which is hidden
   // when there is no read book). The FAB is still rendered so the
   // user can open the sheet.
-  let rendered = client.view(library_model()) |> element.to_string
+  let rendered = view.view(library_model()) |> element.to_string
 
   assert string.contains(rendered, "class=\"lib-empty\"")
   assert string.contains(rendered, "Your library is empty.")
@@ -5620,7 +5630,7 @@ pub fn view_library_renders_empty_state_when_no_books_test() {
 
 pub fn view_library_renders_loading_state_when_loading_test() {
   let model = Model(..library_model(), books_loading: True)
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"lib-loading\"")
   assert string.contains(rendered, "Loading your library")
@@ -5635,7 +5645,7 @@ pub fn view_library_renders_grid_when_books_present_test() {
       sample_book("a", "Alpha", None),
       sample_book("b", "Beta", None),
     ])
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"book-grid\"")
   assert string.contains(rendered, "class=\"book-card\"")
@@ -5654,7 +5664,7 @@ pub fn view_library_renders_hero_for_most_recently_read_book_test() {
   let older = sample_book("b", "Older", Some("2026-04-01T00:00:00Z"))
   let unread = sample_book("c", "Unread", None)
   let model = Model(..library_model(), books: [unread, older, recent])
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"hero-card\"")
   assert string.contains(rendered, "aria-label=\"Continue reading Recent\"")
@@ -5671,14 +5681,14 @@ pub fn view_library_renders_hero_for_most_recently_read_book_test() {
 pub fn view_library_renders_error_banner_when_library_error_present_test() {
   let model =
     Model(..library_model(), library_error: Some("Could not reach the server."))
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"lib-error\"")
   assert string.contains(rendered, "Could not reach the server.")
 }
 
 pub fn view_library_does_not_render_sheet_when_closed_test() {
-  let rendered = client.view(library_model()) |> element.to_string
+  let rendered = view.view(library_model()) |> element.to_string
 
   assert !string.contains(rendered, "class=\"sheet-overlay open\"")
   assert !string.contains(rendered, "class=\"bottom-sheet\"")
@@ -5686,8 +5696,8 @@ pub fn view_library_does_not_render_sheet_when_closed_test() {
 
 pub fn view_library_renders_add_book_sheet_when_open_test() {
   let model = Model(..library_model(), add_book_open: True)
-  let rendered_string = client.view(model) |> element.to_string
-  let rendered_tree = client.view(model)
+  let rendered_string = view.view(model) |> element.to_string
+  let rendered_tree = view.view(model)
 
   assert string.contains(rendered_string, "class=\"sheet-overlay open\"")
   assert string.contains(rendered_string, "class=\"bottom-sheet\"")
@@ -5719,8 +5729,8 @@ pub fn view_library_add_book_button_enables_when_form_is_filled_test() {
       paste_title: "Walden",
       paste_text: "lorem",
     )
-  let rendered_string = client.view(model) |> element.to_string
-  let rendered_tree = client.view(model)
+  let rendered_string = view.view(model) |> element.to_string
+  let rendered_tree = view.view(model)
 
   // The `.btn-add-book` element is present and *not* disabled. The
   // tree-walk selector replaces a fragile attribute-order substring
@@ -5749,8 +5759,8 @@ pub fn view_library_add_book_button_shows_submitting_label_test() {
       paste_text: "lorem",
       paste_submitting: True,
     )
-  let rendered_string = client.view(model) |> element.to_string
-  let rendered_tree = client.view(model)
+  let rendered_string = view.view(model) |> element.to_string
+  let rendered_tree = view.view(model)
 
   assert string.contains(rendered_string, "Adding")
   // Button remains disabled while in flight to block double-submits.
@@ -5782,7 +5792,7 @@ pub fn update_confirm_delete_sets_confirm_id_without_firing_request_test() {
   // (books list, deleting set) untouched.
   let prior = Model(..library_model(), books: [sample_book("a", "Alpha", None)])
 
-  let #(updated, _effect) = client.update(prior, ConfirmDelete("a"))
+  let #(updated, _effect) = reducer.update(prior, ConfirmDelete("a"))
 
   assert updated.confirm_delete_id == Some("a")
   assert updated.books == prior.books
@@ -5803,7 +5813,7 @@ pub fn update_confirm_delete_is_noop_when_id_already_in_flight_test() {
       deleting_book_ids: set.from_list(["a"]),
     )
 
-  let #(updated, _effect) = client.update(prior, ConfirmDelete("a"))
+  let #(updated, _effect) = reducer.update(prior, ConfirmDelete("a"))
 
   assert updated == prior
 }
@@ -5819,7 +5829,7 @@ pub fn update_cancel_delete_clears_confirm_id_test() {
       confirm_delete_id: Some("a"),
     )
 
-  let #(updated, _effect) = client.update(prior, CancelDelete)
+  let #(updated, _effect) = reducer.update(prior, CancelDelete)
 
   assert updated.confirm_delete_id == None
   assert updated.books == prior.books
@@ -5839,7 +5849,7 @@ pub fn update_execute_delete_marks_in_flight_and_clears_confirm_id_test() {
       confirm_delete_id: Some("a"),
     )
 
-  let #(updated, _effect) = client.update(prior, ExecuteDelete("a"))
+  let #(updated, _effect) = reducer.update(prior, ExecuteDelete("a"))
 
   assert updated.confirm_delete_id == None
   assert updated.books == prior.books
@@ -5865,12 +5875,12 @@ pub fn update_book_deleted_ok_removes_book_and_clears_in_flight_test() {
       active_book_id: None,
     )
 
-  let #(updated, _effect) = client.update(prior, BookDeleted("a", Ok("")))
+  let #(updated, _effect) = reducer.update(prior, BookDeleted("a", Ok("")))
 
   assert updated.books == [sample_book("b", "Beta", None)]
   assert updated.deleting_book_ids == set.new()
   assert updated.library_error == None
-  assert updated.view == client.Library
+  assert updated.view == Library
 }
 
 pub fn update_book_deleted_ok_navigates_to_library_when_active_book_deleted_test() {
@@ -5884,7 +5894,7 @@ pub fn update_book_deleted_ok_navigates_to_library_when_active_book_deleted_test
   let prior =
     Model(
       ..library_model(),
-      view: client.Reader,
+      view: Reader,
       active_book_id: Some("a"),
       books: [
         sample_book("a", "Alpha", None),
@@ -5893,13 +5903,13 @@ pub fn update_book_deleted_ok_navigates_to_library_when_active_book_deleted_test
       deleting_book_ids: set.from_list(["a"]),
     )
 
-  let #(updated, _effect) = client.update(prior, BookDeleted("a", Ok("")))
+  let #(updated, _effect) = reducer.update(prior, BookDeleted("a", Ok("")))
 
   // The reader returns to the library with `active_book_id` cleared
   // and only the surviving book in the grid. `apply_go_to_library`
   // owns the per-text reset; this test pins the library-bookkeeping
   // fields a successful delete is uniquely responsible for.
-  assert updated.view == client.Library
+  assert updated.view == Library
   assert updated.active_book_id == None
   assert updated.books == [sample_book("b", "Beta", None)]
   assert updated.deleting_book_ids == set.new()
@@ -5921,7 +5931,7 @@ pub fn update_book_deleted_error_surfaces_message_and_keeps_book_test() {
     )
 
   let #(updated, _effect) =
-    client.update(prior, BookDeleted("a", Error(ffi.NetworkError("offline"))))
+    reducer.update(prior, BookDeleted("a", Error(ffi.NetworkError("offline"))))
 
   assert updated.books == prior.books
   assert updated.deleting_book_ids == set.new()
@@ -5945,7 +5955,7 @@ pub fn view_library_hero_card_renders_delete_badge_test() {
   // id, with the same `Delete <title>` aria label the grid cards use.
   let recent = sample_book("a", "Recent", Some("2026-04-10T00:00:00Z"))
   let model = Model(..library_model(), books: [recent])
-  let rendered = client.view(model) |> element.to_string
+  let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"hero-card-wrapper\"")
   // Both classes — base + hero variant — ride on the same button.
@@ -5966,7 +5976,7 @@ pub fn view_library_delete_badge_renders_disabled_when_in_flight_test() {
       deleting_book_ids: set.from_list(["a"]),
     )
 
-  let rendered_tree = client.view(model)
+  let rendered_tree = view.view(model)
 
   // Card "a" — disabled.
   assert lustre_query.has(
@@ -5992,15 +6002,15 @@ pub fn cover_color_for_title_is_deterministic_test() {
   // same input always return the same hex. Pinning this keeps a
   // future refactor that introduced randomness or wall-clock
   // dependency from making the library re-paint every render.
-  let one = client.cover_color_for_title("The Tell-Tale Heart")
-  let two = client.cover_color_for_title("The Tell-Tale Heart")
+  let one = state.cover_color_for_title("The Tell-Tale Heart")
+  let two = state.cover_color_for_title("The Tell-Tale Heart")
   assert one == two
 }
 
 pub fn cover_color_for_title_returns_a_palette_color_test() {
   // Every result must be one of the pre-baked palette hexes — the
   // FFI/CSS never has to reason about an unbounded colour space.
-  // The palette is read from `client.cover_colors` so a future
+  // The palette is read from `state.cover_colors` so a future
   // palette change updates one source of truth; a duplicated
   // literal palette would silently drift if the production list
   // gained or lost a swatch.
@@ -6011,7 +6021,7 @@ pub fn cover_color_for_title_returns_a_palette_color_test() {
 
   titles
   |> list.each(fn(title) {
-    let color = client.cover_color_for_title(title)
-    assert list.contains(client.cover_colors, color)
+    let color = state.cover_color_for_title(title)
+    assert list.contains(state.cover_colors, color)
   })
 }
