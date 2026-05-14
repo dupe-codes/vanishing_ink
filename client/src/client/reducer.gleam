@@ -46,21 +46,22 @@ import client/engine.{
 }
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused,
-  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
-  FocusPrevious, GoToLibrary, LinesMeasured, NextPage, OpenBook,
-  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitPaste, TextLoaded,
-  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
+  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
+  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  ViewportResized,
 }
 import client/navigation
 import client/pagination
 import client/reducer/book.{
-  apply_book_loaded, apply_go_to_library, apply_open_book, apply_submit_paste,
-  apply_text_load,
+  apply_book_loaded, apply_epub_file_selected, apply_epub_parsed,
+  apply_go_to_library, apply_open_book, apply_submit_paste, apply_text_load,
 }
 import client/reducer/focus.{
   apply_erase_focused, focus_paragraph_step, focus_sentence_step,
@@ -276,6 +277,10 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
 
     SubmitPaste -> apply_submit_paste(model)
+
+    EpubFileSelected(file) -> apply_epub_file_selected(model, file)
+
+    EpubParsed(result) -> apply_epub_parsed(model, result)
 
     SettingsLoaded(Ok(body)) ->
       case json.parse(body, types.user_settings_decoder()) {

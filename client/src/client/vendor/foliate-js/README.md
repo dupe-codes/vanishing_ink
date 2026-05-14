@@ -5,6 +5,18 @@ used by the ePub-import feature. Vendored rather than installed via npm
 because foliate-js does not publish releases — pinning to a specific
 commit is the only durable approach.
 
+## Location
+
+Lives inside `client/src/client/vendor/` rather than at the project's
+top-level `client/vendor/`. The Lustre dev server only exposes files
+that live under `build/dev/javascript/` to the browser, and the Gleam
+compiler only mirrors files into the build tree when they sit inside
+`src/`. Placing the vendored modules outside `src/` would mean the
+browser cannot load them via relative imports from `epub.ffi.mjs` at
+dev time. The trade-off is that the vendor tree shows up in the
+source listing — the README and LICENSE alongside the JS files mark
+the boundary so the reader knows these are not first-party code.
+
 ## Pinned commit
 
 `78914aef4466eb960965702401634c2cb348e9b1` (May 2026 snapshot from `main`).

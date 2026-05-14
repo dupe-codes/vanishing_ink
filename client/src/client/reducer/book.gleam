@@ -6,6 +6,7 @@
 //// limit and so the "book state lifecycle" axis of change lives
 //// behind one module boundary.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/float
 import gleam/option.{None, Some}
 import gleam/set
@@ -14,7 +15,11 @@ import lustre/effect.{type Effect}
 
 import client/effects.{
   create_book, fetch_book, fetch_book_settings, fetch_reading_state,
-  measure_after_paint, save_reading_state,
+  measure_after_paint, parse_epub, save_reading_state,
+}
+import client/epub.{
+  type EpubError, type EpubExtract, DrmEncrypted, EmptyText, EpubExtract,
+  ParseFailed, UnsupportedFormat,
 }
 import client/ffi
 import client/msg.{type Msg}
@@ -244,6 +249,81 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       }),
     ]),
   )
+}
+
+/// Dispatch the ePub parse effect for a freshly-picked file. Marks
+/// `paste_submitting: True` so the file picker disables itself while
+/// the parse is in flight (a second pick during the parse would
+/// orphan the first result), and clears any prior `paste_error` so
+/// the in-flight surface starts clean.
+pub fn apply_epub_file_selected(
+  model: Model,
+  file: Dynamic,
+) -> #(Model, Effect(Msg)) {
+  #(
+    Model(..model, paste_submitting: True, paste_error: None),
+    parse_epub(file),
+  )
+}
+
+/// Stamp the parsed ePub onto the paste form so the reader sees the
+/// extracted title and segmenter-shaped body text pre-filled. The
+/// success path is "load into the form, don't auto-submit" so the
+/// reader can sanity-check the extraction (missing title, extra
+/// front-matter) before sending the POST. Failures surface as a
+/// human-readable `paste_error`.
+pub fn apply_epub_parsed(
+  model: Model,
+  result: Result(EpubExtract, EpubError),
+) -> #(Model, Effect(Msg)) {
+  case result {
+    Ok(EpubExtract(title, _author, text)) -> #(
+      Model(
+        ..model,
+        paste_title: paste_title_after_import(model.paste_title, title),
+        paste_text: text,
+        paste_submitting: False,
+        paste_error: None,
+      ),
+      effect.none(),
+    )
+    Error(error) -> #(
+      Model(
+        ..model,
+        paste_submitting: False,
+        paste_error: Some(describe_epub_error(error)),
+      ),
+      effect.none(),
+    )
+  }
+}
+
+/// Decide which title to leave on the form after a successful ePub
+/// import. A non-empty existing title wins (the reader typed
+/// something before picking the file — clobbering it would discard
+/// their intent), otherwise the extracted title fills the slot.
+fn paste_title_after_import(existing: String, extracted: String) -> String {
+  case string.trim(existing) {
+    "" -> extracted
+    _ -> existing
+  }
+}
+
+/// Project an `EpubError` to a user-facing sentence for the
+/// add-book sheet's error banner. The mapping is intentionally
+/// terse — the sheet has limited vertical room and a long technical
+/// detail string would push the submit button off-screen.
+pub fn describe_epub_error(error: EpubError) -> String {
+  case error {
+    UnsupportedFormat -> "This file does not look like a valid ePub."
+    DrmEncrypted -> "This ePub is DRM-protected and cannot be imported."
+    EmptyText -> "No readable text was found in this ePub."
+    ParseFailed(detail) ->
+      case string.trim(detail) {
+        "" -> "Could not parse this ePub."
+        trimmed -> "Could not parse this ePub: " <> trimmed
+      }
+  }
 }
 
 /// Validate the paste form and fire `create_book`. Empty title or

@@ -23,9 +23,11 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 
+import client/epub
 import client/msg.{
-  type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, OpenBook, SetPasteText,
-  SetPasteTitle, SubmitPaste, ToggleAddBook, ToggleSettings,
+  type Msg, CancelDelete, ConfirmDelete, EpubFileSelected, ExecuteDelete,
+  OpenBook, SetPasteText, SetPasteTitle, SubmitPaste, ToggleAddBook,
+  ToggleSettings,
 }
 import client/state.{type Model, cover_color_for_title}
 import client/types.{type BookMeta}
@@ -504,8 +506,9 @@ fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
     html.div([attribute.class("add-sheet-body")], [
       html.div([attribute.class("add-sheet-title")], [html.text("Add a Book")]),
       html.div([attribute.class("add-sheet-sub")], [
-        html.text("Paste text from anywhere to start reading."),
+        html.text("Paste text or import an ePub to start reading."),
       ]),
+      view_epub_import_row(model),
       html.label([attribute.class("paste-label")], [html.text("Title")]),
       html.input([
         attribute.class("paste-input"),
@@ -544,6 +547,38 @@ fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
         ],
       ),
     ]),
+  ])
+}
+
+/// File picker row at the top of the add-book sheet body. Sits above
+/// the paste form so the ePub flow is the most visible affordance —
+/// pasting still works for readers who prefer to copy raw text. The
+/// label wraps the input so a tap anywhere on the row opens the OS
+/// file dialog; the actual `<input>` is hidden via CSS rather than
+/// `display: none` so it stays accessible to screen readers.
+///
+/// Disabled while `paste_submitting` is `True` so a second pick
+/// during an in-flight parse cannot orphan the first result —
+/// matches the submit-button gating below.
+fn view_epub_import_row(model: Model) -> Element(Msg) {
+  let label_text = case model.paste_submitting {
+    True -> "Importing ePub…"
+    False -> "Import an ePub file"
+  }
+  let label_class = case model.paste_submitting {
+    True -> "epub-import-button is-loading"
+    False -> "epub-import-button"
+  }
+  html.label([attribute.class(label_class)], [
+    html.input([
+      attribute.class("epub-import-input"),
+      attribute.type_("file"),
+      attribute.attribute("accept", ".epub,application/epub+zip"),
+      attribute.attribute("aria-label", "Import an ePub file"),
+      attribute.disabled(model.paste_submitting),
+      epub.on_file_picked(EpubFileSelected),
+    ]),
+    html.span([attribute.class("epub-import-label")], [html.text(label_text)]),
   ])
 }
 
