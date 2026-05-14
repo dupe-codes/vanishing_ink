@@ -32,8 +32,10 @@ import gleam/string
 
 import client/navigation
 import client/pagination.{type Page, type PageParagraph}
-import client/types.{type BookMeta, type BookSettings, type UserSettings,
-  BookSettings, UserSettings}
+import client/types.{
+  type BookMeta, type BookSettings, type UserSettings, BookSettings,
+  UserSettings,
+}
 import shared/segmenter.{type SegmentedText}
 
 // ---------------------------------------------------------------------------

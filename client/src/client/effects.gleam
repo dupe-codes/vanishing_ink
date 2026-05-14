@@ -24,13 +24,13 @@ import lustre/effect.{type Effect}
 
 import client/ffi
 import client/msg.{
-  type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
-  BooksLoaded, LinesMeasured, ParagraphsMeasured, ReadingStateLoaded,
-  SettingsLoaded, ViewportResized,
+  type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
+  BookSettingsLoaded, BooksLoaded, LinesMeasured, ParagraphsMeasured,
+  ReadingStateLoaded, SettingsLoaded, ViewportResized,
 }
 import client/state.{
-  type LineBox, type Model, LineBox, Manual, RealTime, page_content_id,
-  measurement_id,
+  type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
+  page_content_id,
 }
 import client/types.{type BookSettings, type UserSettings}
 

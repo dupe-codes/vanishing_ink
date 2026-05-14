@@ -41,7 +41,7 @@ import client/msg.{
 import client/pagination.{type Page, type PageParagraph}
 import client/state.{
   type LineBox, type Mode, type Model, Manual, Paused, RealTime, Running,
-  Stopped, erased_opacity_value, page_content_id, measurement_id,
+  Stopped, erased_opacity_value, measurement_id, page_content_id,
   progress_percentage, reading_area_id,
 }
 import shared/segmenter.{type Paragraph, type Sentence, type Word}

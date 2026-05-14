@@ -19,7 +19,7 @@ import client/msg.{
   ToggleDyslexiaFont, ToggleGhostMode, ToggleSettings,
 }
 import client/state.{
-  type Model, Manual, RealTime, Reader, max_font_size, max_ghost_opacity,
+  type Model, Manual, Reader, RealTime, max_font_size, max_ghost_opacity,
   max_line_spacing, max_page_delay_ms, max_paragraph_delay_ms, max_wpm,
   min_font_size, min_ghost_opacity, min_line_spacing, min_page_delay_ms,
   min_paragraph_delay_ms, min_wpm,

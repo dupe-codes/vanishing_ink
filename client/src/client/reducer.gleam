@@ -29,10 +29,10 @@ import gleam/string
 import lustre/effect.{type Effect}
 
 import client/effects.{
-  create_book, decode_base64_to_indices, delete_book_effect, describe_fetch_error,
-  fetch_book, fetch_book_settings, fetch_reading_state, measure_after_paint,
-  measure_lines_after_paint, repaginate_after_paint, save_book_settings,
-  save_global_settings, save_reading_state,
+  create_book, decode_base64_to_indices, delete_book_effect,
+  describe_fetch_error, fetch_book, fetch_book_settings, fetch_reading_state,
+  measure_after_paint, measure_lines_after_paint, repaginate_after_paint,
+  save_book_settings, save_global_settings, save_reading_state,
 }
 import client/engine.{
   apply_advance_word, apply_pause_fade, apply_resume_fade, apply_start_fade,
@@ -55,15 +55,14 @@ import client/msg.{
 import client/navigation
 import client/pagination
 import client/state.{
-  type Model, type Mode, Library, Manual, Model, Paused, Reader, RealTime,
+  type Mode, type Model, Library, Manual, Model, Paused, Reader, RealTime,
   Running, Stopped, body_class_dyslexia_font, body_class_ghost_mode,
   body_class_light_mode, change_page, clamp_float, clamp_int,
   compute_current_chapter_title, css_var_font_size, css_var_ghost_opacity,
   css_var_line_height, empty_book_settings, go_to_page, max_font_size,
-  max_ghost_opacity, max_line_spacing, max_page_delay_ms,
-  max_paragraph_delay_ms, max_wpm, min_font_size, min_ghost_opacity,
-  min_line_spacing, min_page_delay_ms, min_paragraph_delay_ms, min_wpm,
-  total_counts, undo_stack_depth,
+  max_ghost_opacity, max_line_spacing, max_page_delay_ms, max_paragraph_delay_ms,
+  max_wpm, min_font_size, min_ghost_opacity, min_line_spacing, min_page_delay_ms,
+  min_paragraph_delay_ms, min_wpm, total_counts, undo_stack_depth,
 }
 import client/types.{
   type BookMeta, type BookSettings, type ReadingState, type UserSettings,
