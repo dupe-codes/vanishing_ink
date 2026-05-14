@@ -46,15 +46,18 @@ import {
 // time; `configure` is idempotent and cheap to repeat per call.
 configure({ useWebWorkers: false });
 
-// Block-level HTML elements whose `.textContent` we extract as one
-// paragraph each. `<p>` is the workhorse; `<blockquote>` / `<pre>`
-// preserve indented prose; `<li>` flattens lists into one paragraph
-// per item. Headings are handled separately below (the first `<h1>` /
-// `<h2>` becomes a `# Title` line). The `querySelectorAll(selector)`
-// call is the single source of truth for which tags reach the loop —
-// no runtime `.has()` guard is needed because the selector already
-// filters to exactly these tags.
-const PARAGRAPH_TAGS = new Set(["p", "blockquote", "pre", "li"]);
+// Block-level HTML elements whose text we extract as one paragraph
+// each. `<p>` is the workhorse; `<blockquote>` / `<pre>` preserve
+// indented prose; `<li>` flattens lists into one paragraph per item.
+// Headings are handled separately below (the first `<h1>` / `<h2>`
+// becomes a `# Title` line). Two consumers: the selector string built
+// from `.join(",")` (drives `querySelectorAll` lookups) and the
+// `.includes()` membership check inside the recursive walker (decides
+// whether a child element is itself a block boundary). A plain array
+// is the most honest shape for both uses — there are four entries, so
+// `.includes()` is cheap.
+const PARAGRAPH_TAGS = ["p", "blockquote", "pre", "li"];
+const BLOCK_SELECTOR = PARAGRAPH_TAGS.join(",");
 
 // Sniff the file's first four bytes for the ZIP local-file-header
 // magic number (`PK\x03\x04`). A non-ZIP file (text, PDF, image) lands
@@ -175,32 +178,106 @@ function extractSection(doc, chunks) {
     break;
   }
 
-  // Walk block elements in document order. `querySelectorAll` returns
-  // descendants in document order, so an outer `<blockquote>` and any
-  // `<p>` nested inside it both appear in the list. Emitting both
-  // duplicates the prose: the outer block's `.textContent` already
-  // concatenates the inner paragraphs.
+  // Walk every top-level block (one with no matching block ancestor)
+  // and emit its prose. `walkBlock` handles two shapes:
   //
-  // Fix: only emit a block when it contains no other matching block
-  // (i.e., it is the innermost block in its subtree). For
-  // `<blockquote><p>Quoted.</p></blockquote>` the `<blockquote>` is
-  // skipped and the `<p>` emits "Quoted." once. For a multi-paragraph
-  // blockquote `<blockquote><p>A</p><p>B</p></blockquote>` the
-  // blockquote is skipped and each `<p>` emits its own paragraph —
-  // preserving the paragraph break the visual rendering implies.
-  // Same shape covers `<li><blockquote>...</blockquote></li>` and
-  // any other block-in-block nesting.
-  const blockSelector = Array.from(PARAGRAPH_TAGS).join(",");
-  const blockNodes = body.querySelectorAll(blockSelector);
-  for (const node of blockNodes) {
-    if (node.querySelector(blockSelector) !== null) continue;
-    const text = normalizeWhitespace(node.textContent ?? "");
-    if (text.length === 0) continue;
-    chunks.push(`${text}\n\n`);
-    emittedParagraph = true;
+  //   - A block with no nested matching block emits its entire text
+  //     content as a single paragraph.
+  //   - A block that does contain nested matching blocks walks its
+  //     descendants in document order, flushing surrounding text runs
+  //     into their own chunks at every nested-block boundary and
+  //     recursing into each nested block.
+  //
+  // This preserves outer-block text adjacent to inner blocks — common
+  // shapes that the previous "emit only the innermost block" rule
+  // silently truncated:
+  //
+  //   `<blockquote><p>Quoted.</p>— Attribution.</blockquote>`
+  //     → "Quoted." and "— Attribution." (pull-quote with citation)
+  //   `<li>Header<ul><li>Sub A</li><li>Sub B</li></ul></li>`
+  //     → "Header", "Sub A", "Sub B" (outline-style nested list)
+  //
+  // Skipping the recursion for top-level-only blocks keeps each
+  // matching node visited at most once: nested blocks are reached via
+  // their parent's walk, never the outer `querySelectorAll` loop.
+  const before = chunks.length;
+  for (const node of body.querySelectorAll(BLOCK_SELECTOR)) {
+    if (hasMatchingAncestor(node)) continue;
+    walkBlock(node, chunks);
   }
+  const emittedParagraph = chunks.length > before;
 
   return emittedHeading || emittedParagraph;
+}
+
+// `true` when `node` has an ancestor that is itself a paragraph-block
+// element. The outer `querySelectorAll` loop uses this to skip nested
+// blocks — those are visited recursively from their parent walk
+// instead, so we never emit the same prose twice.
+function hasMatchingAncestor(node) {
+  const parent = node.parentElement;
+  if (parent === null) return false;
+  return parent.closest(BLOCK_SELECTOR) !== null;
+}
+
+// Recursively walk a paragraph-block element, pushing one or more
+// chunks onto `chunks`. The contract: every text node reachable from
+// `node` that is not inside a nested matching block is emitted exactly
+// once, in document order, with nested-block boundaries flushing the
+// surrounding text run into its own chunk before recursing.
+function walkBlock(node, chunks) {
+  // Fast path — no nested matching blocks, so the whole subtree is one
+  // paragraph. Avoids the recursive descent in the common case.
+  if (node.querySelector(BLOCK_SELECTOR) === null) {
+    pushChunk(node.textContent, chunks);
+    return;
+  }
+  // Mixed-content path. `buffer` accumulates the text run between two
+  // nested blocks (or before the first / after the last); `flush`
+  // commits it as its own chunk and resets.
+  const state = { buffer: "" };
+  walkBlockChildren(node, state, chunks);
+  flushBuffer(state, chunks);
+}
+
+function walkBlockChildren(node, state, chunks) {
+  for (const child of node.childNodes) {
+    if (child.nodeType === 1) {
+      // ELEMENT_NODE
+      const tag = child.tagName.toLowerCase();
+      if (PARAGRAPH_TAGS.includes(tag)) {
+        // Nested block boundary — commit the prior text run, then
+        // recurse so the nested block emits its own chunk(s).
+        flushBuffer(state, chunks);
+        walkBlock(child, chunks);
+      } else if (child.querySelector(BLOCK_SELECTOR) !== null) {
+        // Inline wrapper (`<span>`, `<a>`, ...) that itself contains a
+        // nested block. Descend so the block boundary still splits the
+        // text run rather than swallowing the inner prose into the
+        // current buffer via `.textContent`.
+        walkBlockChildren(child, state, chunks);
+      } else {
+        // Inline element with no nested blocks — flatten its text into
+        // the running buffer.
+        state.buffer += child.textContent ?? "";
+      }
+    } else if (child.nodeType === 3) {
+      // TEXT_NODE
+      state.buffer += child.nodeValue ?? "";
+    }
+    // Comments, processing instructions, etc. are ignored.
+  }
+}
+
+function flushBuffer(state, chunks) {
+  pushChunk(state.buffer, chunks);
+  state.buffer = "";
+}
+
+function pushChunk(rawText, chunks) {
+  const text = normalizeWhitespace(rawText ?? "");
+  if (text.length === 0) return;
+  chunks.push(`${text}\n\n`);
 }
 
 // Drive a foliate-js EPUB instance to plain text. Returns the
