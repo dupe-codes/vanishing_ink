@@ -148,6 +148,7 @@ fn empty_model() -> Model {
     ),
     book_settings: None,
     confirm_delete_id: None,
+    deleting_book_ids: set.new(),
   )
 }
 

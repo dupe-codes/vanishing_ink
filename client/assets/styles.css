@@ -1452,6 +1452,30 @@ body.vi-reduced-motion .paste-area {
   width: 100%;
 }
 
+/* Hero card wrapper — same purpose as `.book-card-wrapper`, but the
+ * hero card has its own outer margin (`.hero-card { margin: 0 0 32px }`)
+ * so the wrapper hands that bottom margin to the row instead of
+ * stacking an extra gap on top of it. */
+.hero-card-wrapper {
+  position: relative;
+  margin: 0 0 32px;
+}
+
+.hero-card-wrapper .hero-card {
+  margin: 0;
+}
+
+/* Hero × badge — slightly larger than the grid-card badge to match the
+ * hero's prominence, and offset to clear the `.section-label` text
+ * row that sits above the cover. */
+.btn-delete-hero {
+  top: 32px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+}
+
 /* Delete button — small × badge in the top-right corner of the card.
  * Sits above the card surface (z-index: 1) so taps land here and not
  * on the underlying open-book button. */
@@ -1484,6 +1508,17 @@ body.vi-reduced-motion .paste-area {
 
 .btn-delete-book:active {
   transform: scale(0.88);
+}
+
+/* While a DELETE request is in flight for this card, fade the badge
+ * and disable interaction. The reducer also short-circuits a second
+ * `ConfirmDelete`, so this is a visual confirmation of "your tap
+ * landed" rather than the only guard. */
+.btn-delete-book.is-deleting,
+.btn-delete-book[disabled] {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
 }
 
 .btn-delete-book:focus-visible {
