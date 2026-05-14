@@ -149,6 +149,7 @@ fn empty_model() -> Model {
     active_book_id: None,
     paste_title: "",
     paste_text: "",
+    paste_author: None,
     paste_submitting: False,
     paste_error: None,
     paste_warning: None,
@@ -171,6 +172,7 @@ fn empty_model() -> Model {
     jump_preview: None,
     chapter_entries: [],
     jump_page_input: "",
+    editing_metadata: None,
   )
 }
 
@@ -5086,6 +5088,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
   // those fields would surface here as a decode failure.
   let payload =
     "{\"id\":\"book-1\",\"title\":\"Walden\",\"author\":\"Henry David Thoreau\","
+    <> "\"genre\":\"Memoir\","
     <> "\"word_count\":7421,\"sentence_count\":523,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":\"2026-04-02T08:14:00Z\"}"
@@ -5097,6 +5100,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
       id: "book-1",
       title: "Walden",
       author: Some("Henry David Thoreau"),
+      genre: Some("Memoir"),
       word_count: 7421,
       sentence_count: 523,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5111,6 +5115,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
   // round-trip into `None`.
   let payload =
     "{\"id\":\"book-2\",\"title\":\"Untitled\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":0,\"sentence_count\":0,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null}"
@@ -5122,6 +5127,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
       id: "book-2",
       title: "Untitled",
       author: None,
+      genre: None,
       word_count: 0,
       sentence_count: 0,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5142,6 +5148,7 @@ pub fn book_with_segments_decoder_decodes_a_get_by_id_payload_test() {
 
   let payload =
     "{\"id\":\"book-3\",\"title\":\"Hi\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null,"
@@ -5181,6 +5188,7 @@ pub fn create_book_response_decoder_decodes_a_201_payload_test() {
 
   let payload =
     "{\"book\":{\"id\":\"book-4\",\"title\":\"New\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null},"
@@ -5230,6 +5238,7 @@ fn sample_book(
     id: id,
     title: title,
     author: None,
+    genre: None,
     word_count: 100,
     sentence_count: 10,
     uploaded_at: "2026-04-01T12:00:00Z",
@@ -5637,7 +5646,7 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
       paste_error: Some("old"),
     )
 
-  let extract = EpubExtract("Walden", "# Walden\n\nProse.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "# Walden\n\nProse.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5663,7 +5672,7 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
       paste_submitting: True,
     )
 
-  let extract = EpubExtract("Walden", "Some text.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Some text.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5682,7 +5691,7 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   // type a meaningful title, so the extractor's guess fills in.
   let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5705,7 +5714,7 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
   // message natural.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 1)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 1)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5729,7 +5738,7 @@ pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
   // the singular case — warning, not error.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 3)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 3)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =

@@ -131,6 +131,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       active_book_id: None,
       paste_title: "",
       paste_text: "",
+      paste_author: None,
       paste_submitting: False,
       paste_error: None,
       paste_warning: None,
@@ -144,6 +145,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       jump_preview: None,
       chapter_entries: [],
       jump_page_input: "",
+      editing_metadata: None,
     )
 
   // Boot effects:

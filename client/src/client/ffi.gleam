@@ -234,6 +234,17 @@ pub fn fetch_json_delete(
   on_complete: fn(Result(String, FetchError)) -> Nil,
 ) -> Nil
 
+/// PATCH counterpart to `fetch_json_put`. The metadata-edit endpoint
+/// uses PATCH rather than PUT because the request carries a partial
+/// record (one or more of `title` / `author` / `genre`) rather than
+/// the full row. Same callback contract as the other helpers.
+@external(javascript, "./ffi.ffi.mjs", "fetch_json_patch")
+pub fn fetch_json_patch(
+  url: String,
+  body: String,
+  on_complete: fn(Result(String, FetchError)) -> Nil,
+) -> Nil
+
 /// Wall-clock now formatted as an ISO 8601 UTC string with millisecond
 /// precision (`YYYY-MM-DDTHH:MM:SS.sssZ`). Used to stamp
 /// `reading_state.updated_at` on each PUT — the server canonicalises

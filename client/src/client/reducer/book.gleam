@@ -330,11 +330,16 @@ pub fn apply_epub_parsed(
   result: Result(EpubExtract, EpubError),
 ) -> #(Model, Effect(Msg)) {
   case result {
-    Ok(EpubExtract(title, text, sections_skipped)) -> #(
+    Ok(EpubExtract(title, author, text, sections_skipped)) -> #(
       Model(
         ..model,
         paste_title: paste_title_after_import(model.paste_title, title),
         paste_text: text,
+        // First-write-wins on author too: a reader who typed an
+        // author before picking the file keeps their value. The
+        // ePub's `<dc:creator>` only fills the field when the
+        // existing slot is `None`.
+        paste_author: paste_author_after_import(model.paste_author, author),
         paste_submitting: False,
         paste_error: None,
         paste_warning: describe_partial_import(sections_skipped),
@@ -388,6 +393,22 @@ fn paste_title_after_import(existing: String, extracted: String) -> String {
   }
 }
 
+/// Mirrors `paste_title_after_import` for the author field. A
+/// `Some(_)` existing value keeps the reader's intent intact; `None`
+/// accepts the extracted creator. The extracted value rides as
+/// `Option(String)` already (the FFI returns `None` when the OPF has
+/// no `<dc:creator>` or the entry is empty), so the result type
+/// matches `Model.paste_author` directly.
+fn paste_author_after_import(
+  existing: Option(String),
+  extracted: Option(String),
+) -> Option(String) {
+  case existing {
+    Some(_) -> existing
+    None -> extracted
+  }
+}
+
 /// Project an `EpubError` to a user-facing sentence for the
 /// add-book sheet's error banner. The mapping is intentionally
 /// terse — the sheet has limited vertical room and a long technical
@@ -412,6 +433,11 @@ pub fn describe_epub_error(error: EpubError) -> String {
 pub fn apply_submit_paste(model: Model) -> #(Model, Effect(Msg)) {
   let title = string.trim(model.paste_title)
   let text = string.trim(model.paste_text)
+  // The author rides as `Option(String)` already — `None` for raw
+  // paste flows, `Some(_)` for an ePub import. Genre has no input
+  // surface on the create-book form; readers add it via the edit
+  // metadata sheet after the book lands in the library.
+  let author = trim_optional(model.paste_author)
   case title, text {
     "", _ -> #(
       Model(..model, paste_error: Some("Please add a title.")),
@@ -432,7 +458,18 @@ pub fn apply_submit_paste(model: Model) -> #(Model, Effect(Msg)) {
         paste_error: None,
         paste_warning: None,
       ),
-      create_book(title, text),
+      create_book(title, text, author),
     )
+  }
+}
+
+fn trim_optional(value: Option(String)) -> Option(String) {
+  case value {
+    None -> None
+    Some(raw) ->
+      case string.trim(raw) {
+        "" -> None
+        trimmed -> Some(trimmed)
+      }
   }
 }

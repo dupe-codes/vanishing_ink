@@ -646,6 +646,14 @@ pub type Model {
     active_book_id: Option(String),
     paste_title: String,
     paste_text: String,
+    /// Optional author pre-populated by the ePub import path
+    /// (`<dc:creator>` from the OPF). `None` when the reader is
+    /// pasting raw text; `Some(_)` once an ePub import resolves with
+    /// a non-empty creator. Threaded onto `POST /api/books` so a
+    /// freshly-imported book lands in the library with its author
+    /// already set. Cleared alongside `paste_title` / `paste_text` on
+    /// `BookCreated(Ok(_))` so the next session starts blank.
+    paste_author: Option(String),
     paste_submitting: Bool,
     paste_error: Option(String),
     paste_warning: Option(String),
@@ -700,5 +708,33 @@ pub type Model {
     /// the menu closes or a fresh book loads so a stale value never
     /// pre-populates the next session's input.
     jump_page_input: String,
+    /// `Some(draft)` while the reader is editing one of the library's
+    /// books in the metadata sheet; `None` otherwise. The draft carries
+    /// the in-flight title / author / genre inputs alongside the id of
+    /// the book being edited so a single Msg surface (`SetEditMetadata*`,
+    /// `SubmitEditMetadata`) can fan out into the three controlled
+    /// inputs without leaking per-field state onto `Model` directly.
+    editing_metadata: Option(MetadataEdit),
+  )
+}
+
+/// In-flight metadata edit for a single book. `book_id` pins the
+/// draft to the row the PATCH will write; `title`, `author`, and
+/// `genre` are controlled-input strings that the form mutates via
+/// the `SetEditMetadata*` arms.
+///
+/// `submitting` flips to `True` while the PATCH is in flight so the
+/// save button can render disabled and a second tap does not orphan
+/// the first response. `error` carries the user-facing failure
+/// message from a rejected PATCH (decode failure, network error,
+/// 404) — cleared on every input change and on a successful save.
+pub type MetadataEdit {
+  MetadataEdit(
+    book_id: String,
+    title: String,
+    author: String,
+    genre: String,
+    submitting: Bool,
+    error: Option(String),
   )
 }
