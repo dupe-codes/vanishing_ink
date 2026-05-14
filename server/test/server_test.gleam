@@ -28,7 +28,7 @@ import server/types.{
 }
 import server/web
 import shared/segmenter
-import shared/stats.{type BookStats, BookStats, LibraryStats}
+import shared/stats.{BookStats}
 import sqlight
 import wisp
 import wisp/simulate
