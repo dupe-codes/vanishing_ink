@@ -5,6 +5,7 @@
 //// type so the router layer can stay free of decode boilerplate.
 
 import gleam/dynamic/decode
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import server/types.{
@@ -37,26 +38,47 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
 /// metadata-expansion quest. `CREATE TABLE IF NOT EXISTS` silently
 /// skips the table when it already exists — including its declared
 /// columns — so a fresh schema declaration alone cannot grow an
-/// existing table. The `ALTER TABLE ... ADD COLUMN` here is idempotent
-/// when guarded against the "duplicate column" error code; we treat
-/// that specific failure as a no-op and surface any other Sqlight
-/// error to the caller. Fresh databases also flow through this code
-/// path harmlessly: the column is already declared inline, so the
-/// ALTER fails with the same duplicate-column error.
-fn ensure_books_genre_column(
+/// existing table. We probe `PRAGMA table_info(books)` first and only
+/// issue the ALTER when `genre` is missing; this keeps the migration
+/// from coupling its idempotency to SQLite's locale-and-version-
+/// dependent duplicate-column error message. Fresh databases (where
+/// the column is already declared inline in `schema_sql`) skip the
+/// ALTER cleanly.
+///
+/// Exposed as `pub` for tests so a hand-built pre-genre `books` table
+/// can drive the ADD COLUMN branch directly; production callers only
+/// reach this through `initialize`.
+pub fn ensure_books_genre_column(
   connection: sqlight.Connection,
 ) -> Result(Nil, sqlight.Error) {
-  // SQLite phrases the duplicate-column failure as
-  // `"duplicate column name: genre"`. A more specific error code would
-  // be cleaner, but sqlight surfaces this class as the generic-error
-  // variant so we match on the message text.
-  case sqlight.exec("ALTER TABLE books ADD COLUMN genre TEXT;", connection) {
-    Ok(_) -> Ok(Nil)
-    Error(sqlight.SqlightError(code: sqlight.GenericError, message: msg, ..))
-      if msg == "duplicate column name: genre"
-    -> Ok(Nil)
-    Error(error) -> Error(error)
+  use columns <- result.try(book_column_names(connection))
+  case list.contains(columns, "genre") {
+    True -> Ok(Nil)
+    False ->
+      case sqlight.exec("ALTER TABLE books ADD COLUMN genre TEXT;", connection)
+      {
+        Ok(_) -> Ok(Nil)
+        Error(error) -> Error(error)
+      }
   }
+}
+
+/// Read the column names of the `books` table from `PRAGMA table_info`.
+/// `table_info` returns rows of `(cid, name, type, notnull, dflt_value, pk)`
+/// — we only need the `name` column at ordinal 1.
+fn book_column_names(
+  connection: sqlight.Connection,
+) -> Result(List(String), sqlight.Error) {
+  let name_decoder = {
+    use name <- decode.field(1, decode.string)
+    decode.success(name)
+  }
+  sqlight.query(
+    "PRAGMA table_info(books);",
+    on: connection,
+    with: [],
+    expecting: name_decoder,
+  )
 }
 
 const pragmas_sql = "
@@ -302,42 +324,39 @@ pub fn update_book_metadata(
   author author: Option(String),
   genre genre: Option(String),
 ) -> Result(Bool, sqlight.Error) {
+  // `UPDATE ... RETURNING id` lets us tell "row existed and was
+  // updated" from "id was unknown" in a single round-trip: the
+  // result list is one row long on a hit and empty on a miss. The
+  // earlier shape — a separate `SELECT changes()` query after the
+  // UPDATE — was two round-trips for the same answer.
   let sql =
     "UPDATE books
         SET title = ?,
             author = ?,
             genre = ?
-      WHERE id = ?;"
-  use _ <- result.try(sqlight.query(
-    sql,
-    on: connection,
-    with: [
-      sqlight.text(title),
-      sqlight.nullable(sqlight.text, author),
-      sqlight.nullable(sqlight.text, genre),
-      sqlight.text(id),
-    ],
-    expecting: decode.dynamic,
-  ))
-  // `changes()` reports rows touched by the preceding DML statement;
-  // 1 means the id existed and the metadata write applied, 0 means
-  // the id was unknown so the caller should map to a 404.
-  let count_decoder = {
-    use count <- decode.field(0, decode.int)
-    decode.success(count)
+      WHERE id = ?
+  RETURNING id;"
+  let id_decoder = {
+    use returned_id <- decode.field(0, decode.string)
+    decode.success(returned_id)
   }
-  sqlight.query(
-    "SELECT changes();",
-    on: connection,
-    with: [],
-    expecting: count_decoder,
-  )
-  |> result.map(fn(rows) {
-    case rows {
-      [count, ..] -> count > 0
-      [] -> False
-    }
-  })
+  case
+    sqlight.query(
+      sql,
+      on: connection,
+      with: [
+        sqlight.text(title),
+        sqlight.nullable(sqlight.text, author),
+        sqlight.nullable(sqlight.text, genre),
+        sqlight.text(id),
+      ],
+      expecting: id_decoder,
+    )
+  {
+    Ok([_, ..]) -> Ok(True)
+    Ok([]) -> Ok(False)
+    Error(error) -> Error(error)
+  }
 }
 
 /// Delete a book and its dependent rows (`reading_state`, `book_settings`)
