@@ -148,6 +148,7 @@ fn empty_model() -> Model {
     paste_text: "",
     paste_submitting: False,
     paste_error: None,
+    paste_warning: None,
     add_book_open: False,
     created_book_segments: None,
     global_defaults: types.UserSettings(
@@ -5686,9 +5687,11 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
 
 pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
   // A partial-success import (one section failed to parse) keeps
-  // the extracted text on the form but surfaces a soft warning so
-  // the reader knows the book is not whole. Singular phrasing for
-  // the "1" case keeps the message natural.
+  // the extracted text on the form and surfaces a soft warning on
+  // the `paste_warning` channel — distinct from `paste_error` so
+  // the view can render it with `role="status"` rather than
+  // `role="alert"`. Singular phrasing for the "1" case keeps the
+  // message natural.
   let prior = Model(..empty_model(), paste_submitting: True)
 
   let extract = EpubExtract("Walden", "Body.\n\n", 1)
@@ -5700,7 +5703,8 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
       paste_title: "Walden",
       paste_text: "Body.\n\n",
       paste_submitting: False,
-      paste_error: Some(
+      paste_error: None,
+      paste_warning: Some(
         "Imported, but 1 section of this ePub could not be parsed and was skipped.",
       ),
     )
@@ -5710,7 +5714,8 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
 pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
   // More than one skipped section uses the plural phrasing. The
   // count appears verbatim so the reader can judge severity (1 of
-  // 14 is acceptable; 13 of 14 is not).
+  // 14 is acceptable; 13 of 14 is not). Same channel separation as
+  // the singular case — warning, not error.
   let prior = Model(..empty_model(), paste_submitting: True)
 
   let extract = EpubExtract("Walden", "Body.\n\n", 3)
@@ -5722,7 +5727,8 @@ pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
       paste_title: "Walden",
       paste_text: "Body.\n\n",
       paste_submitting: False,
-      paste_error: Some(
+      paste_error: None,
+      paste_warning: Some(
         "Imported, but 3 sections of this ePub could not be parsed and were skipped.",
       ),
     )
@@ -5804,6 +5810,135 @@ pub fn update_epub_parsed_error_parse_failed_falls_back_when_detail_blank_test()
       paste_error: Some("Could not parse this ePub."),
     )
   assert updated == expected
+}
+
+// ---------------------------------------------------------------------------
+// ePub import — paste_warning channel lifecycle
+// ---------------------------------------------------------------------------
+//
+// The `paste_warning` channel is set only by `apply_epub_parsed` on a
+// successful-but-partial import. Every other reducer arm that touches
+// the add-book surface must clear the warning at the moment it starts
+// a new import attempt or supersedes the prior one — otherwise a
+// stale "Imported, but N sections..." banner would outlive the import
+// it described and mislead the reader. The tests below pin each
+// clearing site to whole-Model equality so a regression that forgets
+// to wipe the field on any one arm fails loudly.
+
+pub fn update_epub_file_selected_clears_warning_test() {
+  // Picking a new file starts a fresh import attempt — any prior
+  // partial-import warning is now stale and must not survive into
+  // the new in-flight surface.
+  let prior =
+    Model(..empty_model(), paste_warning: Some("stale partial-import note"))
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubFileSelected(dynamic.nil()))
+
+  let expected = Model(..prior, paste_submitting: True, paste_warning: None)
+  assert updated == expected
+}
+
+pub fn update_epub_parsed_error_clears_prior_warning_test() {
+  // A parse failure replaces a prior partial-import warning — the
+  // reader is now seeing a hard failure, not a "we got most of the
+  // book" note, so the two banners should not coexist.
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_submitting: True,
+      paste_warning: Some("stale partial-import note"),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, EpubParsed(Error(UnsupportedFormat)))
+
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("This file does not look like a valid ePub."),
+      paste_warning: None,
+    )
+  assert updated == expected
+}
+
+pub fn update_set_paste_title_clears_warning_test() {
+  // Editing the form invalidates the prior import — the reader is
+  // taking ownership of the title field, and a stale partial-import
+  // banner alongside their edit would mislead.
+  let prior =
+    Model(..empty_model(), paste_warning: Some("stale partial-import note"))
+
+  let #(updated, _effect) = reducer.update(prior, SetPasteTitle("My Book"))
+
+  assert updated.paste_title == "My Book"
+  assert updated.paste_warning == None
+}
+
+pub fn update_set_paste_text_clears_warning_test() {
+  // Same reasoning as the title edit: a fresh paste in the body
+  // replaces whatever the import produced, so the warning that
+  // described the import is no longer relevant.
+  let prior =
+    Model(..empty_model(), paste_warning: Some("stale partial-import note"))
+
+  let #(updated, _effect) = reducer.update(prior, SetPasteText("hello world"))
+
+  assert updated.paste_text == "hello world"
+  assert updated.paste_warning == None
+}
+
+pub fn update_toggle_add_book_clears_warning_on_open_test() {
+  // Opening the sheet resets the surface to a clean state for the
+  // next attempt — both the error and the warning channels start
+  // empty so neither carries over from a previous session.
+  let prior =
+    Model(
+      ..empty_model(),
+      add_book_open: False,
+      paste_warning: Some("stale partial-import note"),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, ToggleAddBook)
+
+  assert updated.add_book_open == True
+  assert updated.paste_warning == None
+}
+
+pub fn update_toggle_add_book_preserves_warning_on_close_test() {
+  // Closing the sheet leaves the warning intact — the reader is
+  // dismissing the surface, not acknowledging the message. Reopening
+  // the sheet (separate test above) clears it on the next open.
+  let prior =
+    Model(
+      ..empty_model(),
+      add_book_open: True,
+      paste_warning: Some("Imported, but 1 section..."),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, ToggleAddBook)
+
+  assert updated.add_book_open == False
+  assert updated.paste_warning == Some("Imported, but 1 section...")
+}
+
+pub fn update_submit_paste_clears_warning_when_submitting_test() {
+  // The reader has accepted the partial-import body and is now
+  // sending it — keeping the banner around alongside the "Adding…"
+  // button label would double up the message.
+  let prior =
+    Model(
+      ..empty_model(),
+      paste_title: "Walden",
+      paste_text: "lorem ipsum",
+      paste_warning: Some("Imported, but 1 section..."),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SubmitPaste)
+
+  assert updated.paste_submitting == True
+  assert updated.paste_warning == None
 }
 
 // ---------------------------------------------------------------------------
@@ -6038,6 +6173,56 @@ pub fn view_library_epub_file_picker_disables_during_submit_test() {
     in: rendered,
     matching: lustre_query.class("epub-import-input")
       |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+pub fn view_library_renders_paste_warning_with_role_status_test() {
+  // A `paste_warning` is informational, not alarming — it must
+  // render in its own banner with `role="status"` so screen readers
+  // announce it politely, and with a visual class distinct from the
+  // error banner so the muted treatment from the stylesheet
+  // applies. Pinning both the role and the class here closes the
+  // accessibility gap the R2 critic named (a partial-import message
+  // routed through `paste_error` would have been announced as an
+  // assertive alert and visually painted with the error accent).
+  let model =
+    Model(
+      ..library_model(),
+      add_book_open: True,
+      paste_warning: Some("Imported, but 1 section..."),
+    )
+  let rendered = view.view(model)
+  let rendered_string = element.to_string(rendered)
+
+  assert string.contains(rendered_string, "Imported, but 1 section...")
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("paste-warning")
+      |> lustre_query.and(lustre_query.attribute("role", "status")),
+  )
+  // The same surface must NOT carry `role="alert"` for the warning
+  // text — pin the negative space so a future regression that
+  // reroutes the warning back through `paste_error` (or duplicates
+  // the message into both banners) fails this assertion rather than
+  // surviving silently.
+  assert !lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("paste-warning")
+      |> lustre_query.and(lustre_query.attribute("role", "alert")),
+  )
+}
+
+pub fn view_library_omits_paste_warning_banner_when_warning_is_none_test() {
+  // The warning surface is absent from the DOM when there's nothing
+  // to announce — the alternative ("hidden via CSS") would still
+  // route the element through the accessibility tree, which a
+  // screen reader could read aloud as a stray empty status.
+  let model = Model(..library_model(), add_book_open: True, paste_warning: None)
+  let rendered = view.view(model)
+
+  assert !lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("paste-warning"),
   )
 }
 

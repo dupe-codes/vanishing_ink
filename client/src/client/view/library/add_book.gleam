@@ -76,6 +76,27 @@ fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
       )
   }
 
+  // The warning banner sits on a separate channel from the error
+  // banner: a successful-but-partial ePub import is informational,
+  // not a failure, so it renders with `role="status"` (polite
+  // screen-reader announcement, not an assertive alert) and a muted
+  // visual treatment that does not read as red-alert. The reducer
+  // never sets both at once — `paste_error` and `paste_warning` are
+  // mutually exclusive across the surface — so the two banners
+  // appearing back-to-back would only happen on a model the reducer
+  // does not produce.
+  let warning_banner = case model.paste_warning {
+    None -> element.none()
+    Some(message) ->
+      html.div(
+        [
+          attribute.class("paste-warning"),
+          attribute.attribute("role", "status"),
+        ],
+        [html.text(message)],
+      )
+  }
+
   html.div([attribute.class("bottom-sheet"), stop_click_propagation()], [
     html.div(
       [
@@ -112,6 +133,7 @@ fn view_add_book_sheet_inner(model: Model) -> Element(Msg) {
         model.paste_text,
       ),
       error_banner,
+      warning_banner,
       html.button(
         [
           attribute.class("btn-add-book"),

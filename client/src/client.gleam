@@ -133,6 +133,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       paste_text: "",
       paste_submitting: False,
       paste_error: None,
+      paste_warning: None,
       add_book_open: False,
       created_book_segments: None,
       global_defaults: fallback_user_settings(dark_mode),

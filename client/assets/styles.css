@@ -1493,6 +1493,23 @@ body.vi-reduced-motion .settings-toggle-input::after {
   color: var(--vi-fg);
 }
 
+/* Partial-import advisory banner. Distinct from `.paste-error`: the
+   import succeeded, the reader just lost a section or two — surface
+   it with a muted neutral surface so the message reads as
+   informational rather than as a red-alert failure. The Gleam view
+   pairs this class with `role="status"` so screen readers announce
+   it politely (not as an `aria-live="assertive"` alert). */
+.paste-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
+}
+
 .btn-add-book {
   width: 100%;
   height: 52px;
