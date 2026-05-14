@@ -258,7 +258,7 @@ pub fn set_book_last_read_at(
 /// reference `books(id)` have to opt in.
 pub fn delete_book(
   connection: sqlight.Connection,
-  id: String,
+  id: shared.BookId,
 ) -> Result(Bool, sqlight.Error) {
   use <- transaction(connection)
   use _ <- result.try(sqlight.query(
