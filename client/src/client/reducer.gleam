@@ -51,12 +51,12 @@ import client/msg.{
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SetFontSize, SetGhostOpacity, SetJumpPageInput, SetLineSpacing,
-  SetMode, SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitJumpPage, SubmitPaste,
-  TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  UndoJump, ViewportResized,
+  ResumeFade, SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/navigation
 import client/pagination
@@ -69,7 +69,8 @@ import client/reducer/focus.{
 }
 import client/reducer/jump.{
   apply_jump_to_chapter, apply_jump_to_page, apply_lock_in_jump,
-  apply_set_jump_page_input, apply_submit_jump_page, apply_toggle_jump_menu,
+  apply_select_search_result, apply_set_jump_page_input,
+  apply_set_jump_search_query, apply_submit_jump_page, apply_toggle_jump_menu,
   apply_undo_jump,
 }
 import client/reducer/settings.{
@@ -402,6 +403,11 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     SetJumpPageInput(value) -> apply_set_jump_page_input(model, value)
 
     SubmitJumpPage -> apply_submit_jump_page(model)
+
+    SetJumpSearchQuery(value) -> apply_set_jump_search_query(model, value)
+
+    SelectSearchResult(page_index) ->
+      apply_select_search_result(model, page_index)
 
     // Sentinel: see `Msg.NoOp` for the rationale. No dispatch site
     // ever fires this; the arm is required so the pattern match

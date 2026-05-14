@@ -171,6 +171,8 @@ fn empty_model() -> Model {
     jump_preview: None,
     chapter_entries: [],
     jump_page_input: "",
+    jump_search_query: "",
+    jump_search_results: [],
   )
 }
 

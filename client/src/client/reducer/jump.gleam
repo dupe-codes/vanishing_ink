@@ -69,6 +69,7 @@ import client/engine.{word_interval_ms}
 import client/ffi
 import client/msg.{type Msg}
 import client/pagination.{type Page}
+import client/search
 import client/state.{type Model, JumpPreview, Model, Paused, Running, Stopped}
 import client/state/helpers.{
   change_page, compute_chapter_entries, compute_current_chapter_title,
@@ -79,15 +80,55 @@ import client/state/helpers.{
 /// stays on the previewed page until they tap Lock In or Go Back on
 /// the preview banner.
 ///
-/// Clears `jump_page_input` on every toggle so a half-typed value
-/// from a prior open does not pre-populate the field next time, and
-/// a value the reader just submitted does not linger as visible
-/// chrome after the menu closes.
+/// Clears `jump_page_input`, `jump_search_query`, and
+/// `jump_search_results` on every toggle so a half-typed value from a
+/// prior open does not pre-populate the field next time, and the
+/// stashed search hits do not flash on screen the moment the menu
+/// re-opens (before the reader has retyped a query).
 pub fn apply_toggle_jump_menu(model: Model) -> #(Model, Effect(Msg)) {
   #(
-    Model(..model, jump_menu_open: !model.jump_menu_open, jump_page_input: ""),
+    Model(
+      ..model,
+      jump_menu_open: !model.jump_menu_open,
+      jump_page_input: "",
+      jump_search_query: "",
+      jump_search_results: [],
+    ),
     effect.none(),
   )
+}
+
+/// Controlled change of the Jump Ahead menu's text-search input.
+/// Stores the raw query string and recomputes the cached forward-only
+/// result list against the pages strictly ahead of `current_page`.
+///
+/// Recompute is synchronous: the search walks page text in pure
+/// Gleam, the result list is capped at
+/// `state.jump_search_result_limit`, and empty / whitespace-only
+/// queries short-circuit inside `search.search_forward` without
+/// touching `pages`. Per-keystroke recompute is therefore well
+/// inside frame budget on a 500-page book.
+pub fn apply_set_jump_search_query(
+  model: Model,
+  query: String,
+) -> #(Model, Effect(Msg)) {
+  let results = search.search_forward(model.pages, model.current_page, query)
+  #(
+    Model(..model, jump_search_query: query, jump_search_results: results),
+    effect.none(),
+  )
+}
+
+/// Reader tapped a row in the Jump Ahead search results. Delegates
+/// to `apply_jump_to_page` — the search results are just a different
+/// surface for the existing jump mechanism, so lock-in / undo /
+/// engine pause / chapter-cache refresh all flow through the same
+/// tested arm.
+pub fn apply_select_search_result(
+  model: Model,
+  page_index: Int,
+) -> #(Model, Effect(Msg)) {
+  apply_jump_to_page(model, page_index)
 }
 
 /// Controlled change of the Jump Ahead menu's page-input field.
