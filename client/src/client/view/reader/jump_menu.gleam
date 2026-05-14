@@ -265,19 +265,28 @@ fn view_search_results(model: Model) -> Element(Msg) {
 /// 1-based page label is shown to the reader (matching the bottom-bar
 /// page indicator's convention); the dispatch payload remains the
 /// 0-based reducer index.
+///
+/// The `aria-label` carries both the page number and the snippet so
+/// a screen-reader user navigating the results list hears *what*
+/// matched on each page, not just the page index. Without the
+/// snippet, the list announces as "Jump to page 3, Jump to page 7,
+/// Jump to page 12 ..." with no indication of which page contains
+/// the phrase fragment the reader was hunting for — the whole reason
+/// the search surface exists.
 fn view_search_result_row(result: SearchResult) -> Element(Msg) {
+  let page_label = int.to_string(result.page_index + 1)
   html.button(
     [
       attribute.class("jump-search-result-item"),
       attribute.type_("button"),
       attribute.aria_label(
-        "Jump to page " <> int.to_string(result.page_index + 1),
+        "Jump to page " <> page_label <> ": " <> result.snippet,
       ),
       event.on_click(SelectSearchResult(result.page_index)),
     ],
     [
       html.span([attribute.class("jump-search-result-page")], [
-        html.text("p. " <> int.to_string(result.page_index + 1)),
+        html.text("p. " <> page_label),
       ]),
       html.span([attribute.class("jump-search-snippet")], [
         html.text(result.snippet),

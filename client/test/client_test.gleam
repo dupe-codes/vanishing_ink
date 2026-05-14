@@ -7522,8 +7522,49 @@ pub fn view_renders_search_results_when_query_has_matches_test() {
   assert string.contains(rendered, "p. 3")
   // Snippet text rendered.
   assert string.contains(rendered, "Two charlie")
-  // Aria-label uses the 1-based page number for screen readers.
-  assert string.contains(rendered, "aria-label=\"Jump to page 3\"")
+  // Aria-label carries both the 1-based page number and the snippet
+  // so screen-reader users get matched-context parity with sighted
+  // readers — see `view_search_result_aria_label_includes_snippet_test`
+  // for the dedicated coverage of the snippet half.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Jump to page 3: …Two charlie…\"",
+  )
+}
+
+pub fn view_search_result_aria_label_includes_snippet_test() {
+  // The visible snippet is the whole reason the search surface
+  // exists — a screen-reader user navigating the results must hear
+  // the matched context, not just "Jump to page 3". Folding the
+  // snippet into the aria-label gives non-sighted readers parity
+  // with the sighted result row.
+  //
+  // Pin via two assertions so a regression that *drops* the snippet
+  // (regression: aria-label collapses back to "Jump to page N")
+  // and a regression that *replaces* the page number with the
+  // snippet only (regression: aria-label drops the page index)
+  // both fail this test rather than passing on the literal
+  // `string.contains(rendered, snippet)`.
+  let snippet = "…Two charlie matched in this snippet…"
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: snippet),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  // Page number and snippet are both present in the aria-label,
+  // joined by a colon-space separator.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Jump to page 3: " <> snippet <> "\"",
+  )
 }
 
 pub fn view_renders_no_matches_message_for_unmatched_query_test() {
