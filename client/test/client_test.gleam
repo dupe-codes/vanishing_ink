@@ -52,20 +52,21 @@ import client/msg.{
   AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
   BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected, EpubParsed,
   EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
-  FocusParagraphUp, FocusPrevious, GoToLibrary, LinesMeasured, NextPage,
-  OpenBook, ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitPaste, TextLoaded,
-  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
+  LinesMeasured, LockInJump, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
+  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/pagination.{type Page, Page}
 import client/reducer
 import client/sample
 import client/state.{
-  type LineBox, type Model, Library, LineBox, Manual, Model, Paused, Reader,
-  RealTime, Running, Stopped,
+  type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
+  Model, Paused, Reader, RealTime, Running, Stopped,
 }
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
@@ -6484,4 +6485,401 @@ pub fn cover_color_for_title_returns_a_palette_color_test() {
     let color = state.cover_color_for_title(title)
     assert list.contains(state.cover_colors, color)
   })
+}
+
+// ---------------------------------------------------------------------------
+// Jump Ahead
+// ---------------------------------------------------------------------------
+//
+// Three-page, three-chapter fixture. Chapter 0 has no title (the
+// menu drops it); chapters 1 and 2 each have one sentence of two
+// words and live on pages 1 and 2 respectively. The page list is
+// built by hand so the test owns the page → paragraph mapping and
+// can assert chapter→page resolution against known coordinates.
+
+fn jump_text() -> SegmentedText {
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      Paragraph(index: 0, sentences: [
+        Sentence(index: 0, global_index: 0, words: [
+          Word(index: 0, global_index: 0, text: "Zero"),
+          Word(index: 1, global_index: 1, text: "alpha."),
+        ]),
+      ]),
+    ]),
+    Chapter(index: 1, title: Some("Chapter One"), paragraphs: [
+      Paragraph(index: 0, sentences: [
+        Sentence(index: 1, global_index: 1, words: [
+          Word(index: 0, global_index: 2, text: "One"),
+          Word(index: 1, global_index: 3, text: "bravo."),
+        ]),
+      ]),
+    ]),
+    Chapter(index: 2, title: Some("Chapter Two"), paragraphs: [
+      Paragraph(index: 0, sentences: [
+        Sentence(index: 2, global_index: 2, words: [
+          Word(index: 0, global_index: 4, text: "Two"),
+          Word(index: 1, global_index: 5, text: "charlie."),
+        ]),
+      ]),
+    ]),
+  ])
+}
+
+fn jump_pages() -> List(Page) {
+  // One paragraph per page so chapter boundaries align with page
+  // boundaries — the cleanest shape for the Jump Ahead tests.
+  let flat = pagination.flatten(jump_text())
+  list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+}
+
+fn jump_model() -> Model {
+  let text = jump_text()
+  let pages = jump_pages()
+  Model(
+    ..empty_model(),
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: pages,
+    total_pages: list.length(pages),
+    chapter_entries: state_helpers.compute_chapter_entries(pages, 0),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// compute_chapter_entries
+// ---------------------------------------------------------------------------
+
+pub fn compute_chapter_entries_returns_titled_chapters_after_current_page_test() {
+  // Walks the fixture's three pages, drops the untitled chapter 0 and
+  // anything at or behind `current_page = 0`. Result: two entries —
+  // "Chapter One" on page 1 and "Chapter Two" on page 2.
+  let entries = state_helpers.compute_chapter_entries(jump_pages(), 0)
+
+  assert entries
+    == [
+      ChapterEntry(title: "Chapter One", page_index: 1),
+      ChapterEntry(title: "Chapter Two", page_index: 2),
+    ]
+}
+
+pub fn compute_chapter_entries_drops_chapters_at_or_before_current_page_test() {
+  // Advancing the reader to page 1 must drop chapter 1 from the
+  // menu — only chapter 2 remains as a forward target.
+  let entries = state_helpers.compute_chapter_entries(jump_pages(), 1)
+
+  assert entries == [ChapterEntry(title: "Chapter Two", page_index: 2)]
+}
+
+pub fn compute_chapter_entries_is_empty_when_past_every_chapter_test() {
+  // On the last page there is nothing ahead. The helper returns the
+  // empty list rather than panicking; the menu renders the page-
+  // input row in that case.
+  let entries = state_helpers.compute_chapter_entries(jump_pages(), 2)
+
+  assert entries == []
+}
+
+// ---------------------------------------------------------------------------
+// update — ToggleJumpMenu
+// ---------------------------------------------------------------------------
+
+pub fn update_toggle_jump_menu_flips_open_flag_test() {
+  // Two toggles: closed → open, open → closed. The reducer holds
+  // no other state on this flip — `jump_preview` is independent and
+  // must not be touched by the toggle.
+  let closed = jump_model()
+  let #(open, _) = reducer.update(closed, ToggleJumpMenu)
+  let #(closed_again, _) = reducer.update(open, ToggleJumpMenu)
+
+  assert open == Model(..closed, jump_menu_open: True)
+  assert closed_again == closed
+}
+
+// ---------------------------------------------------------------------------
+// update — JumpToPage
+// ---------------------------------------------------------------------------
+
+pub fn update_jump_to_page_advances_and_stashes_preview_test() {
+  // A jump from page 0 to page 2 must stash the pre-jump state on
+  // `jump_preview`, pause the engine, advance the page, and close
+  // the menu. The chapter list refreshes against the new page.
+  let prior =
+    Model(
+      ..jump_model(),
+      jump_menu_open: True,
+      engine_state: Running,
+      next_word_index: Some(0),
+      mode: RealTime,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, JumpToPage(2))
+
+  assert updated.current_page == 2
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == None
+  assert updated.jump_menu_open == False
+  assert updated.jump_preview
+    == Some(JumpPreview(
+      source_page: 0,
+      prior_engine_state: Running,
+      prior_next_word_index: Some(0),
+    ))
+  // No forward chapters remain after jumping to the last page.
+  assert updated.chapter_entries == []
+}
+
+pub fn update_jump_to_page_rejects_backward_target_test() {
+  // The forward-only navigation invariant is the reducer's
+  // authority. A `JumpToPage(0)` from page 1 must leave the model
+  // untouched — no preview stashed, no engine pause, no page move.
+  let prior =
+    Model(..jump_model(), current_page: 1, total_pages: 3, jump_menu_open: True)
+
+  let #(updated, _effect) = reducer.update(prior, JumpToPage(0))
+
+  assert updated == prior
+}
+
+pub fn update_jump_to_page_rejects_self_target_test() {
+  // Jumping to the page the reader is already on is a no-op for
+  // the same reason as the backward case: there is nothing to
+  // preview, and stashing the current page on `jump_preview` would
+  // turn the bottom bar into a preview banner with no actual
+  // preview behind it.
+  let prior = Model(..jump_model(), current_page: 1)
+
+  let #(updated, _effect) = reducer.update(prior, JumpToPage(1))
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — JumpToChapter
+// ---------------------------------------------------------------------------
+
+pub fn update_jump_to_chapter_resolves_page_from_entries_test() {
+  // The menu indexes chapters by their position in
+  // `chapter_entries`. Tapping the second entry (index 1) from the
+  // fixture's chapter list must resolve to the page that entry
+  // carries — page 2 in the fixture.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, JumpToChapter(1))
+
+  assert updated.current_page == 2
+  // Preview snapshot matches the pre-jump state on the model.
+  assert updated.jump_preview
+    == Some(JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    ))
+}
+
+pub fn update_jump_to_chapter_is_noop_for_unknown_index_test() {
+  // A stale tap whose index has no matching entry (chapter list
+  // shifted under the reader by a re-pagination) must not crash and
+  // must not navigate.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, JumpToChapter(42))
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — LockInJump
+// ---------------------------------------------------------------------------
+
+pub fn update_lock_in_jump_vanishes_words_on_skipped_pages_test() {
+  // Pre-state: reader is previewing page 2 after jumping from
+  // page 0. Locking in must:
+  //   * union every word index from pages 0 and 1 into
+  //     `erased_words` (the fixture's words 0..3),
+  //   * drop the preview,
+  //   * restore the engine to the snapshot (Stopped here).
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    )
+  let prior =
+    Model(..jump_model(), current_page: 2, jump_preview: Some(preview))
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  assert updated.current_page == 2
+  assert updated.jump_preview == None
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  assert updated.erased_words == set.from_list([0, 1, 2, 3])
+}
+
+pub fn update_lock_in_jump_restores_running_engine_with_valid_word_test() {
+  // A `Running` snapshot must not survive the lock-in with a
+  // `next_word_index: None` — the engine would panic on the next
+  // tick. The reducer re-anchors the pointer to the first eligible
+  // word on the now-current page; after the bulk vanish, every word
+  // on pages 0..1 is erased, so the eligible word is word 4 on
+  // page 2.
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Running,
+      prior_next_word_index: Some(0),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(4)
+}
+
+// ---------------------------------------------------------------------------
+// update — UndoJump
+// ---------------------------------------------------------------------------
+
+pub fn update_undo_jump_restores_pre_jump_state_test() {
+  // Undo is the explicit exception to the forward-only navigation
+  // rule. The reducer reseats `current_page` from the snapshot,
+  // restores the engine state and pointer, refreshes the cached
+  // chapter title, drops the preview, and clears the overlay state.
+  // No save effect — the reading position is unchanged from before
+  // the jump.
+  let preview =
+    JumpPreview(
+      source_page: 1,
+      prior_engine_state: Running,
+      prior_next_word_index: Some(2),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+      next_word_index: None,
+      current_chapter_title: "Chapter Two",
+      line_boxes: [
+        LineBox(top: 0.0, height: 1.0, first_word_gi: 0, last_word_gi: 1),
+      ],
+      active_line: Some(0),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, UndoJump)
+
+  assert updated.current_page == 1
+  assert updated.engine_state == Running
+  assert updated.next_word_index == Some(2)
+  assert updated.jump_preview == None
+  assert updated.current_chapter_title == "Chapter One"
+  // Cached overlay geometry must clear so the view does not paint
+  // the new page against the previewed page's coordinates.
+  assert updated.line_boxes == []
+  assert updated.active_line == None
+}
+
+pub fn update_undo_jump_is_noop_when_no_preview_test() {
+  // A bare `UndoJump` with no preview on the model collapses to no
+  // action — the reducer should never crash, and the model stays
+  // identical to its prior state.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, UndoJump)
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// View — Jump menu rendering
+// ---------------------------------------------------------------------------
+
+pub fn view_renders_jump_button_in_manual_bottom_bar_test() {
+  // The Jump button rides in the manual bottom bar so the reader
+  // can reach the menu from the default reading surface.
+  let model = Model(..jump_model(), mode: Manual, view: Reader, current_page: 0)
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-bar jump\"")
+  assert string.contains(rendered, "Open jump menu")
+}
+
+pub fn view_renders_jump_button_in_realtime_bottom_bar_test() {
+  // Same affordance in the real-time bottom bar — the Jump button
+  // replaces the trailing spacer in that branch so a RealTime
+  // reader can also open the menu without switching modes.
+  let model = Model(..jump_model(), mode: RealTime, view: Reader)
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-bar jump\"")
+}
+
+pub fn view_renders_jump_overlay_when_menu_open_test() {
+  // `jump_menu_open: True` paints the modal: scrim, panel, header,
+  // and at least one chapter row. Closed, none of these appear.
+  let open = Model(..jump_model(), view: Reader, jump_menu_open: True)
+
+  let rendered = view.view(open) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-overlay\"")
+  assert string.contains(rendered, "class=\"jump-menu\"")
+  assert string.contains(rendered, "Jump ahead")
+  assert string.contains(rendered, "Chapter One")
+  assert string.contains(rendered, "Chapter Two")
+}
+
+pub fn view_omits_jump_overlay_when_menu_closed_test() {
+  // Closed-state contract: no scrim, no panel markup. The menu's
+  // entire DOM presence is gated on `jump_menu_open`, so the
+  // closed-state tests can pin "completely absent" rather than
+  // "display: none".
+  let closed = Model(..jump_model(), view: Reader, jump_menu_open: False)
+
+  let rendered = view.view(closed) |> element.to_string
+
+  assert !string.contains(rendered, "jump-overlay")
+  assert !string.contains(rendered, "jump-menu")
+}
+
+pub fn view_renders_preview_banner_when_jump_preview_some_test() {
+  // The preview banner replaces the regular bottom-bar inner row
+  // when `jump_preview` is `Some(_)`. Both action labels and the
+  // page indicator must appear; the regular Manual chrome (Undo,
+  // Turn Page) must not, so the reader has a clean Lock In / Go
+  // Back surface.
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    )
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      mode: Manual,
+      current_page: 2,
+      jump_preview: Some(preview),
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"reader-bottom-preview\"")
+  assert string.contains(rendered, "Lock In ✓")
+  assert string.contains(rendered, "← Go Back")
+  assert string.contains(rendered, "Previewing page 3")
+  // The regular manual chrome must step aside while previewing.
+  assert !string.contains(rendered, "reader-bottom-manual")
+  assert !string.contains(rendered, "Turn Page →")
 }
