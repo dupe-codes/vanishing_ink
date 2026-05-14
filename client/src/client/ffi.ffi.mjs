@@ -549,17 +549,6 @@ export function pack_indices_to_base64(indices) {
 }
 
 /**
- * Inverse of `pack_indices_to_base64`. Decodes the base64 string to
- * bytes and returns one Gleam-encoded list entry per set bit, in
- * ascending index order. An empty or whitespace-only input returns an
- * empty list. Padding bits beyond the largest set index are preserved
- * — the encoder only writes whole bytes, so a few trailing zero bits
- * are expected and contribute no indices.
- *
- * @param {string} encoded Base64-encoded bitset.
- * @returns {List} Gleam-encoded linked list of non-negative integers.
- */
-/**
  * Returns a fresh RFC 4122 v4 UUID via `crypto.randomUUID()`. Used to
  * stamp reading-session ids before the POST hits the server so the
  * follow-up PUT (and the visibilitychange-triggered end PUT) can
@@ -606,6 +595,17 @@ export function now_ms() {
   return Date.now();
 }
 
+/**
+ * Inverse of `pack_indices_to_base64`. Decodes the base64 string to
+ * bytes and returns one Gleam-encoded list entry per set bit, in
+ * ascending index order. An empty or whitespace-only input returns an
+ * empty list. Padding bits beyond the largest set index are preserved
+ * — the encoder only writes whole bytes, so a few trailing zero bits
+ * are expected and contribute no indices.
+ *
+ * @param {string} encoded Base64-encoded bitset.
+ * @returns {List} Gleam-encoded linked list of non-negative integers.
+ */
 export function unpack_base64_to_indices(encoded) {
   if (typeof encoded !== "string" || encoded.length === 0) {
     return toList([]);
