@@ -311,33 +311,45 @@ function toEpubError(error) {
  * can attach a typed handler that fires the parent message with the
  * raw `File` payload wrapped in a `Dynamic`.
  *
- * The arrangement mirrors the pattern used by `on_resize` in
- * `ffi.ffi.mjs`: the FFI installs the listener, normalises the
- * event, and dispatches a Gleam-runtime callback back to the caller.
- * The exported function returns a Lustre-compatible Attribute by
- * delegating to `event.on("change", decoder)` with a custom decoder
- * that pulls `event.target.files?.[0]` and returns it as a `Dynamic`.
+ * Pure read: extracts `event.target.files[0]` and returns it.
+ * Resetting the input's `.value` (so picking the same file twice
+ * still fires `change`) is done in a separate effect dispatched by
+ * the `EpubFileSelected` reducer arm — keeping the decoder pure
+ * matches Lustre's expectation that event decoders are
+ * read-only event projections, not side-effect carriers.
  *
- * Returning `null` from the decoder when no file was picked aborts
- * the dispatch — same shape as Lustre's own decoders treating "no
- * value" as "no message".
+ * Returning `Error(Nil)` from the decoder when no file was picked
+ * aborts the dispatch — same shape as Lustre's own decoders treating
+ * "no value" as "no message".
  */
 export function read_picked_file(event) {
-  const target = event?.target;
-  const file = target?.files?.[0];
+  const file = event?.target?.files?.[0];
   if (!file) return new GleamError(undefined);
-  // Reset the input's value so picking the same file twice still
-  // fires a `change` event. Without this, the second selection of
-  // the same path silently no-ops because the input's value did not
-  // change. The reset is async-safe — the File object we just read
-  // is fully detached from the input by the time the assignment
-  // runs.
-  try {
-    target.value = "";
-  } catch (_clear_error) {
-    // Some browsers throw when setting `.value` on a file input from
-    // certain contexts; ignore — the worst case is the user has to
-    // pick a different file to retry, which is the pre-fix behaviour.
-  }
   return new Ok(file);
+}
+
+/**
+ * Reset the value of every ePub-import file input in the DOM so a
+ * subsequent pick of the same file still fires a `change` event.
+ * Without this, the second selection of the same path silently
+ * no-ops because the input's value did not change.
+ *
+ * Dispatched as an effect from the `EpubFileSelected` reducer arm
+ * after the message has been read — the timing is async-safe because
+ * the `File` reference has already been routed into the parse
+ * effect by the time this runs.
+ *
+ * Some browsers throw when setting `.value` on a file input from
+ * certain contexts; ignore — the worst case is the user has to pick
+ * a different file to retry, which matches the pre-fix behaviour.
+ */
+export function reset_picker_inputs() {
+  const inputs = document.querySelectorAll(".epub-import-input");
+  for (const input of inputs) {
+    try {
+      input.value = "";
+    } catch (_clear_error) {
+      // Best-effort reset.
+    }
+  }
 }

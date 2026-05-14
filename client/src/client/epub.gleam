@@ -126,3 +126,13 @@ fn file_picker_decoder(to_msg: fn(Dynamic) -> msg) -> decode.Decoder(msg) {
 
 @external(javascript, "./epub.ffi.mjs", "read_picked_file")
 fn read_picked_file(event: Dynamic) -> Result(Dynamic, Nil)
+
+/// Reset the `.value` of every ePub-import file input in the DOM.
+/// Called from an effect after `EpubFileSelected` so that a
+/// subsequent pick of the same file path still fires a `change`
+/// event — without the reset, the browser short-circuits because the
+/// input's value did not change. Kept as a side-effecting FFI rather
+/// than mutating from the event decoder so the decoder stays a pure
+/// projection of the event payload.
+@external(javascript, "./epub.ffi.mjs", "reset_picker_inputs")
+pub fn reset_picker_inputs() -> Nil

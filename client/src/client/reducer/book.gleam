@@ -256,11 +256,25 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
 /// the parse is in flight (a second pick during the parse would
 /// orphan the first result), and clears any prior `paste_error` so
 /// the in-flight surface starts clean.
+///
+/// Also resets the file input's `.value` via a side-effecting FFI
+/// call so a subsequent pick of the same file path still fires a
+/// `change` event — without the reset, the browser short-circuits
+/// because the input's value did not change. The reset lives in an
+/// effect rather than the event decoder so the decoder stays a pure
+/// projection of the event payload (Lustre's expected contract for
+/// decoders).
 pub fn apply_epub_file_selected(
   model: Model,
   file: Dynamic,
 ) -> #(Model, Effect(Msg)) {
-  #(Model(..model, paste_submitting: True, paste_error: None), parse_epub(file))
+  #(
+    Model(..model, paste_submitting: True, paste_error: None),
+    effect.batch([
+      effect.from(fn(_dispatch) { epub.reset_picker_inputs() }),
+      parse_epub(file),
+    ]),
+  )
 }
 
 /// Stamp the parsed ePub onto the paste form so the reader sees the
