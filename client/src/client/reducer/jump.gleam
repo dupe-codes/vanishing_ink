@@ -80,19 +80,11 @@ pub fn apply_jump_to_page(
       // Clear the cached line geometry on a real page change — the
       // overlay anchors to the new page's word spans, not the old
       // page's coordinates. Mirrors `apply_next_page`'s cross-page
-      // cleanup. The chapter list is also refreshed so chapters that
-      // are now behind the jumped-to page drop out of the menu the
-      // next time it opens.
+      // cleanup. `change_page` already refreshed `chapter_entries`
+      // against the new page so the menu drops chapters now behind
+      // the reader on its next open.
       let with_cleared_overlay =
-        Model(
-          ..advanced,
-          line_boxes: [],
-          active_line: None,
-          chapter_entries: compute_chapter_entries(
-            advanced.pages,
-            advanced.current_page,
-          ),
-        )
+        Model(..advanced, line_boxes: [], active_line: None)
       #(with_cleared_overlay, measure_lines_after_paint())
     }
   }
@@ -150,10 +142,18 @@ pub fn apply_undo_jump(model: Model) -> #(Model, Effect(Msg)) {
     Some(preview) -> {
       // `change_page` rejects backward navigation, so a direct call
       // would no-op here. Bypass the helper and reseat the page
-      // index plus the cached chapter title directly — undo is the
-      // explicit exception to the forward-only rule, and the title
-      // cache needs to mirror whichever page is now visible.
-      let restored_page = preview.source_page
+      // index plus the cached chapter title and chapter list
+      // directly — undo is the explicit exception to the forward-
+      // only rule, and the caches need to mirror whichever page is
+      // now visible.
+      //
+      // Clamp defensively: the preview window is narrow but a
+      // viewport-resize-driven re-pagination *during* preview can
+      // shrink `pages` so the stashed `source_page` falls past the
+      // new last page. Clamping closes that race rather than
+      // landing the reader on an out-of-range `current_page`.
+      let restored_page =
+        pagination.clamp_page_index(preview.source_page, model.total_pages)
       let chapter_title =
         compute_current_chapter_title(model.text, model.pages, restored_page)
       let restored =

@@ -178,10 +178,11 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// race with rapid erases / page turns and a queued error toast would
 /// feel noisier than the bug it indicates.
 ///
-/// A no-op when `model.active_book_id` is `None` — there's no row to
-/// write to. The guard means callers can chain this effect
+/// A no-op when `should_save_reading_state(model)` is `False` — see
+/// that predicate for the gate. Callers chain this effect
 /// unconditionally without first inspecting the model; library-view
-/// dispatches collapse to `effect.none()` for free.
+/// dispatches and mid-preview dispatches collapse to `effect.none()`
+/// for free.
 ///
 /// ORDERING — same caveat as `save_book_settings`: rapid erases /
 /// page turns fire one PUT per dispatch with no debounce and no
@@ -190,9 +191,8 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// PUT that arrives after a newer one is silently dropped on the
 /// server side rather than clobbering the latest state.
 pub fn save_reading_state(model: Model) -> Effect(Msg) {
-  case model.active_book_id {
-    None -> effect.none()
-    Some(id) -> {
+  case should_save_reading_state(model), model.active_book_id {
+    True, Some(id) -> {
       let mode_value = case model.mode {
         Manual -> "manual"
         RealTime -> "ghost"
@@ -228,6 +228,34 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
         })
       })
     }
+    _, _ -> effect.none()
+  }
+}
+
+/// Predicate gating `save_reading_state`. Returns `True` when a save
+/// PUT would fire, `False` when the effect collapses to
+/// `effect.none()`. The two gates are:
+///
+/// * `active_book_id` is `Some(_)` — there's a row on the server to
+///   write to. Library-view dispatches naturally fail this gate.
+/// * `jump_preview` is `None` — the reader is committing to the
+///   current position rather than previewing a jump target. Saving
+///   while previewing would persist a page the reader may yet undo,
+///   so every reducer arm that fires `save_reading_state` short-
+///   circuits here while a preview is in flight. The save fires
+///   later on `LockInJump` (the preview clears in the same model
+///   update that builds the effect, so the gate flips True for that
+///   call) or never (if `UndoJump` rolls back to the source page).
+///
+/// Centralising the save-discipline gate here, rather than tagging
+/// every individual `save_reading_state` call site, means a future
+/// arm that chains this effect (or an existing arm whose reducer is
+/// reachable mid-preview, like `apply_go_to_library` or
+/// `EraseSentence`) cannot silently commit the previewed page.
+pub fn should_save_reading_state(model: Model) -> Bool {
+  case model.active_book_id, model.jump_preview {
+    Some(_), None -> True
+    _, _ -> False
   }
 }
 

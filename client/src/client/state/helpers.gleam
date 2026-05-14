@@ -171,6 +171,16 @@ pub fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
 /// need the same "no page change, no undo-stack clear" invariant
 /// and pulling the logic into one helper stops the two callers
 /// from drifting apart.
+///
+/// Refreshes both `current_chapter_title` (the page may have
+/// crossed a chapter boundary) and `chapter_entries` (the Jump
+/// Ahead menu's forward-only chapter list, which now needs to
+/// drop any chapter the reader has just paged past). Centralising
+/// both refreshes here means every caller — the touch/arrow path
+/// through `go_to_page`, the vim path through `move_focus`, the
+/// engine's `advance_to_next_page_loop`, and the Jump Ahead path
+/// through `apply_jump_to_page` — gets the cached fields kept in
+/// lock-step for free.
 pub fn change_page(model: Model, candidate: Int) -> Model {
   // Read the cached `total_pages` — same rationale as
   // `advance_to_next_page`: the invariant
@@ -187,11 +197,13 @@ pub fn change_page(model: Model, candidate: Int) -> Model {
       // trigger.
       let chapter_title =
         compute_current_chapter_title(model.text, model.pages, clamped)
+      let chapter_entries = compute_chapter_entries(model.pages, clamped)
       Model(
         ..model,
         current_page: clamped,
         undo_stack: [],
         current_chapter_title: chapter_title,
+        chapter_entries: chapter_entries,
       )
     }
   }

@@ -517,16 +517,11 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
     // place once `LinesMeasured` lands. The cleared state mirrors
     // the engine's own cross-page tick in `advance_to_next_page_loop`.
     False -> {
+      // `go_to_page` (via `change_page`) already refreshed the
+      // chapter list against the new page; only the overlay caches
+      // remain to clear here.
       let with_cleared_overlay =
-        Model(
-          ..updated,
-          line_boxes: [],
-          active_line: None,
-          chapter_entries: compute_chapter_entries(
-            updated.pages,
-            updated.current_page,
-          ),
-        )
+        Model(..updated, line_boxes: [], active_line: None)
       #(
         with_cleared_overlay,
         effect.batch([

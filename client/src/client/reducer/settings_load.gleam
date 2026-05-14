@@ -26,6 +26,7 @@ import client/state.{
   body_class_light_mode, css_var_font_size, css_var_ghost_opacity,
   css_var_line_height,
 }
+import client/state/helpers.{compute_chapter_entries}
 import client/types.{type BookSettings, type ReadingState, type UserSettings}
 
 /// Apply the persisted global preferences to the running model. Each
@@ -198,6 +199,13 @@ pub fn apply_reading_state_loaded(
           pagination.clamp_page_index(state.current_page, model.total_pages)
         False -> state.current_page
       }
+      // Refresh the forward-chapter cache against the resumed page.
+      // Pagination may have already run on this book (the user
+      // jumped back into a partially-paginated session), so the
+      // existing `chapter_entries` would otherwise reflect the
+      // pre-resume page=0 view of the menu rather than the
+      // server's saved position.
+      let chapter_entries = compute_chapter_entries(model.pages, target_page)
       #(
         Model(
           ..model,
@@ -205,6 +213,7 @@ pub fn apply_reading_state_loaded(
           erased: decode_base64_to_indices(state.sentence_bitset),
           erased_words: decode_base64_to_indices(state.word_bitset),
           current_page: target_page,
+          chapter_entries: chapter_entries,
         ),
         effect.none(),
       )

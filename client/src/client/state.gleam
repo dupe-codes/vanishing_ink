@@ -18,7 +18,10 @@
 ////   (`total_pages == list.length(pages)`).
 //// * Writing `current_page` requires writing
 ////   `current_chapter_title` (refresh via
-////   `compute_current_chapter_title` from `client/state/helpers`).
+////   `compute_current_chapter_title` from `client/state/helpers`)
+////   AND `chapter_entries` (the Jump Ahead menu's forward-only
+////   chapter cache, refresh via `compute_chapter_entries` from the
+////   same module).
 //// * Writing `text` requires writing `total_sentence_count` /
 ////   `total_word_count` (refresh via `total_counts` from
 ////   `client/state/helpers`).
@@ -26,8 +29,13 @@
 //// The pure helpers in `client/state/helpers` (`go_to_page`,
 //// `change_page`) refresh the cached fields as they mutate, so
 //// callers that go through those helpers do not need to worry about
-//// drift. Direct `Model(..model, pages: ...)` updates in the reducer
-//// must mirror the invariant by hand.
+//// drift. Direct `Model(..model, pages: ...)` or
+//// `Model(..model, current_page: ...)` updates in the reducer must
+//// mirror the invariant by hand — see `apply_paragraphs_measured`
+//// (re-paginates and writes both caches), `apply_reading_state_loaded`
+//// (resume-from-server writes `current_page` directly), and
+//// `apply_undo_jump` (backward navigation is the explicit exception
+//// to `change_page`'s forward-only rule).
 
 import gleam/int
 import gleam/list
