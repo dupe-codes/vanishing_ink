@@ -1854,6 +1854,34 @@ body.vi-reduced-motion .delete-confirm-sheet {
   outline-offset: 1px;
 }
 
+.jump-page-go {
+  /* Go button: the primary affordance on mobile, where a soft
+   * numeric keyboard does not always surface a return / "go" key. The
+   * 10px gap on `.jump-page-row` is the spacing between input and
+   * button. Sizing matches the input's min-height so the row reads
+   * as one visual unit. */
+  min-height: var(--vi-tap-target);
+  padding: 0 18px;
+  border: none;
+  border-radius: 10px;
+  background-color: var(--vi-accent);
+  color: var(--vi-bg);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--vi-chrome-transition);
+}
+
+.jump-page-go:hover {
+  background-color: var(--vi-accent-strong, var(--vi-accent));
+}
+
+.jump-page-go:focus-visible {
+  outline: 2px solid var(--vi-accent);
+  outline-offset: 2px;
+}
+
 body.vi-reduced-motion .jump-overlay,
 body.vi-reduced-motion .jump-menu,
 body.vi-reduced-motion .jump-chapter-item {

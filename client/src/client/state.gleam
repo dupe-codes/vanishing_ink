@@ -343,10 +343,17 @@ pub type EngineState {
 /// drop chapters whose title is `None` — those land on the reader's
 /// menu only as page numbers, not as a named entry). `page_index` is
 /// the zero-based index of the page on which the chapter's first
-/// paragraph lives. Used by the Jump Ahead menu to render forward
-/// chapters as tappable rows.
+/// paragraph lives. `chapter_index` is the segmenter's stable
+/// `Chapter.index` for that chapter, so the Jump Ahead menu can
+/// dispatch a `JumpToChapter` keyed by the chapter itself rather
+/// than by the row's transient position in the `chapter_entries`
+/// list — pagination or engine ticks during the open-menu window
+/// can otherwise re-key the list, and a tap that looked like
+/// "Chapter Two" could otherwise hit a different entry after the
+/// shuffle. Used by the Jump Ahead menu to render forward chapters
+/// as tappable rows.
 pub type ChapterEntry {
-  ChapterEntry(title: String, page_index: Int)
+  ChapterEntry(title: String, page_index: Int, chapter_index: Int)
 }
 
 /// Snapshot of pre-jump reader state, captured at the moment the
@@ -685,5 +692,13 @@ pub type Model {
     /// chapters in this menu would invite a tap that the reducer
     /// would silently reject.
     chapter_entries: List(ChapterEntry),
+    /// Controlled input value for the Jump Ahead menu's page-number
+    /// field. The input is bound to this field so both the Enter-
+    /// key handler and the Go button read the same value — without a
+    /// controlled binding, the Go button would have to reach into
+    /// the live DOM through an FFI escape hatch. Cleared whenever
+    /// the menu closes or a fresh book loads so a stale value never
+    /// pre-populates the next session's input.
+    jump_page_input: String,
   )
 }

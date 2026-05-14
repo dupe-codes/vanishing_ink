@@ -21,7 +21,16 @@
 //// they may yet undo. The save fires on `apply_lock_in_jump`, paired
 //// with the bulk word-bitset update so the server learns about the
 //// new page and the freshly-vanished words in one PUT.
+////
+//// The save-gate is reinforced inside `save_reading_state` itself —
+//// see `should_save_reading_state` in `client/effects.gleam`. Any
+//// reducer arm reachable during preview (touch / vim-key erase,
+//// settings sliders, `GoToLibrary`, the engine's page-cross tick)
+//// chains a save unconditionally; the central predicate short-
+//// circuits it while `jump_preview: Some(_)`, so the discipline
+//// here does not have to be reified at every dispatch site.
 
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
@@ -39,8 +48,44 @@ import client/state/helpers.{
 /// `jump_preview` — a reader who closes the menu while previewing
 /// stays on the previewed page until they tap Lock In or Go Back on
 /// the preview banner.
+///
+/// Clears `jump_page_input` on every toggle so a half-typed value
+/// from a prior open does not pre-populate the field next time, and
+/// a value the reader just submitted does not linger as visible
+/// chrome after the menu closes.
 pub fn apply_toggle_jump_menu(model: Model) -> #(Model, Effect(Msg)) {
-  #(Model(..model, jump_menu_open: !model.jump_menu_open), effect.none())
+  #(
+    Model(
+      ..model,
+      jump_menu_open: !model.jump_menu_open,
+      jump_page_input: "",
+    ),
+    effect.none(),
+  )
+}
+
+/// Controlled change of the Jump Ahead menu's page-input field.
+/// Stores the raw string so the input can echo "12" while the
+/// reader is mid-typing rather than the parsed Int, which would
+/// round-trip badly on partial input.
+pub fn apply_set_jump_page_input(
+  model: Model,
+  value: String,
+) -> #(Model, Effect(Msg)) {
+  #(Model(..model, jump_page_input: value), effect.none())
+}
+
+/// Submit the Jump Ahead menu's page-input field. Reads the stored
+/// `jump_page_input`, parses it as a 1-based page number, and
+/// delegates to `apply_jump_to_page` after converting to the
+/// 0-based reducer surface. Invalid / empty / out-of-range inputs
+/// collapse to a no-op — the reducer guards in `apply_jump_to_page`
+/// are the authority.
+pub fn apply_submit_jump_page(model: Model) -> #(Model, Effect(Msg)) {
+  case int.parse(model.jump_page_input) {
+    Error(_) -> #(model, effect.none())
+    Ok(one_based) -> apply_jump_to_page(model, one_based - 1)
+  }
 }
 
 /// Jump to a specific page index. Rejects targets at or before the
@@ -90,16 +135,25 @@ pub fn apply_jump_to_page(
   }
 }
 
-/// Look up the chapter's page from `chapter_entries` and delegate to
-/// `apply_jump_to_page`. A no-op when `chapter_index` has no entry —
-/// the menu only renders forward chapters, and a stale tap (chapter
+/// Look up the chapter by its stable `Chapter.index` and delegate to
+/// `apply_jump_to_page`. A no-op when the index has no entry — the
+/// menu only renders forward chapters, and a stale tap (chapter
 /// dropped on a re-pagination after the menu opened) collapses to no
 /// action rather than crashing.
+///
+/// The lookup is by `chapter_index`, not by list position. If the
+/// engine ticks or a re-pagination drops earlier entries between
+/// paint and tap, the row the reader saw as "Chapter Two" still
+/// resolves to chapter 2 — whichever position chapter 2 now occupies
+/// in `chapter_entries` — rather than landing them on whatever
+/// chapter currently sits at the same list index. A stable identity
+/// also means a chapter that has already been passed and removed
+/// from the cache simply collapses to no action.
 pub fn apply_jump_to_chapter(
   model: Model,
   chapter_index: Int,
 ) -> #(Model, Effect(Msg)) {
-  case nth_entry(model.chapter_entries, chapter_index) {
+  case entry_for_chapter_index(model.chapter_entries, chapter_index) {
     None -> #(model, effect.none())
     Some(entry) -> apply_jump_to_page(model, entry.page_index)
   }
@@ -110,6 +164,13 @@ pub fn apply_jump_to_chapter(
 /// skipping past them), drop the preview snapshot, restore the
 /// engine state captured in the preview, and chain a save so the
 /// server picks up the new position and the new word bitset.
+///
+/// The save chain depends on `jump_preview: None` being written
+/// *before* the effect is constructed — `save_reading_state`'s gate
+/// (`should_save_reading_state` in `client/effects.gleam`) blocks the
+/// PUT whenever `jump_preview: Some(_)`. The `restored` model has the
+/// preview cleared, so the save fires; building the effect off the
+/// pre-clear `model` would silently collapse to `effect.none()`.
 ///
 /// Restoring the engine state runs through `restore_engine_after_jump`
 /// so a `Running` snapshot lands on a valid `next_word_index` instead
@@ -260,21 +321,14 @@ fn first_eligible_word(model: Model) -> option.Option(Int) {
   }
 }
 
-/// Pick the entry whose `chapter_index` would point at the given
-/// index. `ChapterEntry` does not carry the chapter index directly —
-/// the menu identifies a chapter by its position in `chapter_entries`,
-/// not by the source chapter index — so this is a list lookup by
-/// list position, not a `find`.
-fn nth_entry(
+/// Find the entry for the given segmenter-stable chapter index.
+/// Returns `None` when no entry carries that chapter — the chapter
+/// is either behind the reader (dropped from the forward-only cache)
+/// or untitled (and so was never added to the cache).
+fn entry_for_chapter_index(
   entries: List(state.ChapterEntry),
-  index: Int,
+  chapter_index: Int,
 ) -> option.Option(state.ChapterEntry) {
-  case index < 0 {
-    True -> None
-    False ->
-      case list.drop(entries, index) {
-        [entry, ..] -> Some(entry)
-        [] -> None
-      }
-  }
+  list.find(entries, fn(entry) { entry.chapter_index == chapter_index })
+  |> option.from_result
 }

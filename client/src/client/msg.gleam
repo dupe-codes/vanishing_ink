@@ -411,4 +411,39 @@ pub type Msg {
   /// `jump_preview`, then clears the snapshot. No save fires — the
   /// reading position is unchanged from before the jump.
   UndoJump
+
+  /// Controlled change of the Jump Ahead menu's page-number input.
+  /// Stores the new value on `model.jump_page_input` so the Enter-
+  /// key handler and the Go button can both read it without
+  /// reaching into the DOM. Carries the raw string so the field
+  /// can echo "12" while the reader is mid-typing rather than
+  /// the parsed int, which would round-trip badly on partial
+  /// input.
+  SetJumpPageInput(value: String)
+
+  /// Reader tapped the Go button next to the Jump Ahead menu's
+  /// page-number input. Reads `model.jump_page_input`, parses it as
+  /// a 1-based page number, and dispatches the same code path the
+  /// Enter-key handler does. Invalid / empty / out-of-range inputs
+  /// are reducer-side no-ops — the input field's `min`/`max` HTML
+  /// attributes are advisory; the reducer is the authority.
+  SubmitJumpPage
+
+  /// Sentinel Msg variant used as the placeholder type parameter for
+  /// `decode.failure` in event decoders that intentionally never
+  /// dispatch — `stop_click_propagation` on overlay sheets, the
+  /// `keydown` decoder's non-`Enter` arm in the Jump Ahead page
+  /// input, etc. `decode.failure` always fails the decode and
+  /// collapses the event, but its first parameter still has to be a
+  /// real Msg value for the type checker; using a dedicated no-op
+  /// variant rather than reusing a meaningful Msg makes the intent
+  /// unambiguous to a future reader skimming the decoder.
+  ///
+  /// The reducer's `NoOp` arm is a unit-noop: returns the model
+  /// unchanged and no effect. By construction, no dispatch site ever
+  /// fires it; if a future change accidentally wires `NoOp` to a real
+  /// event, the only visible behaviour is "the model holds steady",
+  /// which is the safest possible failure mode for an accidental
+  /// dispatch.
+  NoOp
 }

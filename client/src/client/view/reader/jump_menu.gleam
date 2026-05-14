@@ -6,7 +6,10 @@
 //// * **Page** — numeric input + Go button so the reader can jump to
 ////   an arbitrary forward page without going through the chapter
 ////   list. The input is `min=current_page+2` (1-based) so the
-////   smallest valid target is the next page.
+////   smallest valid target is the next page. The button is the
+////   primary affordance on mobile, where soft numeric keyboards do
+////   not always surface a return / go key; pressing Enter inside
+////   the field also dispatches the same Msg path.
 ////
 //// The scrim closes the menu on outside-tap (mirroring the settings
 //// panel); the inner sheet swallows clicks via `stop_click_propagation`
@@ -21,7 +24,10 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 
-import client/msg.{type Msg, JumpToChapter, JumpToPage, ToggleJumpMenu}
+import client/msg.{
+  type Msg, JumpToChapter, NoOp, SetJumpPageInput, SubmitJumpPage,
+  ToggleJumpMenu,
+}
 import client/state.{type ChapterEntry, type Model}
 
 /// Render the Jump Ahead overlay when `model.jump_menu_open` is true.
@@ -92,19 +98,24 @@ fn view_chapter_section(model: Model) -> Element(Msg) {
         ]),
         html.div(
           [attribute.class("jump-chapter-list")],
-          list.index_map(entries, view_chapter_row),
+          list.map(entries, view_chapter_row),
         ),
       ])
   }
 }
 
-fn view_chapter_row(entry: ChapterEntry, index: Int) -> Element(Msg) {
+/// Render one chapter row. Dispatches `JumpToChapter(chapter_index)`
+/// using the segmenter-stable chapter index — not the row's position
+/// in `chapter_entries` — so a tap on what the reader saw as
+/// "Chapter Two" still resolves to chapter 2 even if pagination or
+/// the engine reshuffled the cache between paint and tap.
+fn view_chapter_row(entry: ChapterEntry) -> Element(Msg) {
   html.button(
     [
       attribute.class("jump-chapter-item"),
       attribute.type_("button"),
       attribute.aria_label("Jump to " <> entry.title),
-      event.on_click(JumpToChapter(index)),
+      event.on_click(JumpToChapter(entry.chapter_index)),
     ],
     [
       html.span([attribute.class("jump-chapter-title")], [
@@ -146,45 +157,40 @@ fn view_page_section(model: Model) -> Element(Msg) {
               "Page " <> min_value <> "-" <> max_value,
             ),
             attribute.aria_label("Page number"),
-            on_page_input(model),
+            attribute.value(model.jump_page_input),
+            event.on_input(SetJumpPageInput),
+            on_enter_submit(),
           ]),
+          html.button(
+            [
+              attribute.class("jump-page-go"),
+              attribute.type_("button"),
+              attribute.aria_label("Go to typed page"),
+              event.on_click(SubmitJumpPage),
+            ],
+            [html.text("Go")],
+          ),
         ]),
       ])
     }
   }
 }
 
-/// `Enter`-key handler on the numeric input. Reads the typed value,
-/// converts to a 0-based page index, and dispatches `JumpToPage`. The
-/// reducer-side guard rejects anything `<= current_page` or
-/// `>= total_pages`, so we don't need to validate on the way in
-/// beyond parsing.
-///
-/// Decode failure (empty / non-numeric input, or below the min) maps
-/// to `ToggleJumpMenu` as a placeholder Msg that Lustre never
-/// dispatches — `decode.failure` always fails, so the event collapses
-/// rather than firing a phantom toggle.
-fn on_page_input(model: Model) -> attribute.Attribute(Msg) {
-  event.on("keydown", page_input_decoder(model))
+/// `Enter`-key handler on the numeric input. Dispatches the same
+/// `SubmitJumpPage` Msg the Go button does — the reducer reads
+/// `model.jump_page_input` (kept in sync through `SetJumpPageInput`)
+/// and runs the parse + dispatch path. Non-Enter keys collapse to
+/// `NoOp` via `decode.failure` so the event never reaches the
+/// reducer.
+fn on_enter_submit() -> attribute.Attribute(Msg) {
+  event.on("keydown", enter_key_decoder())
 }
 
-fn page_input_decoder(model: Model) -> decode.Decoder(Msg) {
+fn enter_key_decoder() -> decode.Decoder(Msg) {
   use key <- decode.field("key", decode.string)
   case key {
-    "Enter" -> {
-      use value <- decode.subfield(["target", "value"], decode.string)
-      case int.parse(value) {
-        Ok(one_based) -> {
-          let zero_based = one_based - 1
-          case zero_based > model.current_page {
-            True -> decode.success(JumpToPage(zero_based))
-            False -> decode.failure(ToggleJumpMenu, "page-out-of-range")
-          }
-        }
-        Error(_) -> decode.failure(ToggleJumpMenu, "page-not-numeric")
-      }
-    }
-    _ -> decode.failure(ToggleJumpMenu, "non-enter-key")
+    "Enter" -> decode.success(SubmitJumpPage)
+    _ -> decode.failure(NoOp, "non-enter-key")
   }
 }
 
@@ -194,6 +200,6 @@ fn page_input_decoder(model: Model) -> decode.Decoder(Msg) {
 /// so the view-layer dependency graph stays a fan-in pattern (each
 /// view module is a leaf under `client/view.gleam`).
 fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleJumpMenu, "stop-propagation"))
+  event.on("click", decode.failure(NoOp, "stop-propagation"))
   |> event.stop_propagation
 }

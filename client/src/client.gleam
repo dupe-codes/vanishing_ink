@@ -143,6 +143,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       jump_menu_open: False,
       jump_preview: None,
       chapter_entries: [],
+      jump_page_input: "",
     )
 
   // Boot effects:

@@ -194,6 +194,7 @@ pub fn apply_text_load(model: Model, text: SegmentedText) -> Model {
     jump_menu_open: False,
     jump_preview: None,
     chapter_entries: [],
+    jump_page_input: "",
   )
 }
 
@@ -248,6 +249,7 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       jump_menu_open: False,
       jump_preview: None,
       chapter_entries: [],
+      jump_page_input: "",
       // Returning to the library re-pins the four overridable fields
       // to the global defaults so the settings panel — which can be
       // opened from the library appbar — shows the user-wide

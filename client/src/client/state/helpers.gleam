@@ -279,7 +279,12 @@ pub fn compute_chapter_entries(
         case first_titled_chapter(page.paragraphs, seen_chapters) {
           option.None -> #(entries_rev, seen_chapters)
           option.Some(#(title, chapter_index)) -> {
-            let entry = ChapterEntry(title: title, page_index: page.index)
+            let entry =
+              ChapterEntry(
+                title: title,
+                page_index: page.index,
+                chapter_index: chapter_index,
+              )
             #([entry, ..entries_rev], [chapter_index, ..seen_chapters])
           }
         }
