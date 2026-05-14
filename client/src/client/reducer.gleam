@@ -83,6 +83,7 @@ import client/reducer/settings_load.{
   apply_book_settings_loaded, apply_reading_state_loaded, apply_settings_loaded,
 }
 import client/reducer/touch.{apply_erase, apply_touch_end, apply_undo}
+import client/search
 import client/state.{
   type Model, Library, Manual, Model, Paused, RealTime, Running, Stopped,
 }
@@ -482,6 +483,31 @@ fn apply_paragraphs_measured(
   // "where can I jump to from here" set rather than entries that
   // pagination has since invalidated.
   let chapter_entries = compute_chapter_entries(pages, clamped)
+  // Refresh the cached jump-menu search results whenever pagination
+  // re-runs. `jump_search_results` is a parallel cache to
+  // `chapter_entries` — both are built by walking the post-
+  // measurement `pages`, both reference `page_index` values into
+  // that page list, and both decay into inconsistency when
+  // pagination shifts prose to a different page offset (phone
+  // rotation, dynamic font-size slider, line-spacing slider). The
+  // forward-only guard at `apply_jump_to_page` plus the stale-row
+  // filter in `view_search_results` together prevent the worst
+  // failure mode (a tap landing on the wrong page), but the
+  // snippet text shown to the reader can still describe prose that
+  // is no longer on the cached page — a cosmetic incoherence the
+  // view layer cannot detect because it has no view of the
+  // pre-/post-pagination delta.
+  //
+  // `search.search_forward` is total over its inputs: an empty /
+  // whitespace-only `jump_search_query` short-circuits to `[]`
+  // without scanning any page (the empty-query reset on
+  // `ToggleJumpMenu` / `apply_text_load` / `apply_go_to_library`
+  // already keeps the field in lock-step), and a `clamped` past
+  // the last page also returns `[]`. Per-keystroke recompute on a
+  // 500-page book is well inside the frame budget; re-running it
+  // here is a one-shot cost paid only on pagination changes.
+  let jump_search_results =
+    search.search_forward(pages, clamped, model.jump_search_query)
   #(
     Model(
       ..model,
@@ -503,6 +529,7 @@ fn apply_paragraphs_measured(
       current_chapter_title: chapter_title,
       total_pages: total,
       chapter_entries: chapter_entries,
+      jump_search_results: jump_search_results,
     ),
     // Pagination ran — chain a line measurement so the active-line
     // overlay re-anchors to the post-repagination geometry. The

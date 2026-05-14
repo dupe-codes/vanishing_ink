@@ -610,6 +610,75 @@ pub fn update_paragraphs_measured_sets_total_pages_zero_when_no_text_test() {
   assert updated.total_pages == 0
 }
 
+pub fn update_paragraphs_measured_recomputes_jump_search_results_test() {
+  // `jump_search_results` is a parallel cache to `chapter_entries`
+  // — both reference `page_index` values into the post-measurement
+  // page list. A re-pagination (phone rotation, dynamic font-size
+  // slider, line-spacing slider) can shift prose to a different
+  // page offset; the cached snippets must be rebuilt against the
+  // new pagination or they describe prose that is no longer on the
+  // referenced page. This test prepopulates `jump_search_results`
+  // with an entry that is *obviously* stale (a snippet that never
+  // appears in the fixture's prose), then dispatches
+  // `ParagraphsMeasured` and asserts the cached results are
+  // recomputed from the current pagination — the stale snippet is
+  // gone, and the actual matching page surfaces with its real
+  // snippet text.
+  let text = jump_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 99, snippet: "OBVIOUSLY-STALE-SNIPPET"),
+      ],
+    )
+  // One paragraph per page (25px budget) so chapter boundaries
+  // align with page boundaries — same shape as `jump_pages()`.
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    reducer.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  // The stale entry is gone and the live match on page 2 is
+  // present with the actual prose. Whole-payload assertion so a
+  // regression that leaves the stale field in place cannot slip
+  // past a field-level case match.
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn update_paragraphs_measured_keeps_jump_search_results_empty_when_query_is_empty_test() {
+  // The empty-query short-circuit inside `search.search_forward`
+  // means a re-pagination with no active query produces no
+  // results — the recompute is total over the input but does not
+  // surface phantom hits when there is no search intent. Pins the
+  // parallel branch to the recompute test above.
+  let text = jump_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      jump_search_query: "",
+      jump_search_results: [],
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    reducer.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  assert updated.jump_search_results == []
+}
+
 // ---------------------------------------------------------------------------
 // update — NextPage
 // ---------------------------------------------------------------------------

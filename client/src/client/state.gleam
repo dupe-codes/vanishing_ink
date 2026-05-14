@@ -24,7 +24,17 @@
 //// lock-step:
 ////
 //// * Writing `pages` requires writing `total_pages`
-////   (`total_pages == list.length(pages)`).
+////   (`total_pages == list.length(pages)`). Re-writing `pages` —
+////   i.e. a re-pagination, not just a clamp — also requires
+////   refreshing `jump_search_results` via
+////   `search.search_forward(pages, clamped, jump_search_query)`
+////   so the cached snippets continue to describe prose that is
+////   actually on the page they reference; the forward-only guard
+////   at `apply_jump_to_page` and the view-side stale-row filter
+////   keep the worst failure mode (a tap landing on the wrong
+////   page) impossible, but the snippet text is otherwise
+////   cosmetically incoherent across a page-shape shift (phone
+////   rotation, font-size slider, line-spacing slider).
 //// * Writing `current_page` requires writing
 ////   `current_chapter_title` (refresh via
 ////   `compute_current_chapter_title` from `client/state/helpers`)
