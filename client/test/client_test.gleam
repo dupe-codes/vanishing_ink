@@ -7288,6 +7288,136 @@ pub fn apply_book_loaded_opens_active_session_test() {
   assert updated.active_book_id == Some("book-x")
 }
 
+pub fn reading_state_loaded_restamps_session_start_snapshots_test() {
+  // Reproduces the resume defect: `apply_book_loaded` opens the
+  // session synchronously against `erased_words = set.new()` and
+  // `current_page = 0`, then the async `ReadingStateLoaded` arrives
+  // with the persisted bitset and resumed page. Without the
+  // re-stamp inside `apply_reading_state_loaded`, the closing PUT
+  // would credit every saved word and every resumed page to this
+  // session. After the fix, `session_start_erased_count` mirrors
+  // the loaded word-bitset size and `session_start_page` mirrors
+  // the resumed page, so the closing delta reflects only the
+  // within-session work.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-1"),
+      active_session_id: Some("session-1"),
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      total_pages: 50,
+    )
+  // Saved progress: ten previously-erased words, on page 30. The
+  // exact count is unimportant — the defect manifests at any
+  // non-zero loaded bitset size; ten is enough to distinguish the
+  // re-stamped value from the pre-fix zero.
+  let saved_words = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  let body = reading_state_body("book-1", "manual", [], saved_words, 30)
+
+  let #(updated, _effect) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert set.size(updated.erased_words) == 10
+  assert updated.current_page == 30
+  assert updated.session_start_erased_count == 10
+  assert updated.session_start_page == 30
+}
+
+pub fn reading_state_loaded_leaves_snapshots_alone_without_active_session_test() {
+  // The visibility-change re-open path opens its next session
+  // against an already-populated model — its snapshots are
+  // correct on first stamp. If a late `ReadingStateLoaded` lands
+  // while no session is active (the session ended on tab-hide
+  // before the GET arrived), the snapshots must NOT be touched,
+  // otherwise an unrelated future session would start with
+  // stale snapshot fields.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-1"),
+      active_session_id: None,
+      session_start_page: 7,
+      session_start_erased_count: 99,
+    )
+  let body = reading_state_body("book-1", "manual", [], [0, 1, 2, 3], 4)
+
+  let #(updated, _effect) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.session_start_page == 7
+  assert updated.session_start_erased_count == 99
+}
+
+pub fn resume_then_close_session_reports_within_session_progress_only_test() {
+  // End-to-end resume-then-close: open a fresh session (mirrors what
+  // `apply_book_loaded` would do at session-open), land a
+  // `ReadingStateLoaded` with ten saved words on page 30, simulate the
+  // reader erasing two more words and advancing five pages, then close.
+  // The pre-fix bug recorded the post-load model with `start_page = 0`
+  // and `start_erased_count = 0`, so `apply_end_session` would compute
+  // `words_read = 12 - 0 - 0 = 12` and `pages_turned = 35 - 0 = 35`.
+  // After the fix, the post-load snapshots match the resumed baseline
+  // (start_page = 30, start_erased_count = 10) so the closing deltas
+  // collapse to the within-session counts.
+  let opened =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-1"),
+      active_session_id: Some("session-1"),
+      session_started_at: Some("2026-05-13T10:00:00.000Z"),
+      session_started_at_ms: 1_715_587_200_000,
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+      total_pages: 50,
+    )
+  let body =
+    reading_state_body(
+      "book-1",
+      "manual",
+      [],
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      30,
+    )
+  let #(after_load, _e1) =
+    reducer.update(opened, ReadingStateLoaded("book-1", Ok(body)))
+
+  // The pre-close model that `apply_end_session` will read: ten saved
+  // words plus two within-session erasures, advanced five pages.
+  let pre_close =
+    Model(
+      ..after_load,
+      erased_words: set.from_list([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      current_page: after_load.current_page + 5,
+    )
+
+  // The deltas that the closing PUT would carry — duplicating the
+  // arithmetic from `apply_end_session` rather than intercepting the
+  // outbound effect (which would require a fakery surface this test
+  // suite does not have today).
+  let words_read =
+    set.size(pre_close.erased_words)
+    - pre_close.session_start_erased_count
+    - pre_close.session_words_skipped
+  let pages_turned = pre_close.current_page - pre_close.session_start_page
+
+  // After the fix, the snapshots reflect the resumed baseline, so the
+  // deltas collapse to the within-session counts. Pre-fix, words_read
+  // would have been 12 and pages_turned 35.
+  assert words_read == 2
+  assert pages_turned == 5
+
+  // The lifecycle close still resets the snapshot fields back to zero.
+  let #(closed, _e2) = reducer.update(pre_close, GoToLibrary)
+  assert closed.active_session_id == None
+  assert closed.session_start_page == 0
+  assert closed.session_start_erased_count == 0
+}
+
 pub fn apply_go_to_library_ends_active_session_test() {
   // The closing PUT must fire before `active_book_id` is cleared, so
   // the model post-dispatch carries `active_session_id: None` and the

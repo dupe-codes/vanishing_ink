@@ -10,7 +10,8 @@
 
 import gleam/float
 import gleam/int
-import gleam/option.{Some}
+import gleam/option.{None, Some}
+import gleam/set
 import lustre/effect.{type Effect}
 
 import client/effects.{decode_base64_to_indices, repaginate_after_paint}
@@ -183,6 +184,18 @@ pub fn apply_book_settings_loaded(
 /// `apply_book_loaded`-initial state. Restoring the engine to
 /// `Running` on load would surprise a reader who tabbed away from a
 /// running engine.
+///
+/// SESSION SNAPSHOT RE-STAMP — `apply_book_loaded` opens the session
+/// synchronously with `erased_words = set.new()` and `current_page = 0`
+/// because the persisted state has not landed yet. Without intervention
+/// here, the closing PUT would compute
+/// `words_read = current_erased - 0 = saved_bitset_size + within_session_reads`
+/// and `pages_turned = current_page - 0`, retroactively crediting every
+/// previously-erased word and every page of resumed progress to this
+/// session. When an active session is in flight for this book, re-stamp
+/// `session_start_erased_count` to the freshly-loaded word-bitset size
+/// and `session_start_page` to the resumed page so the deltas reflect
+/// only the work done within the session.
 pub fn apply_reading_state_loaded(
   model: Model,
   book_id: String,
@@ -199,6 +212,8 @@ pub fn apply_reading_state_loaded(
           pagination.clamp_page_index(state.current_page, model.total_pages)
         False -> state.current_page
       }
+      let loaded_erased = decode_base64_to_indices(state.sentence_bitset)
+      let loaded_erased_words = decode_base64_to_indices(state.word_bitset)
       // Refresh the forward-chapter cache against the resumed page.
       // Pagination may have already run on this book (the user
       // jumped back into a partially-paginated session), so the
@@ -206,14 +221,29 @@ pub fn apply_reading_state_loaded(
       // pre-resume page=0 view of the menu rather than the
       // server's saved position.
       let chapter_entries = compute_chapter_entries(model.pages, target_page)
+      // Re-stamp the session snapshots so the closing PUT computes
+      // deltas against the resumed baseline rather than the pre-load
+      // zeros captured by `apply_start_session` in `apply_book_loaded`.
+      // The no-active-session branch leaves the snapshots untouched —
+      // the visibility-change re-open path opens the next session
+      // against an already-populated model, so its snapshots are
+      // correct on first stamp.
+      let #(restamped_start_page, restamped_start_erased_count) = case
+        model.active_session_id
+      {
+        Some(_) -> #(target_page, set.size(loaded_erased_words))
+        None -> #(model.session_start_page, model.session_start_erased_count)
+      }
       #(
         Model(
           ..model,
           mode: mode,
-          erased: decode_base64_to_indices(state.sentence_bitset),
-          erased_words: decode_base64_to_indices(state.word_bitset),
+          erased: loaded_erased,
+          erased_words: loaded_erased_words,
           current_page: target_page,
           chapter_entries: chapter_entries,
+          session_start_page: restamped_start_page,
+          session_start_erased_count: restamped_start_erased_count,
         ),
         effect.none(),
       )
