@@ -3,12 +3,15 @@
 //// and the active-line overlay that the fade engine anchors against.
 ////
 //// The chrome rows (`view_reader_header`, `view_progress_bar`,
-//// `view_bottom_bar`) flank the central `.reader-page` so the
+//// `bottom_bar.view`) flank the central `.reader-page` so the
 //// reading area is the flex-grow child between two `flex: 0 0 auto`
 //// frames. The header carries the back glyph, current book title,
 //// and settings gear; the bottom bar swaps shape with `model.mode`
 //// — Manual gets undo / page indicator / turn-page, RealTime gets
-//// WPM readout / play-pause / spacer.
+//// WPM readout / play-pause / spacer. Bottom-bar markup lives in
+//// the sibling `client/view/reader/bottom_bar` module so this file
+//// stays under the 800-line hard budget while subsequent reader
+//// features land their own surfaces around the same outer frame.
 ////
 //// The `#vi-measurement` container receives all paragraphs from the
 //// whole book — not just the current page. This lets
@@ -35,15 +38,16 @@ import lustre/event
 
 import client/gestures
 import client/msg.{
-  type Msg, EraseSentence, GoToLibrary, NextPage, PauseFade, ResumeFade,
-  StartFade, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  type Msg, EraseSentence, GoToLibrary, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart,
 }
 import client/pagination.{type Page, type PageParagraph}
 import client/state.{
   type LineBox, type Mode, type Model, Manual, Paused, RealTime, Running,
-  Stopped, measurement_id, page_content_id, reading_area_id,
+  measurement_id, page_content_id, reading_area_id,
 }
 import client/state/helpers.{erased_opacity_value, progress_percentage}
+import client/view/reader/bottom_bar
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
 
 /// Reader-view body. Renders a loading placeholder until a
@@ -129,7 +133,7 @@ fn view_paginated(model: Model) -> Element(Msg) {
         ),
       ],
     ),
-    view_bottom_bar(model, total),
+    bottom_bar.view(model, total),
     view_measurement_container(model.flat_paragraphs, erased_opacity),
   ])
 }
@@ -378,151 +382,6 @@ fn view_page(
       )
     }),
   )
-}
-
-/// Bottom bar — mode-aware. Manual mode renders the undo / page-
-/// indicator / turn-page trio so the reader can step through the
-/// book with thumb-reachable controls; RealTime mode renders the
-/// WPM readout, the play / pause button, and a balancing spacer so
-/// the play button sits centred between two equal-width siblings.
-///
-/// The outer `.reader-bottom-bar` carries the safe-area-bottom
-/// padding and the warm chrome bg so both branches inherit the
-/// same frame; only the inner row changes shape with `model.mode`.
-fn view_bottom_bar(model: Model, total: Int) -> Element(Msg) {
-  let inner = case model.mode {
-    Manual -> view_bottom_manual(model, total)
-    RealTime -> view_bottom_realtime(model)
-  }
-  html.div([attribute.class("reader-bottom-bar")], [inner])
-}
-
-/// Manual-mode bottom bar inner row.
-///
-/// Layout: `[↩ Undo]   Page N of M   [Turn Page →]`.
-///
-/// * Undo button — disabled when the undo stack is empty. Dispatches
-///   `Undo`.
-/// * Page label — same `Page N of M` text the old `view_control_bar`
-///   carried; renders an empty string when no pages are available yet,
-///   so the bar's frame stays the same height before pagination has
-///   produced its first result.
-/// * Turn-page button — primary (inverted) styling so the eye is
-///   drawn to it. Reads "✓ Finished" on the last page and is
-///   disabled there (the reader has nowhere to advance to). Dispatches
-///   `NextPage`.
-fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
-  let on_last_page = total > 0 && model.current_page >= total - 1
-  let next_label = case on_last_page {
-    True -> "✓ Finished"
-    False -> "Turn Page →"
-  }
-  let next_disabled = total == 0 || on_last_page
-  let page_text = case total {
-    0 -> ""
-    _ ->
-      "Page "
-      <> int.to_string(model.current_page + 1)
-      <> " of "
-      <> int.to_string(total)
-  }
-  let undo_disabled = list.is_empty(model.undo_stack)
-
-  html.div([attribute.class("reader-bottom-manual")], [
-    html.button(
-      [
-        attribute.class("btn-bar"),
-        attribute.type_("button"),
-        attribute.disabled(undo_disabled),
-        attribute.aria_label("Undo last erase"),
-        event.on_click(Undo),
-      ],
-      [html.text("↩ Undo")],
-    ),
-    html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
-    html.button(
-      [
-        attribute.class("btn-bar primary"),
-        attribute.type_("button"),
-        attribute.disabled(next_disabled),
-        attribute.aria_label("Turn page"),
-        event.on_click(NextPage),
-      ],
-      [html.text(next_label)],
-    ),
-  ])
-}
-
-/// Real-time mode bottom bar inner row.
-///
-/// Layout: `WPM readout   [▶ / ⏸]   (spacer)`.
-///
-/// The play button cycles through the engine's three states:
-///
-/// * `Stopped` — render `▶` with the `.ready` accent background;
-///   click dispatches `StartFade`.
-/// * `Paused`  — render `▶` with the `.ready` accent background;
-///   click dispatches `ResumeFade`.
-/// * `Running` — render `⏸` with the default inverted background;
-///   click dispatches `PauseFade`.
-///
-/// `Stopped` and `Paused` share the `.ready` modifier (rather
-/// than a `.paused` class that mislabels the Stopped case as
-/// "paused") because both states paint the same "press me to
-/// resume / start" affordance.
-///
-/// No `event.stop_propagation` is required: the page-level touch
-/// handlers (`gestures.on_touch_*`) sit on `#vi-reading-area` /
-/// `.reader-page`, while this button lives inside
-/// `.reader-bottom-bar`. The two are *siblings* under
-/// `.reader-text`, not ancestor and descendant — DOM events bubble
-/// up through ancestors only, so a tap on the play button never
-/// reaches the reading-area touch handler and cannot fire the
-/// engine transition twice.
-fn view_bottom_realtime(model: Model) -> Element(Msg) {
-  let #(button_label, button_class, play_msg, aria_label) = case
-    model.engine_state
-  {
-    Running -> #("⏸", "btn-play", PauseFade, "Pause reading")
-    Paused -> #("▶", "btn-play ready", ResumeFade, "Resume reading")
-    Stopped -> #("▶", "btn-play ready", StartFade, "Start reading")
-  }
-
-  html.div([attribute.class("reader-bottom-realtime")], [
-    html.div(
-      [
-        attribute.class("wpm-readout"),
-        // `role="text"` collapses the element into a single text node
-        // in the accessibility tree and exposes the aria-label as the
-        // accessible name. Without a role, a roleless `<div>` is a
-        // generic that JAWS and VoiceOver may skip in announcement
-        // passes — dropping the verbose phrase silently. `role="status"`
-        // would announce on every slider tick during a drag; we want
-        // a static label, not a live region.
-        attribute.role("text"),
-        attribute.aria_label(
-          "Reading speed: " <> int.to_string(model.wpm) <> " words per minute",
-        ),
-      ],
-      [html.text(int.to_string(model.wpm) <> " wpm")],
-    ),
-    html.button(
-      [
-        attribute.class(button_class),
-        attribute.type_("button"),
-        attribute.aria_label(aria_label),
-        event.on_click(play_msg),
-      ],
-      [html.text(button_label)],
-    ),
-    html.div(
-      [
-        attribute.class("btn-play-spacer"),
-        attribute.aria_hidden(True),
-      ],
-      [],
-    ),
-  ])
 }
 
 fn view_measurement_container(
