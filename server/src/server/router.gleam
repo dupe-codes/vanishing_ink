@@ -1,15 +1,20 @@
 //// HTTP request router and handlers for the Vanishing Ink API.
 ////
-//// Routing is plain `case` pattern-matching on path segments; handlers
-//// live alongside the routing table because the surface is small
-//// enough that a per-feature split would add ceremony without
-//// clarifying anything. Each handler reads the request, talks to
-//// `server/db`, and either returns JSON or maps a precise error to a
-//// 4xx/5xx response.
+//// Routing is plain `case` pattern-matching on path segments. Most
+//// handlers still live alongside the routing table; per-feature
+//// submodules under `server/router/` carve out the larger surfaces
+//// (e.g. `metadata` for `PATCH /api/books/:id`) so the dispatcher
+//// stays at a readable size as the API surface grows. Each handler
+//// reads the request, talks to `server/db`, and either returns JSON
+//// or maps a precise error to a 4xx/5xx response.
 ////
 //// JSON bodies are decoded with `gleam/dynamic/decode`; on a decode
 //// failure we return 400 with the first error's message so clients can
-//// see exactly which field was wrong.
+//// see exactly which field was wrong. The decode-error formatter and
+//// the SQLite-error response builder live in `server/router/helpers`
+//// because submodules need them too — keeping them here would force
+//// every per-feature submodule to import the dispatcher and close an
+//// import cycle.
 
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -21,6 +26,8 @@ import gleam/result
 import gleam/string
 import server/clock
 import server/db
+import server/router/helpers.{db_error_response, describe_decode_errors}
+import server/router/metadata
 import server/types.{
   type BookSettings, type ReadingState, type UserSettings, BookMeta,
   BookSettings, ReadingState, UserSettings,
@@ -29,7 +36,6 @@ import server/web.{type Context}
 import shared
 import shared/segmenter
 import simplifile
-import sqlight
 import wisp.{type Request, type Response}
 
 /// Closed vocabulary for `reading_state.mode`. The schema defaults to
@@ -223,172 +229,8 @@ fn books_item(req: Request, ctx: Context, id: String) -> Response {
   case req.method {
     Get -> get_book_handler(ctx, id)
     Delete -> delete_book_handler(ctx, id)
-    Patch -> patch_book_metadata_handler(req, ctx, id)
+    Patch -> metadata.handle_patch(req, ctx, id)
     _ -> wisp.method_not_allowed([Get, Delete, Patch])
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Book metadata edit
-// ---------------------------------------------------------------------------
-//
-// `PATCH /api/books/:id` accepts an object whose three editable fields
-// — `title`, `author`, `genre` — are independently optional. An omitted
-// field means "leave the on-disk value alone"; an explicit `null` for
-// `author` or `genre` clears that column. The router reads the
-// existing row first so the SQL UPDATE writes a full triple back; the
-// schema's `title NOT NULL` constraint is preserved by client-side
-// validation rejecting an empty trimmed title.
-//
-// The handler returns the updated `BookMeta` on the wire so the
-// client can drop the response into its library list without a
-// follow-up GET — same shape as `POST /api/books` returning the
-// freshly-minted metadata.
-
-type MetadataUpdateInput {
-  MetadataUpdateInput(
-    title: Option(String),
-    author: MetadataField(String),
-    genre: MetadataField(String),
-  )
-}
-
-/// Three-way state for a partial-update field. `Untouched` means the
-/// client did not include the field at all — the existing value
-/// stays. `Cleared` means the client sent `null` — the column gets
-/// nulled out. `Set(value)` means the client sent a non-null value —
-/// the column takes that value. `decode.optional` collapses the
-/// `null` vs missing distinction the first two states need, so the
-/// decoder reads the field via `decode.field` with a custom
-/// branching decoder that surfaces the three cases.
-type MetadataField(a) {
-  Untouched
-  Cleared
-  Set(value: a)
-}
-
-fn metadata_update_decoder() -> decode.Decoder(MetadataUpdateInput) {
-  use title <- decode.optional_field(
-    "title",
-    None,
-    decode.optional(decode.string),
-  )
-  use author <- metadata_field_decoder("author")
-  use genre <- metadata_field_decoder("genre")
-  decode.success(MetadataUpdateInput(title: title, author: author, genre: genre))
-}
-
-fn metadata_field_decoder(
-  field: String,
-  next: fn(MetadataField(String)) -> decode.Decoder(a),
-) -> decode.Decoder(a) {
-  decode.optional_field(
-    field,
-    Untouched,
-    decode.map(decode.optional(decode.string), fn(value) {
-      case value {
-        None -> Cleared
-        Some(text) -> Set(text)
-      }
-    }),
-    next,
-  )
-}
-
-fn patch_book_metadata_handler(
-  req: Request,
-  ctx: Context,
-  id: String,
-) -> Response {
-  use body <- wisp.require_json(req)
-
-  case decode.run(body, metadata_update_decoder()) {
-    Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
-    Ok(input) -> apply_metadata_update(ctx, id, input)
-  }
-}
-
-fn apply_metadata_update(
-  ctx: Context,
-  id: String,
-  input: MetadataUpdateInput,
-) -> Response {
-  case db.get_book(ctx.db, id) {
-    Error(error) -> db_error_response("db.get_book", error)
-    Ok(None) -> wisp.not_found()
-    Ok(Some(book)) -> persist_metadata_update(ctx, id, book, input)
-  }
-}
-
-fn persist_metadata_update(
-  ctx: Context,
-  id: String,
-  book: types.Book,
-  input: MetadataUpdateInput,
-) -> Response {
-  // Resolve the three fields against the on-disk row before writing
-  // — an untouched field round-trips the existing value, a cleared
-  // field nulls the column, an explicitly set field writes the new
-  // value. Validating title up front keeps the schema's `NOT NULL`
-  // guard from surfacing as an opaque 500.
-  let title = case input.title {
-    Some(value) -> value
-    None -> book.title
-  }
-  case validate_metadata_title(title) {
-    Error(detail) -> wisp.bad_request(detail)
-    Ok(trimmed_title) -> {
-      let author = resolve_metadata_field(input.author, book.author)
-      let genre = resolve_metadata_field(input.genre, book.genre)
-      case
-        db.update_book_metadata(
-          ctx.db,
-          id: id,
-          title: trimmed_title,
-          author: author,
-          genre: genre,
-        )
-      {
-        Error(error) -> db_error_response("db.update_book_metadata", error)
-        Ok(False) -> wisp.not_found()
-        Ok(True) -> {
-          let meta =
-            BookMeta(
-              id: id,
-              title: trimmed_title,
-              author: author,
-              genre: genre,
-              word_count: book.word_count,
-              sentence_count: book.sentence_count,
-              uploaded_at: book.uploaded_at,
-              last_read_at: book.last_read_at,
-            )
-          let body =
-            types.book_meta_to_json(meta)
-            |> json.to_string
-          wisp.json_response(body, 200)
-        }
-      }
-    }
-  }
-}
-
-fn resolve_metadata_field(
-  field: MetadataField(String),
-  existing: Option(String),
-) -> Option(String) {
-  case field {
-    Untouched -> existing
-    Cleared -> None
-    Set(value) -> Some(value)
-  }
-}
-
-fn validate_metadata_title(title: String) -> Result(String, String) {
-  let trimmed = string.trim(title)
-  case trimmed {
-    "" -> Error("title must not be empty")
-    _ -> Ok(trimmed)
   }
 }
 
@@ -975,38 +817,6 @@ fn user_settings_decoder() -> decode.Decoder(UserSettings) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Render every decode failure on a single line. Reporting only the
-/// first error meant a client missing two fields had to fix one,
-/// re-request, then learn about the second; rolling them all up
-/// removes that round-trip.
-fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
-  case errors {
-    [] -> "invalid JSON body"
-    _ ->
-      errors
-      |> list.map(describe_decode_error)
-      |> string.join("; ")
-  }
-}
-
-fn describe_decode_error(error: decode.DecodeError) -> String {
-  let decode.DecodeError(expected, found, path) = error
-  let path_str = case path {
-    [] -> "<root>"
-    _ -> string.join(path, ".")
-  }
-  "expected " <> expected <> " at " <> path_str <> " but found " <> found
-}
-
-/// Log a SQLite error with operator-visible context, then return the
-/// generic 500. Centralised so every call site has the same shape
-/// (operation tag plus a structured Sqlight error inspection) and no
-/// future error path can silently drop the trail.
-fn db_error_response(operation: String, error: sqlight.Error) -> Response {
-  wisp.log_error(operation <> " failed: " <> string.inspect(error))
-  wisp.internal_server_error()
-}
 
 /// Word and sentence totals for the stored `books` row. Global indices
 /// are assigned by the segmenter in document reading order starting at
