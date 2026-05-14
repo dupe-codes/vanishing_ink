@@ -72,8 +72,7 @@ import client/reducer/settings.{
   apply_toggle_dyslexia_font, apply_toggle_ghost_mode,
 }
 import client/reducer/settings_load.{
-  apply_book_settings_loaded, apply_reading_state_loaded,
-  apply_settings_loaded,
+  apply_book_settings_loaded, apply_reading_state_loaded, apply_settings_loaded,
 }
 import client/reducer/touch.{apply_erase, apply_touch_end, apply_undo}
 import client/state.{
@@ -426,8 +425,7 @@ fn apply_paragraphs_measured(
   // page list — the visible page's chapter may have shifted if
   // pagination repacked paragraphs or the clamp moved the
   // current page.
-  let chapter_title =
-    compute_current_chapter_title(model.text, pages, clamped)
+  let chapter_title = compute_current_chapter_title(model.text, pages, clamped)
   #(
     Model(
       ..model,

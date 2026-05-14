@@ -24,8 +24,8 @@ import client/state.{
   css_var_font_size, css_var_ghost_opacity, css_var_line_height,
   empty_book_settings, max_font_size, max_ghost_opacity, max_line_spacing,
   max_page_delay_ms, max_paragraph_delay_ms, max_wpm, min_font_size,
-  min_ghost_opacity, min_line_spacing, min_page_delay_ms,
-  min_paragraph_delay_ms, min_wpm,
+  min_ghost_opacity, min_line_spacing, min_page_delay_ms, min_paragraph_delay_ms,
+  min_wpm,
 }
 import client/state/helpers.{clamp_float, clamp_int}
 import client/types.{

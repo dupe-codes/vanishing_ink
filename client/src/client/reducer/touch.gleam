@@ -14,9 +14,7 @@ import lustre/effect.{type Effect}
 import client/effects.{save_reading_state}
 import client/gestures
 import client/msg.{type Msg}
-import client/state.{
-  type Model, Manual, Model, RealTime, undo_stack_depth,
-}
+import client/state.{type Model, Manual, Model, RealTime, undo_stack_depth}
 import client/state/helpers.{go_to_page}
 
 /// Pop the most recent erase off `undo_stack` and remove its index
