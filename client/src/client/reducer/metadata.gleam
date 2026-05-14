@@ -196,7 +196,7 @@ pub fn apply_book_metadata_updated(
         False -> #(model, effect.none())
         True ->
           case result {
-            Ok(updated) -> apply_metadata_updated_ok(model, updated)
+            Ok(updated) -> apply_metadata_updated_ok(model, id, updated)
             Error(error) -> apply_metadata_updated_error(model, draft, error)
           }
       }
@@ -205,16 +205,19 @@ pub fn apply_book_metadata_updated(
 
 /// Replace the matching row in `model.books` with the server's
 /// authoritative copy and close the sheet. The caller has already
-/// verified the open draft is for this id; `updated.id` is the same
-/// value the wire carried back, so it is the natural key for the
-/// row match.
+/// verified the open draft is for this id; we key the row match off
+/// the URL `id` we requested (the trusted side of the boundary) rather
+/// than `updated.id` (which the server controls), so a misbehaving
+/// server cannot redirect the replacement onto a different row than
+/// the one the user was editing.
 fn apply_metadata_updated_ok(
   model: Model,
+  id: String,
   updated: BookMeta,
 ) -> #(Model, Effect(Msg)) {
   let books =
     list.map(model.books, fn(book) {
-      case book.id == updated.id {
+      case book.id == id {
         True -> updated
         False -> book
       }

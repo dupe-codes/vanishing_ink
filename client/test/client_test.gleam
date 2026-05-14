@@ -7514,6 +7514,43 @@ pub fn update_book_metadata_updated_ok_is_noop_when_draft_id_differs_test() {
   assert updated.editing_metadata == Some(draft_b)
 }
 
+pub fn update_book_metadata_updated_ok_keys_row_replace_on_url_id_test() {
+  // Trust-boundary regression: if a misbehaving server echoes a
+  // different id in the response body than the URL we PATCHed, the
+  // row replace must still target the row the reader was editing (the
+  // URL id), not whatever the server claims in the payload. Pre-fix
+  // the row match used `book.id == updated.id`, which would mean a
+  // divergent server-id silently skipped the replace and left the row
+  // stale. Post-fix the match uses the URL `id` we trust, so the row
+  // the reader was editing is the row that gets replaced.
+  let original = metadata_sample_book("book-1", "Dune", None, None)
+  let server_lied =
+    metadata_sample_book("book-WRONG", "Dune (revised)", None, Some("Sci-Fi"))
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [original],
+      editing_metadata: Some(MetadataEdit(
+        book_id: "book-1",
+        title: "Dune (revised)",
+        author: "",
+        genre: "Sci-Fi",
+        submitting: True,
+        error: None,
+      )),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-1", Ok(server_lied)))
+
+  // The row at the URL id ("book-1") gets replaced with the server's
+  // payload; we do not search for the divergent id and leave the row
+  // stale. Sheet closes either way.
+  assert updated.books == [server_lied]
+  assert updated.editing_metadata == None
+}
+
 pub fn update_book_metadata_updated_error_is_noop_when_no_draft_open_test() {
   // Symmetric to the Ok case: a failed PATCH whose draft has been
   // cancelled cannot leave a popup or stamp an error message
