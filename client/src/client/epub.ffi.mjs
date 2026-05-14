@@ -49,15 +49,12 @@ configure({ useWebWorkers: false });
 // Block-level HTML elements whose `.textContent` we extract as one
 // paragraph each. `<p>` is the workhorse; `<blockquote>` / `<pre>`
 // preserve indented prose; `<li>` flattens lists into one paragraph
-// per item. Headings are handled separately above (the first `<h1>` /
-// `<h2>` becomes a `# Title` line).
+// per item. Headings are handled separately below (the first `<h1>` /
+// `<h2>` becomes a `# Title` line). The `querySelectorAll(selector)`
+// call is the single source of truth for which tags reach the loop —
+// no runtime `.has()` guard is needed because the selector already
+// filters to exactly these tags.
 const PARAGRAPH_TAGS = new Set(["p", "blockquote", "pre", "li"]);
-
-// Heading tags we accept as the section title. We only emit a single
-// `# Title` per section regardless of how many headings the section
-// carries — the segmenter's chapter model is one-title-per-chapter,
-// and most spine items only carry one h1/h2 anyway.
-const HEADING_TAGS = new Set(["h1", "h2"]);
 
 // Sniff the file's first four bytes for the ZIP local-file-header
 // magic number (`PK\x03\x04`). A non-ZIP file (text, PDF, image) lands
@@ -160,7 +157,6 @@ function extractSection(doc, chunks) {
   // in a `<header>` element after the cover image).
   const headingNodes = body.querySelectorAll("h1, h2");
   for (const node of headingNodes) {
-    if (!HEADING_TAGS.has(node.tagName.toLowerCase())) continue;
     const text = normalizeWhitespace(node.textContent ?? "");
     if (text.length === 0) continue;
     chunks.push(`# ${text}\n\n`);
@@ -169,19 +165,24 @@ function extractSection(doc, chunks) {
   }
 
   // Walk block elements in document order. `querySelectorAll` returns
-  // descendants in document order, and the segmenter treats nested
-  // `<li>` inside `<blockquote>` etc. as one paragraph per innermost
-  // block, which matches the visual reading the user sees in any
-  // ePub reader.
+  // descendants in document order, so an outer `<blockquote>` and any
+  // `<p>` nested inside it both appear in the list. Emitting both
+  // duplicates the prose: the outer block's `.textContent` already
+  // concatenates the inner paragraphs.
+  //
+  // Fix: only emit a block when it contains no other matching block
+  // (i.e., it is the innermost block in its subtree). For
+  // `<blockquote><p>Quoted.</p></blockquote>` the `<blockquote>` is
+  // skipped and the `<p>` emits "Quoted." once. For a multi-paragraph
+  // blockquote `<blockquote><p>A</p><p>B</p></blockquote>` the
+  // blockquote is skipped and each `<p>` emits its own paragraph —
+  // preserving the paragraph break the visual rendering implies.
+  // Same shape covers `<li><blockquote>...</blockquote></li>` and
+  // any other block-in-block nesting.
   const blockSelector = Array.from(PARAGRAPH_TAGS).join(",");
   const blockNodes = body.querySelectorAll(blockSelector);
   for (const node of blockNodes) {
-    const tag = node.tagName.toLowerCase();
-    if (!PARAGRAPH_TAGS.has(tag)) continue;
-    // Skip `<p>` and friends nested inside `<li>` to avoid emitting
-    // the same prose twice — the outer `<li>` already captured the
-    // textContent of its descendants.
-    if (tag === "p" && node.closest("li")) continue;
+    if (node.querySelector(blockSelector) !== null) continue;
     const text = normalizeWhitespace(node.textContent ?? "");
     if (text.length === 0) continue;
     chunks.push(`${text}\n\n`);
