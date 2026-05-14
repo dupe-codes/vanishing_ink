@@ -316,6 +316,13 @@ async function renderSections(book) {
 // `normalizeWhitespace` is applied to the label so an EPUB whose nav
 // document indented the title across multiple lines still produces a
 // clean one-line chapter marker.
+//
+// `resolveHref` itself is wrapped in `try/catch` because foliate-js
+// throws on malformed nav documents (relative paths that escape the
+// EPUB root, broken character refs in the href). The neighbouring
+// `extractSection` path already catches the same class of malformed-
+// EPUB failure; mirroring the discipline here keeps a TOC-driven
+// import alive when the spine is otherwise parseable.
 function buildTocIndex(book) {
   const tocByIndex = new Map();
   const entries = book?.toc ?? [];
@@ -323,7 +330,13 @@ function buildTocIndex(book) {
     if (!entry || typeof entry.href !== "string") continue;
     const label = normalizeWhitespace(entry.label ?? "");
     if (label.length === 0) continue;
-    const resolved = book.resolveHref(entry.href);
+    let resolved;
+    try {
+      resolved = book.resolveHref(entry.href);
+    } catch (error) {
+      console.warn("Failed to resolve toc href", entry.href, error);
+      continue;
+    }
     if (!resolved || typeof resolved.index !== "number") continue;
     // First-write-wins: two TOC entries pointing at the same spine
     // section keep the earlier label (the typical "Cover" then
