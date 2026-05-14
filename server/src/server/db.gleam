@@ -55,7 +55,8 @@ pub fn ensure_books_genre_column(
   case list.contains(columns, "genre") {
     True -> Ok(Nil)
     False ->
-      case sqlight.exec("ALTER TABLE books ADD COLUMN genre TEXT;", connection)
+      case
+        sqlight.exec("ALTER TABLE books ADD COLUMN genre TEXT;", connection)
       {
         Ok(_) -> Ok(Nil)
         Error(error) -> Error(error)

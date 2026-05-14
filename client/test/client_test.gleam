@@ -7520,12 +7520,7 @@ pub fn update_book_metadata_updated_error_is_noop_when_no_draft_open_test() {
   // anywhere — there is nothing open to stamp.
   let book = metadata_sample_book("book-1", "Dune", None, None)
   let prior =
-    Model(
-      ..empty_model(),
-      view: Library,
-      books: [book],
-      editing_metadata: None,
-    )
+    Model(..empty_model(), view: Library, books: [book], editing_metadata: None)
 
   let #(updated, _effect) =
     reducer.update(
