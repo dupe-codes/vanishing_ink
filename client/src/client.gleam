@@ -1433,10 +1433,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     ConfirmDelete(id) ->
       case set.contains(model.deleting_book_ids, id) {
         True -> #(model, effect.none())
-        False -> #(
-          Model(..model, confirm_delete_id: Some(id)),
-          effect.none(),
-        )
+        False -> #(Model(..model, confirm_delete_id: Some(id)), effect.none())
       }
 
     CancelDelete -> #(Model(..model, confirm_delete_id: None), effect.none())
@@ -4817,7 +4814,9 @@ fn view_library_grid(
         ]),
         html.div(
           [attribute.class("book-grid")],
-          list.map(books, fn(book) { view_book_card(book, is_deleting(book.id)) }),
+          list.map(books, fn(book) {
+            view_book_card(book, is_deleting(book.id))
+          }),
         ),
       ])
   }
