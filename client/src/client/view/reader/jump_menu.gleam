@@ -36,7 +36,8 @@ import client/msg.{
   type Msg, JumpToChapter, NoOp, SelectSearchResult, SetJumpPageInput,
   SetJumpSearchQuery, SubmitJumpPage, ToggleJumpMenu,
 }
-import client/state.{type ChapterEntry, type Model, type SearchResult}
+import client/search.{type SearchResult}
+import client/state.{type ChapterEntry, type Model}
 
 /// Render the Jump Ahead overlay when `model.jump_menu_open` is true.
 /// Returns `element.none()` otherwise — the markup is entirely absent

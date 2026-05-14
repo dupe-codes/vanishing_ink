@@ -104,7 +104,7 @@ pub fn apply_toggle_jump_menu(model: Model) -> #(Model, Effect(Msg)) {
 ///
 /// Recompute is synchronous: the search walks page text in pure
 /// Gleam, the result list is capped at
-/// `state.jump_search_result_limit`, and empty / whitespace-only
+/// `search.jump_search_result_limit`, and empty / whitespace-only
 /// queries short-circuit inside `search.search_forward` without
 /// touching `pages`. Per-keystroke recompute is therefore well
 /// inside frame budget on a 500-page book.

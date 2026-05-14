@@ -66,10 +66,10 @@ import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/jump as jump_reducer
 import client/sample
-import client/search
+import client/search.{SearchResult}
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
-  Model, Paused, Reader, RealTime, Running, SearchResult, Stopped,
+  Model, Paused, Reader, RealTime, Running, Stopped,
 }
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
@@ -7339,7 +7339,7 @@ pub fn update_set_jump_search_query_caps_results_at_limit_test() {
   let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("needle"))
 
   assert list.length(updated.jump_search_results)
-    == state.jump_search_result_limit
+    == search.jump_search_result_limit
   // Pin both ends of the window. Asserting only the first element
   // would let a regression that walks from the wrong end (e.g.,
   // `list.reverse` applied *before* the cap, surfacing pages 10..29)

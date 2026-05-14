@@ -435,7 +435,7 @@ pub type Msg {
   /// `current_page`. The recompute is intentionally synchronous in
   /// the reducer rather than effect-driven — the search walks page
   /// text in pure Gleam and the result list is capped at
-  /// `state.jump_search_result_limit`, so per-keystroke recompute is
+  /// `search.jump_search_result_limit`, so per-keystroke recompute is
   /// well within frame budget. Empty / whitespace-only queries
   /// collapse to an empty result list rather than scanning the book.
   SetJumpSearchQuery(value: String)

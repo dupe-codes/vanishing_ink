@@ -44,6 +44,7 @@ import gleam/set.{type Set}
 import gleam/string
 
 import client/pagination.{type Page, type PageParagraph}
+import client/search.{type SearchResult}
 import client/types.{
   type BookMeta, type BookSettings, type UserSettings, BookSettings,
   UserSettings,
@@ -336,26 +337,6 @@ pub type EngineState {
   Stopped
   Running
   Paused
-}
-
-/// Maximum number of results returned by the Jump Ahead search. The
-/// modal is a small surface — a longer list overwhelms the reader and
-/// silently degrades scroll performance, so the search cuts off at a
-/// fixed cap rather than rendering every hit on a long book. Twenty is
-/// large enough that a typical query surfaces its useful range
-/// (chapter headings, character names, recurring phrases) without
-/// turning the menu into a results page.
-pub const jump_search_result_limit: Int = 20
-
-/// One hit produced by the Jump Ahead search. `page_index` is the
-/// zero-based page the match lives on (always strictly greater than
-/// `model.current_page` — the search is forward-only, mirroring the
-/// chapter list and the page-number input). `snippet` is a ~50-
-/// character window of prose around the first match on that page,
-/// trimmed to whitespace boundaries and bracketed with `…` ellipses on
-/// either side that has been clipped — see `client/search.snippet_around`.
-pub type SearchResult {
-  SearchResult(page_index: Int, snippet: String)
 }
 
 /// One chapter's position in the paginated book. `title` is the
@@ -734,8 +715,8 @@ pub type Model {
     /// reading them back from the model rather than re-running the
     /// search on every render keeps the view path O(results) instead
     /// of O(words-after-current-page). Capped at
-    /// `jump_search_result_limit`. Cleared alongside `jump_search_query`
-    /// on every reset point.
+    /// `search.jump_search_result_limit`. Cleared alongside
+    /// `jump_search_query` on every reset point.
     jump_search_results: List(SearchResult),
   )
 }

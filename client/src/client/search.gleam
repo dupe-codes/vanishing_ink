@@ -9,7 +9,7 @@
 //// per-call cost is bounded by the cap on results and by the
 //// forward-only traversal (the search never walks pages the reader has
 //// already passed). The result list is capped at
-//// `state.jump_search_result_limit` so a query like `"the"` on a
+//// `jump_search_result_limit` so a query like `"the"` on a
 //// 500-page book cannot turn the modal into an unbounded list.
 ////
 //// Matching is case-insensitive (both sides lowercased) and partial
@@ -26,12 +26,17 @@
 ////   section rather than a misleading "no matches" message.
 //// * `current_page` past the last page returns `[]` — there are no
 ////   forward pages to search.
+////
+//// The `SearchResult` type and the `jump_search_result_limit` cap
+//// live here rather than in `client/state` so the data shape lives
+//// alongside the algorithm that produces it. `client/state` only
+//// imports the type for the `Model.jump_search_results` field — it
+//// does not need the constructor or the cap constant.
 
 import gleam/list
 import gleam/string
 
 import client/pagination.{type Page}
-import client/state.{type SearchResult, SearchResult, jump_search_result_limit}
 
 /// Half-window for snippet extraction, in characters. The final
 /// snippet is bounded at `2 * snippet_half_window` characters of
@@ -40,8 +45,28 @@ import client/state.{type SearchResult, SearchResult, jump_search_result_limit}
 /// words mid-grapheme.
 const snippet_half_window: Int = 25
 
+/// Maximum number of results returned by the Jump Ahead search. The
+/// modal is a small surface — a longer list overwhelms the reader and
+/// silently degrades scroll performance, so the search cuts off at a
+/// fixed cap rather than rendering every hit on a long book. Twenty is
+/// large enough that a typical query surfaces its useful range
+/// (chapter headings, character names, recurring phrases) without
+/// turning the menu into a results page.
+pub const jump_search_result_limit: Int = 20
+
+/// One hit produced by the Jump Ahead search. `page_index` is the
+/// zero-based page the match lives on (always strictly greater than
+/// `model.current_page` — the search is forward-only, mirroring the
+/// chapter list and the page-number input). `snippet` is a ~50-
+/// character window of prose around the first match on that page,
+/// trimmed to whitespace boundaries and bracketed with `…` ellipses on
+/// either side that has been clipped — see `snippet_around`.
+pub type SearchResult {
+  SearchResult(page_index: Int, snippet: String)
+}
+
 /// Forward-only search entry point. Returns at most
-/// `state.jump_search_result_limit` results, in page-ascending order,
+/// `jump_search_result_limit` results, in page-ascending order,
 /// each carrying the matching page's index and a snippet of prose
 /// around the first hit on that page.
 ///
