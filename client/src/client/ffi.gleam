@@ -233,3 +233,38 @@ pub fn fetch_json_delete(
   url: String,
   on_complete: fn(Result(String, FetchError)) -> Nil,
 ) -> Nil
+
+/// Wall-clock now formatted as an ISO 8601 UTC string with millisecond
+/// precision (`YYYY-MM-DDTHH:MM:SS.sssZ`). Used to stamp
+/// `reading_state.updated_at` on each PUT — the server canonicalises
+/// every accepted timestamp to the same width so the last-write-wins
+/// lexicographic comparison inside SQLite matches chronological order.
+/// Pinning the FFI to `Date.prototype.toISOString` keeps the client
+/// output already in canonical form, so the round trip is a no-op.
+@external(javascript, "./ffi.ffi.mjs", "now_iso8601")
+pub fn now_iso8601() -> String
+
+/// Pack a list of non-negative indices into a base64-encoded bitset.
+/// Bit N is set (MSB-first within each byte) when N appears in the
+/// input; the byte array is sized to the smallest length that fits the
+/// largest index, with up to seven trailing zero bits. An empty input
+/// returns an empty string, which callers map to JSON `null` on the
+/// wire rather than transmitting an empty BitArray.
+///
+/// The encoding is symmetric with `unpack_base64_to_indices` —
+/// round-tripping a list of indices through both helpers returns the
+/// same indices in ascending order (duplicates collapse to a single
+/// bit). Used by the reading-state save path to project the in-memory
+/// `Set(Int)` of erased sentence/word global indices onto the
+/// `bit_array.base64_encode`-compatible wire form the server expects.
+@external(javascript, "./ffi.ffi.mjs", "pack_indices_to_base64")
+pub fn pack_indices_to_base64(indices: List(Int)) -> String
+
+/// Inverse of `pack_indices_to_base64`. Decodes the base64 string into
+/// bytes and returns one entry per set bit, in ascending index order.
+/// An empty input, malformed base64, or a bitset whose bytes are all
+/// zero all surface as an empty list — callers feed the result into
+/// `set.from_list` either way, so a quiet empty-set fallback is the
+/// right shape for "no progress recorded" / "decode failed."
+@external(javascript, "./ffi.ffi.mjs", "unpack_base64_to_indices")
+pub fn unpack_base64_to_indices(encoded: String) -> List(Int)

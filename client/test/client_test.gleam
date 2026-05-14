@@ -45,7 +45,8 @@ import client.{
   BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused,
   EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
   FocusPrevious, GoToLibrary, LineBox, LinesMeasured, Manual, Model, NextPage,
-  OpenBook, ParagraphsMeasured, PauseFade, Paused, RealTime, ResumeFade, Running,
+  OpenBook, ParagraphsMeasured, PauseFade, Paused, ReadingStateLoaded, RealTime,
+  ResumeFade, Running,
   SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay,
   SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
   SpacePressed, StartFade, Stopped, SubmitPaste, TextLoaded, ToggleAddBook,
@@ -3416,6 +3417,305 @@ pub fn update_book_settings_loaded_for_a_different_active_book_is_dropped_test()
     client.update(prior, BookSettingsLoaded("book-A", Ok(body)))
 
   assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — ReadingStateLoaded
+// ---------------------------------------------------------------------------
+//
+// `ReadingStateLoaded` is the load-side mirror of `save_reading_state`.
+// The reducer must:
+//   (a) decode the wire `ReadingState` and project the base64 bitsets
+//       back into `Set(Int)` projections on `erased` / `erased_words`;
+//   (b) map `mode` from the closed wire vocabulary (`"manual"` /
+//       `"ghost"`) onto the typed `Mode` variant, falling back to
+//       `Manual` for any unrecognised value rather than failing the
+//       decode;
+//   (c) stamp `current_page`, clamping against `total_pages` if
+//       pagination has already run (otherwise leaving the raw value
+//       for `ParagraphsMeasured` to clamp later);
+//   (d) drop responses that arrive after the reader has navigated
+//       away (the `book_id` round-trip + view check, same guard
+//       shape as `BookSettingsLoaded`).
+//
+// The base64 fixtures below ride through `ffi.pack_indices_to_base64`
+// rather than being hand-encoded — that keeps the test independent
+// of the bit-packing scheme and pins the FFI round-trip too.
+
+fn reading_state_body(
+  book_id: String,
+  mode: String,
+  sentence_indices: List(Int),
+  word_indices: List(Int),
+  current_page: Int,
+) -> String {
+  let encode_field = fn(indices: List(Int)) -> String {
+    case indices {
+      [] -> "null"
+      _ -> "\"" <> ffi.pack_indices_to_base64(indices) <> "\""
+    }
+  }
+  "{\"book_id\":\""
+  <> book_id
+  <> "\",\"mode\":\""
+  <> mode
+  <> "\",\"sentence_bitset\":"
+  <> encode_field(sentence_indices)
+  <> ",\"word_bitset\":"
+  <> encode_field(word_indices)
+  <> ",\"current_page\":"
+  <> int.to_string(current_page)
+  <> ",\"updated_at\":\"2026-05-13T10:00:00.000Z\"}"
+}
+
+pub fn update_reading_state_loaded_applies_manual_progress_test() {
+  // A manual-mode response with sentence erasures and a non-zero
+  // current_page. The reducer must stamp every field from the wire
+  // — `mode` stays Manual, the two bitsets unpack into the expected
+  // sets, and `current_page` lands raw (no clamp because pagination
+  // hasn't run yet for this fixture). The whole-model equality
+  // catches any silent drop of one field while exercising the
+  // others.
+  let prior =
+    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+  let body = reading_state_body("book-1", "manual", [0, 3, 7], [], 2)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated
+    == Model(
+      ..prior,
+      mode: Manual,
+      erased: set.from_list([0, 3, 7]),
+      erased_words: set.new(),
+      current_page: 2,
+    )
+}
+
+pub fn update_reading_state_loaded_maps_ghost_to_realtime_test() {
+  // The server vocabulary is `"manual"` / `"ghost"`; the client's
+  // typed mirror is `Manual` / `RealTime`. The mapping is centralised
+  // in `apply_reading_state_loaded` — a drift in either direction
+  // (server adding a new mode, client renaming the variant) surfaces
+  // here. The fade-engine word bitset is also exercised so the test
+  // pins both bitset round-trips in one assertion.
+  let prior =
+    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+  let body = reading_state_body("book-1", "ghost", [], [0, 1, 4], 0)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.mode == RealTime
+  assert updated.erased_words == set.from_list([0, 1, 4])
+  assert updated.erased == set.new()
+}
+
+pub fn update_reading_state_loaded_with_null_bitsets_clears_progress_test() {
+  // The server's "fresh book, no progress" default: every bitset is
+  // `null` on the wire and `current_page` is 0. The reducer must
+  // unpack the nulls into empty sets rather than panic; the mode
+  // string still drives the typed `Mode` variant. Prior `erased` /
+  // `erased_words` stamps confirm the load path overwrites — a load
+  // that merged with the prior state would leave the [99] residue.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      erased: set.from_list([99]),
+      erased_words: set.from_list([99]),
+      current_page: 5,
+    )
+  let body = reading_state_body("book-1", "manual", [], [], 0)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.erased == set.new()
+  assert updated.erased_words == set.new()
+  assert updated.current_page == 0
+  assert updated.mode == Manual
+}
+
+pub fn update_reading_state_loaded_clamps_current_page_to_total_pages_test() {
+  // When pagination has already run for this book (`total_pages > 0`),
+  // a saved `current_page` past the last page must clamp into range
+  // rather than parking the reader off-screen. The clamp matches what
+  // `ParagraphsMeasured` would compute later anyway — doing it here
+  // closes the race where `ReadingStateLoaded` lands after pagination.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      total_pages: 3,
+    )
+  let body = reading_state_body("book-1", "manual", [], [], 99)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.current_page == 2
+}
+
+pub fn update_reading_state_loaded_skips_clamp_when_total_pages_unknown_test() {
+  // The cousin case: pagination hasn't run yet (`total_pages == 0`).
+  // The reducer stores the raw `current_page` so a later
+  // `ParagraphsMeasured` — which clamps against its own freshly-
+  // computed `total_pages` — can land the reader on the saved page.
+  // Clamping with `total_pages: 0` would force every reader back to
+  // page 0 whenever the load race favoured `ReadingStateLoaded`
+  // arriving before pagination, which would silently regress the
+  // headline "page reload preserves progress" invariant.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-1"),
+      total_pages: 0,
+    )
+  let body = reading_state_body("book-1", "manual", [], [], 5)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.current_page == 5
+}
+
+pub fn update_reading_state_loaded_unknown_mode_falls_back_to_manual_test() {
+  // Future-proofing: a future server vocabulary expansion (e.g. a new
+  // "review" mode) must not strand the client on an undecodable
+  // payload. Unrecognised mode strings collapse to `Manual` rather
+  // than panic; the bitsets still apply so the rest of the progress
+  // round-trip survives the unknown mode.
+  let prior =
+    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+  let body = reading_state_body("book-1", "review", [1], [], 0)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.mode == Manual
+  assert updated.erased == set.from_list([1])
+}
+
+pub fn update_reading_state_loaded_after_go_to_library_is_dropped_test() {
+  // Reproduces the navigate-away race: the user opens a book, taps
+  // back to the library before the per-book state GET lands, and the
+  // in-flight response then arrives. The reducer must drop the
+  // payload so `erased` / `erased_words` / `current_page` keep the
+  // library-view cleared state that `apply_go_to_library` installed.
+  // Without this guard, a late response would silently re-populate
+  // reader state behind the library view.
+  let prior = Model(..empty_model(), view: client.Library, active_book_id: None)
+  let body = reading_state_body("book-1", "manual", [0, 1], [], 2)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated == prior
+}
+
+pub fn update_reading_state_loaded_for_a_different_active_book_is_dropped_test() {
+  // Reproduces the open-A-then-B race: the user opens book A
+  // (firing `fetch_reading_state("book-A")`), backs out, opens book B
+  // (firing `fetch_reading_state("book-B")`), and A's response lands
+  // after B is already active. The id on the Msg does not match
+  // `model.active_book_id`, so the reducer must drop the payload —
+  // otherwise A's progress would clobber B's session.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: client.Reader,
+      active_book_id: Some("book-B"),
+      erased: set.from_list([42]),
+      current_page: 7,
+    )
+  let body = reading_state_body("book-A", "manual", [0, 1], [], 2)
+
+  let #(updated, _effect) =
+    client.update(prior, ReadingStateLoaded("book-A", Ok(body)))
+
+  assert updated == prior
+}
+
+pub fn update_reading_state_loaded_decode_failure_leaves_model_unchanged_test() {
+  // Malformed JSON body — same fail-soft surface as the settings load
+  // paths. The reducer logs to the console and returns the model
+  // untouched rather than panicking on a decode failure. A future
+  // server bug that returned an unexpected shape would degrade the
+  // session to "no saved progress" instead of crashing the SPA.
+  let prior =
+    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ReadingStateLoaded("book-1", Ok("{not valid json here}")),
+    )
+
+  assert updated == prior
+}
+
+pub fn update_reading_state_loaded_fetch_error_leaves_model_unchanged_test() {
+  // The fetch primitive surfaced `Error(_)` — network failure,
+  // non-2xx response, or a decode failure inside the fetch wrapper.
+  // The reducer must log and continue with the empty defaults
+  // `apply_text_load` already installed. A stuck request leaves the
+  // reader on page 0 with no erasures, the same state a fresh book
+  // would carry.
+  let prior =
+    Model(..empty_model(), view: client.Reader, active_book_id: Some("book-1"))
+
+  let #(updated, _effect) =
+    client.update(
+      prior,
+      ReadingStateLoaded("book-1", Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// FFI — bitset round-trip
+// ---------------------------------------------------------------------------
+//
+// `pack_indices_to_base64` / `unpack_base64_to_indices` are the seam
+// the reading-state save/load path uses to project `Set(Int)` onto the
+// server's BitArray wire format. The encoder writes one bit per index
+// (MSB-first within each byte), so a round-trip through both halves
+// must return the same indices — duplicates collapse to a single bit,
+// and an empty input returns an empty string. Pinning the seam in
+// isolation means a future regression that changes the bit ordering
+// (or skips bytes past the largest index) surfaces here rather than
+// as a silent corruption of erased-sentence state.
+
+pub fn ffi_pack_and_unpack_indices_round_trip_test() {
+  let indices = [0, 3, 7, 8, 15, 16, 31]
+  let encoded = ffi.pack_indices_to_base64(indices)
+  let decoded = ffi.unpack_base64_to_indices(encoded)
+
+  // The decoder returns indices in ascending order regardless of input
+  // ordering — pinning the order keeps the comparison stable when a
+  // future caller passes the input in a different sequence.
+  assert decoded == [0, 3, 7, 8, 15, 16, 31]
+}
+
+pub fn ffi_pack_empty_list_returns_empty_string_test() {
+  // The empty case rides the JSON null path rather than transmitting
+  // an empty BitArray. The encoder returning `""` is the contract the
+  // caller relies on to short-circuit to `None` on the wire.
+  assert ffi.pack_indices_to_base64([]) == ""
+}
+
+pub fn ffi_unpack_empty_string_returns_empty_list_test() {
+  // Symmetric with the pack side: the empty-string input (or a
+  // malformed base64 the FFI can't decode) returns an empty list, so
+  // the caller can feed the result into `set.from_list` either way
+  // without a special-case branch.
+  assert ffi.unpack_base64_to_indices("") == []
 }
 
 // ---------------------------------------------------------------------------

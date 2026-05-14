@@ -502,3 +502,82 @@ function do_fetch(url, init, on_complete) {
       on_complete(new GleamError(new NetworkError(message)));
     });
 }
+
+/**
+ * Wall-clock now formatted as ISO 8601 UTC with millisecond precision
+ * (`YYYY-MM-DDTHH:MM:SS.sssZ`). Matches the server's canonicalised form
+ * so a round-trip through `clock.parse_iso8601` is a no-op. Used to
+ * stamp `reading_state.updated_at` on every PUT.
+ *
+ * @returns {string}
+ */
+export function now_iso8601() {
+  return new Date().toISOString();
+}
+
+/**
+ * Pack a Gleam `List(Int)` of indices into a base64-encoded bitset.
+ * Bit N (MSB-first within each byte) is set when N appears in the list;
+ * the resulting `Uint8Array` is sized to the smallest power-of-eight
+ * that still fits the largest index. An empty list returns an empty
+ * string so the caller can short-circuit to JSON `null` rather than
+ * round-tripping an empty BitArray.
+ *
+ * @param {List} indices Gleam-encoded linked list of non-negative integers.
+ * @returns {string} Base64 representation of the packed bitset.
+ */
+export function pack_indices_to_base64(indices) {
+  let max = -1;
+  for (const index of indices) {
+    if (index > max) max = index;
+  }
+  if (max < 0) {
+    return "";
+  }
+  const bytes = new Uint8Array(Math.floor(max / 8) + 1);
+  for (const index of indices) {
+    if (index < 0) continue;
+    const byte_index = Math.floor(index / 8);
+    const bit_index = 7 - (index % 8);
+    bytes[byte_index] |= 1 << bit_index;
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Inverse of `pack_indices_to_base64`. Decodes the base64 string to
+ * bytes and returns one Gleam-encoded list entry per set bit, in
+ * ascending index order. An empty or whitespace-only input returns an
+ * empty list. Padding bits beyond the largest set index are preserved
+ * — the encoder only writes whole bytes, so a few trailing zero bits
+ * are expected and contribute no indices.
+ *
+ * @param {string} encoded Base64-encoded bitset.
+ * @returns {List} Gleam-encoded linked list of non-negative integers.
+ */
+export function unpack_base64_to_indices(encoded) {
+  if (typeof encoded !== "string" || encoded.length === 0) {
+    return toList([]);
+  }
+  let binary;
+  try {
+    binary = atob(encoded);
+  } catch (_error) {
+    return toList([]);
+  }
+  const indices = [];
+  for (let byte_index = 0; byte_index < binary.length; byte_index++) {
+    const byte = binary.charCodeAt(byte_index);
+    if (byte === 0) continue;
+    for (let bit = 0; bit < 8; bit++) {
+      if (byte & (1 << (7 - bit))) {
+        indices.push(byte_index * 8 + bit);
+      }
+    }
+  }
+  return toList(indices);
+}
