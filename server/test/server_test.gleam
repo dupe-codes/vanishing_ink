@@ -1160,21 +1160,47 @@ pub fn patch_book_metadata_updates_all_three_fields_test() {
     |> router.handle_request(ctx)
 
   assert response.status == 200
-  let decoded = decode_body(response, book_meta_wire_decoder())
-  assert decoded.title == "Renamed"
-  assert decoded.author == Some("New Author")
-  assert decoded.genre == Some("Fantasy")
 
-  // Subsequent GET reflects the persisted values.
+  // Assert the WHOLE payload. Three individual-field assertions would
+  // leave `id`, `word_count`, `sentence_count`, `uploaded_at`, and
+  // `last_read_at` unchecked — a silent drift in any of them on the
+  // PATCH path would slip through. Following the file's preamble
+  // convention.
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  let expected_meta =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Renamed",
+      author: Some("New Author"),
+      genre: Some("Fantasy"),
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected_meta
+
+  // Subsequent GET reflects the persisted values — full payload again.
   let after =
     router.handle_request(
       simulate.browser_request(http.Get, "/api/books/" <> created.book.id),
       ctx,
     )
   let after_decoded = decode_body(after, book_full_decoder())
-  assert after_decoded.title == "Renamed"
-  assert after_decoded.author == Some("New Author")
-  assert after_decoded.genre == Some("Fantasy")
+  let expected_full =
+    BookFullWire(
+      id: created.book.id,
+      title: "Renamed",
+      author: Some("New Author"),
+      genre: Some("Fantasy"),
+      raw_text: sample_text,
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+      segments: segmenter.segment(sample_text),
+    )
+  assert after_decoded == expected_full
 }
 
 pub fn patch_book_metadata_preserves_untouched_fields_test() {
@@ -1191,17 +1217,37 @@ pub fn patch_book_metadata_preserves_untouched_fields_test() {
 
   assert response.status == 200
   let decoded = decode_body(response, book_meta_wire_decoder())
-  assert decoded.title == "Title"
-  assert decoded.author == Some("Author")
-  assert decoded.genre == Some("Mystery")
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Title",
+      author: Some("Author"),
+      genre: Some("Mystery"),
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected
 }
 
-pub fn patch_book_metadata_clears_field_on_explicit_null_test() {
+pub fn patch_book_metadata_clears_author_via_null_preserves_genre_test() {
+  // Seed the book with BOTH author and genre populated, then PATCH
+  // only `author: null`. The full-payload assertion verifies that
+  // `genre` survives unchanged — were `resolve_metadata_field` to
+  // accidentally apply `Cleared` to the wrong column, this test
+  // would catch it (the original R1 version seeded `genre: None`,
+  // so a cross-field bug would have been invisible).
   use ctx <- with_context
-  let created = http_create_book(ctx, "Title", Some("Author"), sample_text)
+  let created =
+    http_create_book_full(
+      ctx,
+      "Title",
+      Some("Author"),
+      Some("Fantasy"),
+      sample_text,
+    )
 
-  // Explicit `null` for `author` must clear the column; `title` is
-  // omitted entirely so it stays as "Title".
   let body = json.object([#("author", json.null())])
 
   let response =
@@ -1211,8 +1257,127 @@ pub fn patch_book_metadata_clears_field_on_explicit_null_test() {
 
   assert response.status == 200
   let decoded = decode_body(response, book_meta_wire_decoder())
-  assert decoded.title == "Title"
-  assert decoded.author == None
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Title",
+      author: None,
+      genre: Some("Fantasy"),
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected
+}
+
+pub fn patch_book_metadata_clears_genre_via_null_preserves_author_test() {
+  // Symmetric counterpart — closes the asymmetric coverage R1 named:
+  // only author-clear was covered, never genre-clear. Same seed, same
+  // shape of assertion, opposite field nulled.
+  use ctx <- with_context
+  let created =
+    http_create_book_full(
+      ctx,
+      "Title",
+      Some("Author"),
+      Some("Fantasy"),
+      sample_text,
+    )
+
+  let body = json.object([#("genre", json.null())])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Title",
+      author: Some("Author"),
+      genre: None,
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected
+}
+
+pub fn patch_book_metadata_does_not_silently_trim_untouched_title_test() {
+  // Regression guard for the silent-trim-on-untouched-title bug: the
+  // creation path does NOT trim title (validate_create_input only
+  // checks emptiness), so a row can legitimately persist with a
+  // trailing space. A PATCH that touches only `genre` must NOT
+  // rewrite the title column — `resolve_title` now skips the trim
+  // when `input.title` is `None` so the stored value round-trips
+  // verbatim.
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Tale of Two Cities ", None, sample_text)
+
+  // Sanity: confirm the trailing space survived creation. Without
+  // this guard the test could silently degenerate into a trim-of-
+  // already-trimmed assertion if `validate_create_input` ever picks
+  // up a trim step.
+  assert created.book.title == "Tale of Two Cities "
+
+  let body = json.object([#("genre", json.string("Fiction"))])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Tale of Two Cities ",
+      author: None,
+      genre: Some("Fiction"),
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected
+}
+
+pub fn patch_book_metadata_trims_title_only_when_client_sent_one_test() {
+  // The other half of the trim contract: when the client DOES send
+  // a title, it gets trimmed before persistence. Asserts that the
+  // selective trim only fires on the "Set" branch of the title
+  // resolver, not on the "Untouched" branch (which is what the
+  // sibling test covers).
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Old Title", None, sample_text)
+
+  let body = json.object([#("title", json.string("  Renamed  "))])
+
+  let response =
+    simulate.browser_request(http.Patch, "/api/books/" <> created.book.id)
+    |> simulate.json_body(body)
+    |> router.handle_request(ctx)
+
+  assert response.status == 200
+  let decoded = decode_body(response, book_meta_wire_decoder())
+  let expected =
+    BookMetaWire(
+      id: created.book.id,
+      title: "Renamed",
+      author: None,
+      genre: None,
+      word_count: created.book.word_count,
+      sentence_count: created.book.sentence_count,
+      uploaded_at: created.book.uploaded_at,
+      last_read_at: None,
+    )
+  assert decoded == expected
 }
 
 pub fn patch_book_metadata_rejects_empty_title_test() {
@@ -1244,6 +1409,52 @@ pub fn patch_book_metadata_unknown_id_is_404_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Migrations
+// ---------------------------------------------------------------------------
+
+pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
+  // `db.initialize` always declares `genre` inline for fresh tables,
+  // so the ALTER TABLE ADD COLUMN branch in `ensure_books_genre_column`
+  // is only ever exercised against tables created before the genre
+  // column landed — which means the entire test suite, on fresh
+  // `:memory:` databases, never drives it. Hand-build a pre-genre
+  // `books` table here, run the migration, and verify the column
+  // appears. Idempotency is asserted too: a second call on the
+  // already-migrated table must be a no-op (the PRAGMA gate skips
+  // the ALTER because `genre` is already present).
+  let assert Ok(conn) = sqlight.open(":memory:")
+  let pre_genre_schema =
+    "CREATE TABLE books (
+       id TEXT PRIMARY KEY,
+       title TEXT NOT NULL,
+       author TEXT,
+       raw_text TEXT NOT NULL,
+       segments_json TEXT NOT NULL,
+       word_count INTEGER NOT NULL,
+       sentence_count INTEGER NOT NULL,
+       uploaded_at TEXT NOT NULL,
+       last_read_at TEXT
+     );"
+  let assert Ok(_) = sqlight.exec(pre_genre_schema, conn)
+
+  // Sanity: the table starts without `genre`. SELECT genre FROM books
+  // must fail with a column-missing error — confirms the seed schema
+  // is genuinely pre-genre.
+  let assert Error(_) = sqlight.exec("SELECT genre FROM books;", conn)
+
+  // First run: the migration adds the column.
+  let assert Ok(Nil) = db.ensure_books_genre_column(conn)
+  let assert Ok(_) = sqlight.exec("SELECT genre FROM books;", conn)
+
+  // Second run: the PRAGMA gate sees `genre` already present and
+  // skips the ALTER. Still `Ok(Nil)`, still leaves the column intact.
+  let assert Ok(Nil) = db.ensure_books_genre_column(conn)
+  let assert Ok(_) = sqlight.exec("SELECT genre FROM books;", conn)
+
+  let assert Ok(_) = sqlight.close(conn)
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1253,14 +1464,25 @@ fn http_create_book(
   author: Option(String),
   text: String,
 ) -> BookCreateResponse {
-  let author_field = case author {
-    None -> json.null()
-    Some(value) -> json.string(value)
-  }
+  http_create_book_full(ctx, title, author, None, text)
+}
+
+/// Same as `http_create_book` but exposes the `genre` field too. The
+/// PATCH-metadata tests need to seed rows with a genre so they can
+/// assert cross-field preservation on partial updates (clearing
+/// author must NOT clear genre, etc.).
+fn http_create_book_full(
+  ctx: web.Context,
+  title: String,
+  author: Option(String),
+  genre: Option(String),
+  text: String,
+) -> BookCreateResponse {
   let body =
     json.object([
       #("title", json.string(title)),
-      #("author", author_field),
+      #("author", json.nullable(author, json.string)),
+      #("genre", json.nullable(genre, json.string)),
       #("text", json.string(text)),
     ])
   let response =
