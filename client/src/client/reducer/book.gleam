@@ -8,7 +8,8 @@
 
 import gleam/dynamic.{type Dynamic}
 import gleam/float
-import gleam/option.{None, Some}
+import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
 import lustre/effect.{type Effect}
@@ -283,18 +284,24 @@ pub fn apply_epub_file_selected(
 /// reader can sanity-check the extraction (missing title, extra
 /// front-matter) before sending the POST. Failures surface as a
 /// human-readable `paste_error`.
+///
+/// A partial-success import (one or more spine sections failed to
+/// parse) keeps the extracted text but surfaces a soft warning in
+/// the same `paste_error` banner so the reader can decide to retry
+/// with a different file rather than submit a silently-truncated
+/// book.
 pub fn apply_epub_parsed(
   model: Model,
   result: Result(EpubExtract, EpubError),
 ) -> #(Model, Effect(Msg)) {
   case result {
-    Ok(EpubExtract(title, _author, text)) -> #(
+    Ok(EpubExtract(title, _author, text, sections_skipped)) -> #(
       Model(
         ..model,
         paste_title: paste_title_after_import(model.paste_title, title),
         paste_text: text,
         paste_submitting: False,
-        paste_error: None,
+        paste_error: describe_partial_import(sections_skipped),
       ),
       effect.none(),
     )
@@ -306,6 +313,27 @@ pub fn apply_epub_parsed(
       ),
       effect.none(),
     )
+  }
+}
+
+/// Build the partial-import warning the reducer pins to `paste_error`
+/// on a successful-but-incomplete ePub import. Zero skips → `None`
+/// so the banner stays hidden (a clean import shows no message). Any
+/// non-zero count surfaces a single-line warning naming the count so
+/// the reader can decide to accept or retry.
+fn describe_partial_import(sections_skipped: Int) -> Option(String) {
+  case sections_skipped {
+    0 -> None
+    1 ->
+      Some(
+        "Imported, but 1 section of this ePub could not be parsed and was skipped.",
+      )
+    count ->
+      Some(
+        "Imported, but "
+        <> int.to_string(count)
+        <> " sections of this ePub could not be parsed and were skipped.",
+      )
   }
 }
 

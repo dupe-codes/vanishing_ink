@@ -5626,7 +5626,7 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
     )
 
   let extract =
-    EpubExtract("Walden", "Henry David Thoreau", "# Walden\n\nProse.\n\n")
+    EpubExtract("Walden", "Henry David Thoreau", "# Walden\n\nProse.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5652,7 +5652,7 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
       paste_submitting: True,
     )
 
-  let extract = EpubExtract("Walden", "", "Some text.\n\n")
+  let extract = EpubExtract("Walden", "", "Some text.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5671,7 +5671,7 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   // type a meaningful title, so the extractor's guess fills in.
   let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "", "Body.\n\n")
+  let extract = EpubExtract("Walden", "", "Body.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5681,6 +5681,51 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
       paste_text: "Body.\n\n",
       paste_submitting: False,
       paste_error: None,
+    )
+  assert updated == expected
+}
+
+pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
+  // A partial-success import (one section failed to parse) keeps
+  // the extracted text on the form but surfaces a soft warning so
+  // the reader knows the book is not whole. Singular phrasing for
+  // the "1" case keeps the message natural.
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let extract = EpubExtract("Walden", "", "Body.\n\n", 1)
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  let expected =
+    Model(
+      ..prior,
+      paste_title: "Walden",
+      paste_text: "Body.\n\n",
+      paste_submitting: False,
+      paste_error: Some(
+        "Imported, but 1 section of this ePub could not be parsed and was skipped.",
+      ),
+    )
+  assert updated == expected
+}
+
+pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
+  // More than one skipped section uses the plural phrasing. The
+  // count appears verbatim so the reader can judge severity (1 of
+  // 14 is acceptable; 13 of 14 is not).
+  let prior = Model(..empty_model(), paste_submitting: True)
+
+  let extract = EpubExtract("Walden", "", "Body.\n\n", 3)
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  let expected =
+    Model(
+      ..prior,
+      paste_title: "Walden",
+      paste_text: "Body.\n\n",
+      paste_submitting: False,
+      paste_error: Some(
+        "Imported, but 3 sections of this ePub could not be parsed and were skipped.",
+      ),
     )
   assert updated == expected
 }

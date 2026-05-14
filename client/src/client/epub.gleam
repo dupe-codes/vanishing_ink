@@ -42,8 +42,19 @@ import lustre/event
 /// `<dc:title>` and `<dc:creator>` elements via foliate-js). Both
 /// default to empty strings when the metadata is missing — the
 /// reducer treats empties as "ask the reader to fill in the title."
+///
+/// `sections_skipped` is the count of spine sections the FFI could
+/// not parse (malformed XHTML, `createDocument` threw). The reducer
+/// surfaces a soft warning in the add-book sheet when the count is
+/// non-zero so the reader can distinguish "imported every chapter"
+/// from "imported but some chapters silently fell off the wire."
 pub type EpubExtract {
-  EpubExtract(title: String, author: String, text: String)
+  EpubExtract(
+    title: String,
+    author: String,
+    text: String,
+    sections_skipped: Int,
+  )
 }
 
 /// Failure modes the import surface can produce. Each variant maps to

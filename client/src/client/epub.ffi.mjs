@@ -203,28 +203,33 @@ function extractSection(doc, chunks) {
   return emittedHeading || emittedParagraph;
 }
 
-// Drive a foliate-js EPUB instance to plain text. Returns a string
-// in the segmenter's expected shape (`# Heading\n\n`, paragraphs
-// separated by `\n\n`, single newline reserved for in-paragraph
-// breaks the segmenter joins on whitespace anyway).
+// Drive a foliate-js EPUB instance to plain text. Returns the
+// segmenter-shaped text (`# Heading\n\n`, paragraphs separated by
+// `\n\n`, single newline reserved for in-paragraph breaks) plus a
+// count of sections that failed to parse. The reducer surfaces a
+// non-zero count as a soft warning in the add-book sheet so the
+// reader can distinguish a complete import from a partial one.
 async function renderSections(book) {
   const chunks = [];
+  let sectionsSkipped = 0;
   for (const section of book.sections ?? []) {
     if (!section || section.linear === "no") continue;
     // `createDocument` returns a parsed XML/XHTML document for the
     // section. It can throw for malformed spine items — catch
     // section-level failures so one broken chapter does not abort the
-    // whole import.
+    // whole import. Count the skip so the reducer can let the reader
+    // know that the import was partial.
     let doc;
     try {
       doc = await section.createDocument();
     } catch (error) {
       console.warn("Failed to parse epub section", section.id, error);
+      sectionsSkipped += 1;
       continue;
     }
     extractSection(doc, chunks);
   }
-  return chunks.join("");
+  return { text: chunks.join(""), sectionsSkipped };
 }
 
 /**
@@ -295,7 +300,7 @@ async function parseEpub(file) {
     }
   }
 
-  const text = await renderSections(book);
+  const { text, sectionsSkipped } = await renderSections(book);
   if (text.trim().length === 0) {
     throw new EmptyTextMarker();
   }
@@ -304,6 +309,7 @@ async function parseEpub(file) {
     readTitle(book.metadata),
     readAuthor(book.metadata),
     text,
+    sectionsSkipped,
   );
 }
 
