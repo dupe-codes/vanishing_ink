@@ -13,6 +13,9 @@
 ////   * book lifecycle (library, fetch, create, delete),
 ////   * server settings + reading-state load.
 
+import gleam/dynamic.{type Dynamic}
+
+import client/epub.{type EpubError, type EpubExtract}
 import client/ffi
 import client/state.{type LineBox, type Mode}
 import client/types.{type BookMeta}
@@ -284,6 +287,23 @@ pub type Msg {
   /// fires `create_book`. The submit button's `disabled` reflects
   /// `paste_submitting` so a double-tap cannot fire two POSTs.
   SubmitPaste
+
+  /// Reader picked an `.epub` file from the add-book sheet's file
+  /// input. The payload is the raw browser `File` object wrapped in
+  /// a `Dynamic` — the reducer dispatches the `parse_epub` effect,
+  /// which hands it back to the FFI for parsing. Carries `Dynamic`
+  /// rather than a typed handle because a `File` object does not
+  /// round-trip through Gleam's typed runtime.
+  EpubFileSelected(file: Dynamic)
+
+  /// `parse_epub_file` resolved. The success arm copies the
+  /// extracted title and segmenter-shaped body text into
+  /// `paste_title` / `paste_text` so the reader sees the imported
+  /// book pre-filled in the same form they would otherwise paste
+  /// into — they can review and edit the title before submitting.
+  /// The error arm surfaces a human-readable message in
+  /// `paste_error`.
+  EpubParsed(result: Result(EpubExtract, EpubError))
 
   /// `GET /api/settings` resolved. The success arm decodes the body
   /// as `UserSettings`, stamps `model.global_defaults`, and applies

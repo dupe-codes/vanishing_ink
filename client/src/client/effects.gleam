@@ -12,6 +12,7 @@
 //// callers see one error shape regardless of where the failure
 //// originated.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
@@ -22,10 +23,11 @@ import gleam/result
 import gleam/set.{type Set}
 import lustre/effect.{type Effect}
 
+import client/epub
 import client/ffi
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, LinesMeasured, ParagraphsMeasured,
+  BookSettingsLoaded, BooksLoaded, EpubParsed, LinesMeasured, ParagraphsMeasured,
   ReadingStateLoaded, SettingsLoaded, ViewportResized,
 }
 import client/state.{
@@ -239,6 +241,21 @@ pub fn delete_book_effect(id: String) -> Effect(Msg) {
     ffi.fetch_json_delete("/api/books/" <> id, fn(result) {
       dispatch(BookDeleted(id, result))
     })
+  })
+}
+
+/// Hand a picked `.epub` file off to the FFI parser and dispatch
+/// `EpubParsed` when it resolves. The `Dynamic` payload is the raw
+/// browser `File` reference — the reducer has no use for it directly,
+/// so we treat it as opaque and pass it through.
+///
+/// The parse runs asynchronously (foliate-js awaits `File.arrayBuffer()`
+/// then walks the spine in turn); the `effect.from` shape mirrors the
+/// fetch helpers so a future progress-bar or cancellation surface can
+/// land in the same place as the existing network call sites.
+pub fn parse_epub(file: Dynamic) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    epub.parse_epub_file(file, fn(result) { dispatch(EpubParsed(result)) })
   })
 }
 

@@ -46,21 +46,22 @@ import client/engine.{
 }
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EraseFocused,
-  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
-  FocusPrevious, GoToLibrary, LinesMeasured, NextPage, OpenBook,
-  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SetFontSize, SetGhostOpacity, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitPaste, TextLoaded,
-  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, ViewportResized,
+  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
+  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  LinesMeasured, NextPage, OpenBook, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
+  SetGhostOpacity, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
+  ViewportResized,
 }
 import client/navigation
 import client/pagination
 import client/reducer/book.{
-  apply_book_loaded, apply_go_to_library, apply_open_book, apply_submit_paste,
-  apply_text_load,
+  apply_book_loaded, apply_epub_file_selected, apply_epub_parsed,
+  apply_go_to_library, apply_open_book, apply_submit_paste, apply_text_load,
 }
 import client/reducer/focus.{
   apply_erase_focused, focus_paragraph_step, focus_sentence_step,
@@ -222,6 +223,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         paste_text: "",
         paste_submitting: False,
         paste_error: None,
+        paste_warning: None,
         add_book_open: False,
         // Stash the segmented payload so an immediate `OpenBook(meta.id)`
         // can apply it directly instead of round-tripping through
@@ -238,6 +240,10 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         ..model,
         paste_submitting: False,
         paste_error: Some(describe_fetch_error(error)),
+        // The POST attempt supersedes any partial-import banner
+        // that was on the sheet — the reader is now seeing a
+        // failure message, not a "we got most of the book" note.
+        paste_warning: None,
       ),
       effect.none(),
     )
@@ -252,13 +258,19 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         Model(
           ..model,
           add_book_open: opening,
-          // Opening the sheet clears any prior error so the form
-          // starts clean; closing it leaves whatever error was last
-          // shown intact (the reader is dismissing the surface, not
-          // acknowledging the message).
+          // Opening the sheet clears any prior error and warning so
+          // the form starts clean; closing it leaves both banners
+          // intact (the reader is dismissing the surface, not
+          // acknowledging the message). Warning is paired with
+          // error here so a stale partial-import banner does not
+          // outlive the sheet that birthed it.
           paste_error: case opening {
             True -> None
             False -> model.paste_error
+          },
+          paste_warning: case opening {
+            True -> None
+            False -> model.paste_warning
           },
         ),
         effect.none(),
@@ -266,16 +278,20 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     }
 
     SetPasteTitle(value) -> #(
-      Model(..model, paste_title: value, paste_error: None),
+      Model(..model, paste_title: value, paste_error: None, paste_warning: None),
       effect.none(),
     )
 
     SetPasteText(value) -> #(
-      Model(..model, paste_text: value, paste_error: None),
+      Model(..model, paste_text: value, paste_error: None, paste_warning: None),
       effect.none(),
     )
 
     SubmitPaste -> apply_submit_paste(model)
+
+    EpubFileSelected(file) -> apply_epub_file_selected(model, file)
+
+    EpubParsed(result) -> apply_epub_parsed(model, result)
 
     SettingsLoaded(Ok(body)) ->
       case json.parse(body, types.user_settings_decoder()) {

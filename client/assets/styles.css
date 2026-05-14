@@ -1403,6 +1403,60 @@ body.vi-reduced-motion .settings-toggle-input::after {
   margin: 12px 0 8px;
 }
 
+/* ePub file-picker row. Renders as a full-width button-like label that
+ * wraps the visually hidden <input type="file">. The hidden input keeps
+ * the native picker accessible to keyboard and screen-reader users; the
+ * label surface is what the reader actually taps. */
+.epub-import-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 44px;
+  margin-top: 4px;
+  background-color: var(--vi-surface);
+  color: var(--vi-fg);
+  border: 1px dashed var(--vi-surface-border);
+  border-radius: 10px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 150ms ease, opacity 120ms ease,
+              background-color var(--vi-theme-transition),
+              color var(--vi-theme-transition);
+}
+
+.epub-import-button:hover,
+.epub-import-button:focus-within {
+  border-color: var(--vi-accent);
+}
+
+.epub-import-button.is-loading {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Visually hide the native file input but keep it focusable + readable
+ * by assistive tech. clip + clip-path is the canonical "visually-hidden
+ * but still in the accessibility tree" pattern. */
+.epub-import-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.epub-import-label {
+  pointer-events: none;
+}
+
 .paste-input,
 .paste-area {
   width: 100%;
@@ -1437,6 +1491,23 @@ body.vi-reduced-motion .settings-toggle-input::after {
   font-family: system-ui, -apple-system, sans-serif;
   font-size: 13px;
   color: var(--vi-fg);
+}
+
+/* Partial-import advisory banner. Distinct from `.paste-error`: the
+   import succeeded, the reader just lost a section or two — surface
+   it with a muted neutral surface so the message reads as
+   informational rather than as a red-alert failure. The Gleam view
+   pairs this class with `role="status"` so screen readers announce
+   it politely (not as an `aria-live="assertive"` alert). */
+.paste-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
 }
 
 .btn-add-book {

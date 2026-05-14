@@ -519,6 +519,16 @@ pub type LineBox {
 ///   server's response rejected the most recent submission;
 ///   `None` otherwise. Cleared on the next successful POST or on
 ///   any form-field change.
+/// * `paste_warning` — `Some(message)` when the ePub import
+///   succeeded but skipped one or more spine sections;
+///   `None` otherwise. Distinct from `paste_error` so the view
+///   can render it with `role="status"` rather than `role="alert"`
+///   — a partial-success import should not announce as a failure
+///   to screen readers, and the visual treatment is non-error
+///   (muted surface, no accent border). Cleared on every action
+///   that begins a fresh import attempt or that supersedes the
+///   prior import (file pick, opening the sheet, typing in the
+///   title / text inputs, successful POST, failed POST).
 /// * `add_book_open` — `True` when the add-book bottom sheet is
 ///   visible. Toggled by the FAB on the library view and by the
 ///   sheet's own close button / overlay tap.
@@ -583,6 +593,7 @@ pub type Model {
     paste_text: String,
     paste_submitting: Bool,
     paste_error: Option(String),
+    paste_warning: Option(String),
     add_book_open: Bool,
     created_book_segments: Option(#(BookMeta, SegmentedText)),
     global_defaults: UserSettings,

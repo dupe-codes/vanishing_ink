@@ -6,15 +6,21 @@
 //// limit and so the "book state lifecycle" axis of change lives
 //// behind one module boundary.
 
+import gleam/dynamic.{type Dynamic}
 import gleam/float
-import gleam/option.{None, Some}
+import gleam/int
+import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
 import lustre/effect.{type Effect}
 
 import client/effects.{
   create_book, fetch_book, fetch_book_settings, fetch_reading_state,
-  measure_after_paint, save_reading_state,
+  measure_after_paint, parse_epub, save_reading_state,
+}
+import client/epub.{
+  type EpubError, type EpubExtract, DrmEncrypted, EmptyText, EpubExtract,
+  ParseFailed, UnsupportedFormat,
 }
 import client/ffi
 import client/msg.{type Msg}
@@ -246,6 +252,133 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
   )
 }
 
+/// Dispatch the ePub parse effect for a freshly-picked file. Marks
+/// `paste_submitting: True` so the file picker disables itself while
+/// the parse is in flight (a second pick during the parse would
+/// orphan the first result), and clears any prior `paste_error` /
+/// `paste_warning` so the in-flight surface starts clean — the
+/// reader is starting a new import attempt, so a stale banner from
+/// the previous file would mislead.
+///
+/// Also resets the file input's `.value` via a side-effecting FFI
+/// call so a subsequent pick of the same file path still fires a
+/// `change` event — without the reset, the browser short-circuits
+/// because the input's value did not change. The reset lives in an
+/// effect rather than the event decoder so the decoder stays a pure
+/// projection of the event payload (Lustre's expected contract for
+/// decoders).
+pub fn apply_epub_file_selected(
+  model: Model,
+  file: Dynamic,
+) -> #(Model, Effect(Msg)) {
+  #(
+    Model(
+      ..model,
+      paste_submitting: True,
+      paste_error: None,
+      paste_warning: None,
+    ),
+    effect.batch([
+      effect.from(fn(_dispatch) { epub.reset_picker_inputs() }),
+      parse_epub(file),
+    ]),
+  )
+}
+
+/// Stamp the parsed ePub onto the paste form so the reader sees the
+/// extracted title and segmenter-shaped body text pre-filled. The
+/// success path is "load into the form, don't auto-submit" so the
+/// reader can sanity-check the extraction (missing title, extra
+/// front-matter) before sending the POST. Failures surface as a
+/// human-readable `paste_error`.
+///
+/// A partial-success import (one or more spine sections failed to
+/// parse) keeps the extracted text and surfaces a soft warning in
+/// the separate `paste_warning` channel. The warning channel renders
+/// with `role="status"` and a muted visual treatment so screen
+/// readers do not announce a successful-but-partial import as an
+/// error — the reader can still decide to retry with a different
+/// file, but the affordance is informational rather than alarming.
+pub fn apply_epub_parsed(
+  model: Model,
+  result: Result(EpubExtract, EpubError),
+) -> #(Model, Effect(Msg)) {
+  case result {
+    Ok(EpubExtract(title, text, sections_skipped)) -> #(
+      Model(
+        ..model,
+        paste_title: paste_title_after_import(model.paste_title, title),
+        paste_text: text,
+        paste_submitting: False,
+        paste_error: None,
+        paste_warning: describe_partial_import(sections_skipped),
+      ),
+      effect.none(),
+    )
+    Error(error) -> #(
+      Model(
+        ..model,
+        paste_submitting: False,
+        paste_error: Some(describe_epub_error(error)),
+        // A parse failure replaces any prior partial-import warning
+        // — the reader is now looking at a hard failure, not a
+        // "we got most of the book" note.
+        paste_warning: None,
+      ),
+      effect.none(),
+    )
+  }
+}
+
+/// Build the partial-import warning the reducer pins to `paste_error`
+/// on a successful-but-incomplete ePub import. Zero skips → `None`
+/// so the banner stays hidden (a clean import shows no message). Any
+/// non-zero count surfaces a single-line warning naming the count so
+/// the reader can decide to accept or retry.
+fn describe_partial_import(sections_skipped: Int) -> Option(String) {
+  case sections_skipped {
+    0 -> None
+    1 ->
+      Some(
+        "Imported, but 1 section of this ePub could not be parsed and was skipped.",
+      )
+    count ->
+      Some(
+        "Imported, but "
+        <> int.to_string(count)
+        <> " sections of this ePub could not be parsed and were skipped.",
+      )
+  }
+}
+
+/// Decide which title to leave on the form after a successful ePub
+/// import. A non-empty existing title wins (the reader typed
+/// something before picking the file — clobbering it would discard
+/// their intent), otherwise the extracted title fills the slot.
+fn paste_title_after_import(existing: String, extracted: String) -> String {
+  case string.trim(existing) {
+    "" -> extracted
+    _ -> existing
+  }
+}
+
+/// Project an `EpubError` to a user-facing sentence for the
+/// add-book sheet's error banner. The mapping is intentionally
+/// terse — the sheet has limited vertical room and a long technical
+/// detail string would push the submit button off-screen.
+pub fn describe_epub_error(error: EpubError) -> String {
+  case error {
+    UnsupportedFormat -> "This file does not look like a valid ePub."
+    DrmEncrypted -> "This ePub is DRM-protected and cannot be imported."
+    EmptyText -> "No readable text was found in this ePub."
+    ParseFailed(detail) ->
+      case string.trim(detail) {
+        "" -> "Could not parse this ePub."
+        trimmed -> "Could not parse this ePub: " <> trimmed
+      }
+  }
+}
+
 /// Validate the paste form and fire `create_book`. Empty title or
 /// empty body short-circuits with a `paste_error`; the server's
 /// own validation would catch the same case, but checking client-
@@ -263,7 +396,16 @@ pub fn apply_submit_paste(model: Model) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     _, _ -> #(
-      Model(..model, paste_submitting: True, paste_error: None),
+      // Submitting clears the warning too — the reader has accepted
+      // the partial-import body and is now sending it; keeping the
+      // banner around alongside the "Adding…" button label would
+      // double up the message.
+      Model(
+        ..model,
+        paste_submitting: True,
+        paste_error: None,
+        paste_warning: None,
+      ),
       create_book(title, text),
     )
   }
