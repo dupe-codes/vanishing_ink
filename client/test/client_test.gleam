@@ -5600,14 +5600,16 @@ pub fn update_epub_file_selected_marks_submitting_and_clears_error_test() {
   // Picking a file kicks off the parse — the form is locked
   // (`paste_submitting: True`) so a second pick during the parse
   // cannot orphan the first result, and any prior error is wiped
-  // so the in-flight surface starts clean.
+  // so the in-flight surface starts clean. Whole-Model equality
+  // ensures the reducer arm cannot silently mutate an unrelated
+  // field (e.g. flipping `add_book_open`).
   let prior = Model(..empty_model(), paste_error: Some("stale"))
 
   let #(updated, _effect) =
     reducer.update(prior, EpubFileSelected(dynamic.nil()))
 
-  assert updated.paste_submitting == True
-  assert updated.paste_error == None
+  let expected = Model(..prior, paste_submitting: True, paste_error: None)
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
@@ -5627,10 +5629,15 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
     EpubExtract("Walden", "Henry David Thoreau", "# Walden\n\nProse.\n\n")
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
-  assert updated.paste_title == "Walden"
-  assert updated.paste_text == "# Walden\n\nProse.\n\n"
-  assert updated.paste_submitting == False
-  assert updated.paste_error == None
+  let expected =
+    Model(
+      ..prior,
+      paste_title: "Walden",
+      paste_text: "# Walden\n\nProse.\n\n",
+      paste_submitting: False,
+      paste_error: None,
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_ok_preserves_existing_title_test() {
@@ -5648,8 +5655,15 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
   let extract = EpubExtract("Walden", "", "Some text.\n\n")
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
-  assert updated.paste_title == "My Custom Title"
-  assert updated.paste_text == "Some text.\n\n"
+  let expected =
+    Model(
+      ..prior,
+      paste_title: "My Custom Title",
+      paste_text: "Some text.\n\n",
+      paste_submitting: False,
+      paste_error: None,
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
@@ -5660,7 +5674,15 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   let extract = EpubExtract("Walden", "", "Body.\n\n")
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
-  assert updated.paste_title == "Walden"
+  let expected =
+    Model(
+      ..prior,
+      paste_title: "Walden",
+      paste_text: "Body.\n\n",
+      paste_submitting: False,
+      paste_error: None,
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_error_unsupported_format_surfaces_message_test() {
@@ -5669,9 +5691,13 @@ pub fn update_epub_parsed_error_unsupported_format_surfaces_message_test() {
   let #(updated, _effect) =
     reducer.update(prior, EpubParsed(Error(UnsupportedFormat)))
 
-  assert updated.paste_submitting == False
-  assert updated.paste_error
-    == Some("This file does not look like a valid ePub.")
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("This file does not look like a valid ePub."),
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_error_drm_surfaces_message_test() {
@@ -5680,9 +5706,13 @@ pub fn update_epub_parsed_error_drm_surfaces_message_test() {
   let #(updated, _effect) =
     reducer.update(prior, EpubParsed(Error(DrmEncrypted)))
 
-  assert updated.paste_submitting == False
-  assert updated.paste_error
-    == Some("This ePub is DRM-protected and cannot be imported.")
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("This ePub is DRM-protected and cannot be imported."),
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_error_empty_text_surfaces_message_test() {
@@ -5690,8 +5720,13 @@ pub fn update_epub_parsed_error_empty_text_surfaces_message_test() {
 
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Error(EmptyText)))
 
-  assert updated.paste_submitting == False
-  assert updated.paste_error == Some("No readable text was found in this ePub.")
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("No readable text was found in this ePub."),
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_error_parse_failed_surfaces_detail_test() {
@@ -5700,8 +5735,13 @@ pub fn update_epub_parsed_error_parse_failed_surfaces_detail_test() {
   let #(updated, _effect) =
     reducer.update(prior, EpubParsed(Error(ParseFailed("malformed OPF"))))
 
-  assert updated.paste_submitting == False
-  assert updated.paste_error == Some("Could not parse this ePub: malformed OPF")
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("Could not parse this ePub: malformed OPF"),
+    )
+  assert updated == expected
 }
 
 pub fn update_epub_parsed_error_parse_failed_falls_back_when_detail_blank_test() {
@@ -5713,7 +5753,13 @@ pub fn update_epub_parsed_error_parse_failed_falls_back_when_detail_blank_test()
   let #(updated, _effect) =
     reducer.update(prior, EpubParsed(Error(ParseFailed("   "))))
 
-  assert updated.paste_error == Some("Could not parse this ePub.")
+  let expected =
+    Model(
+      ..prior,
+      paste_submitting: False,
+      paste_error: Some("Could not parse this ePub."),
+    )
+  assert updated == expected
 }
 
 // ---------------------------------------------------------------------------
