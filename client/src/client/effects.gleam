@@ -27,8 +27,10 @@ import client/epub
 import client/ffi
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, EpubParsed, LinesMeasured, ParagraphsMeasured,
-  ReadingStateLoaded, SettingsLoaded, ViewportResized,
+  BookSettingsLoaded, BooksLoaded, EpubParsed, FetchBookStatsResult,
+  FetchLibraryBookStatsResult, FetchLibraryStatsResult, LinesMeasured,
+  ParagraphsMeasured, ReadingStateLoaded, SessionCreated, SessionEnded,
+  SettingsLoaded, ViewportResized,
 }
 import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
@@ -257,6 +259,96 @@ pub fn should_save_reading_state(model: Model) -> Bool {
     Some(_), None -> True
     _, _ -> False
   }
+}
+
+/// `POST /api/books/:id/sessions` with the client-generated UUID and
+/// the start timestamp. Dispatches `SessionCreated(book_id, result)`
+/// — the book id is closed over so a late response that lands after
+/// the reader has switched books can be ignored at the reducer.
+pub fn create_reading_session(
+  book_id: String,
+  session_id: String,
+  started_at: String,
+) -> Effect(Msg) {
+  let body =
+    json.object([
+      #("id", json.string(session_id)),
+      #("started_at", json.string(started_at)),
+    ])
+    |> json.to_string
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_post(
+      "/api/books/" <> book_id <> "/sessions",
+      body,
+      fn(result) { dispatch(SessionCreated(book_id, result)) },
+    )
+  })
+}
+
+/// `PUT /api/books/:id/sessions/:session_id` with the closing
+/// counters and timestamp. Dispatches `SessionEnded` regardless of
+/// outcome so the follow-up stats refetch can fire either way — a
+/// failed PUT may still have applied server-side and the aggregates
+/// are cheap to re-fetch.
+pub fn end_reading_session(
+  book_id book_id: String,
+  session_id session_id: String,
+  ended_at ended_at: String,
+  words_read words_read: Int,
+  words_skipped words_skipped: Int,
+  pages_turned pages_turned: Int,
+  duration_seconds duration_seconds: Int,
+) -> Effect(Msg) {
+  let body =
+    json.object([
+      #("ended_at", json.string(ended_at)),
+      #("words_read", json.int(words_read)),
+      #("words_skipped", json.int(words_skipped)),
+      #("pages_turned", json.int(pages_turned)),
+      #("duration_seconds", json.int(duration_seconds)),
+    ])
+    |> json.to_string
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_put(
+      "/api/books/" <> book_id <> "/sessions/" <> session_id,
+      body,
+      fn(result) { dispatch(SessionEnded(result)) },
+    )
+  })
+}
+
+/// `GET /api/books/:id/stats` and dispatch `FetchBookStatsResult`.
+/// The id is closed over and re-emitted on the dispatched Msg so the
+/// reducer can drop a stale response that lands after the reader has
+/// navigated away or opened a different book.
+pub fn fetch_book_stats(id: String) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/books/" <> id <> "/stats", fn(result) {
+      dispatch(FetchBookStatsResult(id, result))
+    })
+  })
+}
+
+/// `GET /api/stats` and dispatch `FetchLibraryStatsResult`. The raw
+/// response body is forwarded so the reducer branches on the decode
+/// result inline.
+pub fn fetch_library_stats() -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/stats", fn(result) {
+      dispatch(FetchLibraryStatsResult(result))
+    })
+  })
+}
+
+/// `GET /api/stats/books` and dispatch `FetchLibraryBookStatsResult`.
+/// One bulk fetch per library load — N round trips for N books would
+/// be wasteful for a surface that renders the whole grid at once.
+pub fn fetch_library_book_stats() -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/stats/books", fn(result) {
+      dispatch(FetchLibraryBookStatsResult(result))
+    })
+  })
 }
 
 /// `DELETE /api/books/:id` and dispatch `BookDeleted`. The server

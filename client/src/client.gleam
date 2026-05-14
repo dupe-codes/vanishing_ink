@@ -42,6 +42,7 @@
 //// through `client/ffi.gleam`. `resize` is debounced in the FFI so
 //// a continuous drag does not flood the update loop.
 
+import gleam/dict
 import gleam/io
 import gleam/option.{None}
 import gleam/set
@@ -49,11 +50,13 @@ import gleam/string
 import lustre
 import lustre/effect.{type Effect}
 
-import client/effects.{fetch_books, fetch_settings}
+import client/effects.{
+  fetch_books, fetch_library_book_stats, fetch_library_stats, fetch_settings,
+}
 import client/ffi
 import client/msg.{
   type Msg, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
-  NextPage, SpacePressed, Undo, ViewportResized,
+  NextPage, SpacePressed, Undo, ViewportResized, VisibilityChanged,
 }
 import client/reducer
 import client/state.{
@@ -144,6 +147,16 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       jump_preview: None,
       chapter_entries: [],
       jump_page_input: "",
+      active_session_id: None,
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+      session_started_at: None,
+      session_started_at_ms: 0,
+      stats_open: False,
+      book_stats: None,
+      library_stats: None,
+      library_book_stats: dict.new(),
     )
 
   // Boot effects:
@@ -194,6 +207,18 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
         undo_callback: fn() { dispatch(Undo) },
       )
     })
+  // `visibilitychange` boots the reading-session lifecycle's
+  // tab-hide / tab-show hook. The reducer maps `False` to
+  // `apply_end_session` (the reader has tabbed away and the active
+  // session should close so its counters are persisted) and `True`
+  // to `apply_start_session` (the reader is back; open a fresh row
+  // against the active book).
+  let visibility_listener =
+    effect.from(fn(dispatch) {
+      ffi.add_visibility_listener(fn(visible) {
+        dispatch(VisibilityChanged(visible))
+      })
+    })
 
   #(
     model,
@@ -202,10 +227,13 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       body_classes,
       fetch_books(),
       fetch_settings(),
+      fetch_library_stats(),
+      fetch_library_book_stats(),
       resize_listener,
       arrow_listener,
       undo_listener,
       vim_listener,
+      visibility_listener,
     ]),
   )
 }

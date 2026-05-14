@@ -559,6 +559,53 @@ export function pack_indices_to_base64(indices) {
  * @param {string} encoded Base64-encoded bitset.
  * @returns {List} Gleam-encoded linked list of non-negative integers.
  */
+/**
+ * Returns a fresh RFC 4122 v4 UUID via `crypto.randomUUID()`. Used to
+ * stamp reading-session ids before the POST hits the server so the
+ * follow-up PUT (and the visibilitychange-triggered end PUT) can
+ * target the same row without waiting for the response.
+ *
+ * `crypto.randomUUID()` is universal on modern browsers and Node 19+;
+ * a polyfill fallback is intentionally omitted because the rest of
+ * the FFI assumes the same modern browser surface.
+ *
+ * @returns {string}
+ */
+export function generate_uuid() {
+  return crypto.randomUUID();
+}
+
+/**
+ * Installs a `visibilitychange` listener on `document`. The Gleam
+ * callback receives `true` when the tab becomes visible and `false`
+ * when it becomes hidden. Used by the reading-session lifecycle to
+ * end a session on tab hide (the reader is no longer engaged) and to
+ * start a new one on tab show.
+ *
+ * The listener persists for the lifetime of the page.
+ *
+ * @param {function(boolean): void} callback
+ */
+export function add_visibility_listener(callback) {
+  document.addEventListener("visibilitychange", () => {
+    callback(document.visibilityState === "visible");
+  });
+}
+
+/**
+ * Wall-clock now as integer milliseconds since the Unix epoch. Used by
+ * the reading-session reducer to compute the duration of a session
+ * locally; the canonical ISO-8601 stamp goes over the wire via
+ * `now_iso8601`, but arithmetic on strings is awkward and rounding
+ * the difference to whole seconds here keeps the in-flight counter
+ * stable across rapid pause / resume cycles.
+ *
+ * @returns {number}
+ */
+export function now_ms() {
+  return Date.now();
+}
+
 export function unpack_base64_to_indices(encoded) {
   if (typeof encoded !== "string" || encoded.length === 0) {
     return toList([]);

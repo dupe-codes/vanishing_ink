@@ -268,3 +268,30 @@ pub fn pack_indices_to_base64(indices: List(Int)) -> String
 /// right shape for "no progress recorded" / "decode failed."
 @external(javascript, "./ffi.ffi.mjs", "unpack_base64_to_indices")
 pub fn unpack_base64_to_indices(encoded: String) -> List(Int)
+
+/// Return a fresh RFC 4122 v4 UUID via `crypto.randomUUID()`. Used to
+/// stamp the `id` field of a reading-session POST before the server's
+/// response lands, so the follow-up PUT (and the
+/// `visibilitychange`-triggered end PUT) can target the same row
+/// without waiting for an id to round-trip back.
+@external(javascript, "./ffi.ffi.mjs", "generate_uuid")
+pub fn generate_uuid() -> String
+
+/// Install a `visibilitychange` listener on `document`. The callback
+/// fires with `True` when the tab becomes visible (the document's
+/// `visibilityState` flips to `"visible"`) and `False` when it
+/// becomes hidden. Used to close a reading session when the reader
+/// tabs away and to open a new one when they come back.
+///
+/// The listener persists for the lifetime of the page; there is no
+/// removal API today.
+@external(javascript, "./ffi.ffi.mjs", "add_visibility_listener")
+pub fn add_visibility_listener(callback: fn(Bool) -> Nil) -> Nil
+
+/// Wall-clock now as Unix epoch milliseconds. Pulled out of `Date.now()`
+/// so the reducer can compute session duration deltas locally — the
+/// `now_iso8601()` string above is canonical for transport, but
+/// arithmetic on strings is not — and so the test surface can stand
+/// in a deterministic value rather than reading the system clock.
+@external(javascript, "./ffi.ffi.mjs", "now_ms")
+pub fn now_ms() -> Int

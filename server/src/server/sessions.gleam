@@ -24,6 +24,7 @@ import gleam/result
 import gleam/string
 import server/clock
 import server/db
+import server/db_sessions
 import server/types.{ReadingSession}
 import server/web.{type Context}
 import shared
@@ -79,6 +80,16 @@ pub fn library_stats(req: Request, ctx: Context) -> Response {
   }
 }
 
+/// Dispatcher for `/api/stats/books`. GET-only — returns one entry per
+/// book with at least one recorded session so the library view can
+/// surface per-card stats without N round-trips.
+pub fn book_stats_collection(req: Request, ctx: Context) -> Response {
+  case req.method {
+    Get -> get_book_stats_collection_handler(ctx)
+    _ -> wisp.method_not_allowed([Get])
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Open session
 // ---------------------------------------------------------------------------
@@ -114,7 +125,7 @@ fn post_session_handler(
 /// `id` must be non-empty (we won't let the client persist an
 /// anonymous primary key) and `started_at` must canonicalise through
 /// `clock.parse_iso8601` so the day-prefix slicing in
-/// `db.get_session_days` produces a valid `YYYY-MM-DD`.
+/// `db_sessions.get_session_days` produces a valid `YYYY-MM-DD`.
 fn validate_start_session(
   input: StartSessionInput,
 ) -> Result(StartSessionInput, String) {
@@ -160,9 +171,9 @@ fn persist_new_session(
           pages_turned: 0,
           duration_seconds: 0,
         )
-      case db.insert_reading_session(ctx.db, session) {
+      case db_sessions.insert_reading_session(ctx.db, session) {
         Error(error) ->
-          web.db_error_response("db.insert_reading_session", error)
+          web.db_error_response("db_sessions.insert_reading_session", error)
         Ok(Nil) -> {
           let body =
             types.reading_session_to_json(session)
@@ -283,8 +294,9 @@ fn persist_session_update(
     Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
-      case db.get_reading_session(ctx.db, session_id) {
-        Error(error) -> web.db_error_response("db.get_reading_session", error)
+      case db_sessions.get_reading_session(ctx.db, session_id) {
+        Error(error) ->
+          web.db_error_response("db_sessions.get_reading_session", error)
         Ok(None) -> wisp.not_found()
         Ok(Some(existing)) ->
           case existing.book_id == book_id {
@@ -296,7 +308,7 @@ fn persist_session_update(
             False -> wisp.not_found()
             True -> {
               let result =
-                db.update_reading_session(
+                db_sessions.update_reading_session(
                   ctx.db,
                   id: session_id,
                   ended_at: input.ended_at,
@@ -307,7 +319,10 @@ fn persist_session_update(
                 )
               case result {
                 Error(error) ->
-                  web.db_error_response("db.update_reading_session", error)
+                  web.db_error_response(
+                    "db_sessions.update_reading_session",
+                    error,
+                  )
                 Ok(Nil) -> {
                   let updated =
                     ReadingSession(
@@ -344,8 +359,9 @@ fn get_book_stats_handler(ctx: Context, book_id: String) -> Response {
     Error(error) -> web.db_error_response("db.get_book", error)
     Ok(None) -> wisp.not_found()
     Ok(Some(_)) ->
-      case db.get_book_stats(ctx.db, book_id) {
-        Error(error) -> web.db_error_response("db.get_book_stats", error)
+      case db_sessions.get_book_stats(ctx.db, book_id) {
+        Error(error) ->
+          web.db_error_response("db_sessions.get_book_stats", error)
         Ok(stats_record) -> {
           let body =
             stats.book_stats_to_json(stats_record)
@@ -360,10 +376,23 @@ fn get_book_stats_handler(ctx: Context, book_id: String) -> Response {
 // Library aggregate
 // ---------------------------------------------------------------------------
 
+fn get_book_stats_collection_handler(ctx: Context) -> Response {
+  case db_sessions.get_all_book_stats(ctx.db) {
+    Error(error) ->
+      web.db_error_response("db_sessions.get_all_book_stats", error)
+    Ok(entries) -> {
+      let body =
+        json.array(entries, stats.book_stats_entry_to_json)
+        |> json.to_string
+      wisp.json_response(body, 200)
+    }
+  }
+}
+
 fn get_library_stats_handler(ctx: Context) -> Response {
   let today = clock.today_iso8601_date()
-  case db.get_session_days(ctx.db) {
-    Error(error) -> web.db_error_response("db.get_session_days", error)
+  case db_sessions.get_session_days(ctx.db) {
+    Error(error) -> web.db_error_response("db_sessions.get_session_days", error)
     Ok(days) -> {
       let streak =
         stats.compute_current_streak_days(
@@ -371,8 +400,9 @@ fn get_library_stats_handler(ctx: Context) -> Response {
           today: today,
           is_next_day: clock.is_next_day,
         )
-      case db.build_library_stats(ctx.db, streak) {
-        Error(error) -> web.db_error_response("db.build_library_stats", error)
+      case db_sessions.build_library_stats(ctx.db, streak) {
+        Error(error) ->
+          web.db_error_response("db_sessions.build_library_stats", error)
         Ok(record) -> {
           let body =
             stats.library_stats_to_json(record)

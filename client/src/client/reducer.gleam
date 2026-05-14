@@ -47,16 +47,18 @@ import client/engine.{
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
   BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
-  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
+  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FetchBookStatsResult,
+  FetchLibraryBookStatsResult, FetchLibraryStatsResult, FocusNext,
   FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SetFontSize, SetGhostOpacity, SetJumpPageInput, SetLineSpacing,
-  SetMode, SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitJumpPage, SubmitPaste,
-  TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  UndoJump, ViewportResized,
+  ResumeFade, SessionCreated, SessionEnded, SetFontSize, SetGhostOpacity,
+  SetJumpPageInput, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
+  ToggleStatsView, TouchCancel, TouchEnd, TouchStart, Undo, UndoJump,
+  ViewportResized, VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -71,6 +73,11 @@ import client/reducer/jump.{
   apply_jump_to_chapter, apply_jump_to_page, apply_lock_in_jump,
   apply_set_jump_page_input, apply_submit_jump_page, apply_toggle_jump_menu,
   apply_undo_jump,
+}
+import client/reducer/session.{
+  apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,
+  apply_fetch_library_stats_result, apply_session_created, apply_session_ended,
+  apply_toggle_stats_view, apply_visibility_changed,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -402,6 +409,24 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     SetJumpPageInput(value) -> apply_set_jump_page_input(model, value)
 
     SubmitJumpPage -> apply_submit_jump_page(model)
+
+    SessionCreated(book_id, result) ->
+      apply_session_created(model, book_id, result)
+
+    SessionEnded(result) -> apply_session_ended(model, result)
+
+    VisibilityChanged(visible) -> apply_visibility_changed(model, visible)
+
+    FetchBookStatsResult(book_id, result) ->
+      apply_fetch_book_stats_result(model, book_id, result)
+
+    FetchLibraryStatsResult(result) ->
+      apply_fetch_library_stats_result(model, result)
+
+    FetchLibraryBookStatsResult(result) ->
+      apply_fetch_library_book_stats_result(model, result)
+
+    ToggleStatsView -> apply_toggle_stats_view(model)
 
     // Sentinel: see `Msg.NoOp` for the rationale. No dispatch site
     // ever fires this; the arm is required so the pattern match

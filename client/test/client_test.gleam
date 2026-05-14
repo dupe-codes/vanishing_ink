@@ -20,6 +20,7 @@
 //// attribute structure and inter-element text content in one
 //// assertion.
 
+import gleam/dict
 import gleam/float
 import gleam/int
 import gleam/json
@@ -171,6 +172,33 @@ fn empty_model() -> Model {
     jump_preview: None,
     chapter_entries: [],
     jump_page_input: "",
+    active_session_id: None,
+    session_start_page: 0,
+    session_start_erased_count: 0,
+    session_words_skipped: 0,
+    session_started_at: None,
+    session_started_at_ms: 0,
+    stats_open: False,
+    book_stats: None,
+    library_stats: None,
+    library_book_stats: dict.new(),
+  )
+}
+
+/// Strip the reading-session lifecycle fields off a model so the
+/// rest of it can be compared against an expected baseline that
+/// can't predict the FFI-sourced UUID / wall-clock values. Tests
+/// that assert "a session is open" pair this helper with a
+/// dedicated `let assert Some(_) = ...` on the in-flight fields.
+fn clear_session(model: Model) -> Model {
+  Model(
+    ..model,
+    active_session_id: None,
+    session_start_page: 0,
+    session_start_erased_count: 0,
+    session_words_skipped: 0,
+    session_started_at: None,
+    session_started_at_ms: 0,
   )
 }
 
@@ -5290,7 +5318,14 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
 
   let #(updated, _effect) = reducer.update(prior, BookLoaded(Ok(#(meta, text))))
 
-  assert updated
+  // A reading session opens alongside `apply_book_loaded`; both the
+  // id and the started-at stamp are sourced from FFIs (UUID + wall
+  // clock) so the deterministic equality below normalises them out
+  // after pinning that they were populated.
+  let assert Some(_) = updated.active_session_id
+  let assert Some(_) = updated.session_started_at
+  let normalized = clear_session(updated)
+  assert normalized
     == Model(
       ..empty_model(),
       books_loading: True,
@@ -5376,7 +5411,10 @@ pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
 
   let #(updated, _effect) = reducer.update(prior, OpenBook("x"))
 
-  assert updated
+  let assert Some(_) = updated.active_session_id
+  let assert Some(_) = updated.session_started_at
+  let normalized = clear_session(updated)
+  assert normalized
     == Model(
       ..library_model(),
       books: [meta],

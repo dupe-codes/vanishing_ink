@@ -80,6 +80,44 @@ pub fn book_stats_to_json(stats: BookStats) -> json.Json {
   ])
 }
 
+/// Encode one `(book_id, BookStats)` pair as a JSON object the bulk
+/// per-book stats endpoint uses. The flat shape (`book_id` at the
+/// top level alongside the aggregate fields) keeps the wire form a
+/// single object per book, which the client can drop into a `Dict`
+/// keyed by id without an intermediate `stats` nesting level.
+pub fn book_stats_entry_to_json(entry: #(String, BookStats)) -> json.Json {
+  let #(book_id, stats) = entry
+  json.object([
+    #("book_id", json.string(book_id)),
+    #("total_words_read", json.int(stats.total_words_read)),
+    #("total_words_skipped", json.int(stats.total_words_skipped)),
+    #("total_duration_seconds", json.int(stats.total_duration_seconds)),
+    #("session_count", json.int(stats.session_count)),
+  ])
+}
+
+/// Decoder for one element of the bulk per-book stats response.
+/// Symmetric with `book_stats_entry_to_json`.
+pub fn book_stats_entry_decoder() -> decode.Decoder(#(String, BookStats)) {
+  use book_id <- decode.field("book_id", decode.string)
+  use total_words_read <- decode.field("total_words_read", decode.int)
+  use total_words_skipped <- decode.field("total_words_skipped", decode.int)
+  use total_duration_seconds <- decode.field(
+    "total_duration_seconds",
+    decode.int,
+  )
+  use session_count <- decode.field("session_count", decode.int)
+  decode.success(#(
+    book_id,
+    BookStats(
+      total_words_read: total_words_read,
+      total_words_skipped: total_words_skipped,
+      total_duration_seconds: total_duration_seconds,
+      session_count: session_count,
+    ),
+  ))
+}
+
 /// Encode `LibraryStats` as a JSON object. Mirrors `book_stats_to_json`
 /// in shape and convention.
 pub fn library_stats_to_json(stats: LibraryStats) -> json.Json {
