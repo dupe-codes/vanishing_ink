@@ -75,6 +75,8 @@ import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
 import client/view
 import client/view/reader as view_reader
+import client/view/stats as stats_view_module
+import shared/stats as shared_stats
 
 pub fn main() -> Nil {
   gleeunit.main()
@@ -7261,4 +7263,305 @@ pub fn view_renders_preview_banner_when_jump_preview_some_test() {
   // The regular manual chrome must step aside while previewing.
   assert !string.contains(rendered, "reader-bottom-manual")
   assert !string.contains(rendered, "Turn Page →")
+}
+
+// ---------------------------------------------------------------------------
+// Reading sessions — lifecycle reducers
+// ---------------------------------------------------------------------------
+
+pub fn apply_book_loaded_opens_active_session_test() {
+  // `apply_book_loaded` is the canonical session-start hook — the
+  // session id is stamped, the started_at timestamp is recorded, and
+  // the start_page snapshot mirrors the loaded book's `current_page`
+  // (always 0 immediately after load).
+  let prior = Model(..empty_model(), view: Library)
+  let text = two_chapter_text()
+  let meta = sample_book("book-x", "X", None)
+
+  let #(updated, _effect) = reducer.update(prior, BookLoaded(Ok(#(meta, text))))
+
+  let assert Some(_) = updated.active_session_id
+  let assert Some(_) = updated.session_started_at
+  assert updated.session_start_page == 0
+  assert updated.session_start_erased_count == 0
+  assert updated.session_words_skipped == 0
+  assert updated.active_book_id == Some("book-x")
+}
+
+pub fn apply_go_to_library_ends_active_session_test() {
+  // The closing PUT must fire before `active_book_id` is cleared, so
+  // the model post-dispatch carries `active_session_id: None` and the
+  // `session_started_at`/`session_start_*` snapshots are reset.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-1"),
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+      session_started_at: Some("2026-05-12T10:00:00.000Z"),
+      session_started_at_ms: 1_715_500_800_000,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, GoToLibrary)
+
+  assert updated.active_session_id == None
+  assert updated.session_started_at == None
+  assert updated.session_started_at_ms == 0
+  assert updated.session_start_page == 0
+  assert updated.session_start_erased_count == 0
+  assert updated.session_words_skipped == 0
+  assert updated.view == Library
+}
+
+pub fn visibility_change_hidden_ends_session_test() {
+  // Tab hidden — the session must close even though the reader is
+  // still notionally in `Reader` view.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-1"),
+      session_started_at: Some("2026-05-12T10:00:00.000Z"),
+    )
+  let #(updated, _effect) =
+    reducer.update(prior, msg.VisibilityChanged(visible: False))
+  assert updated.active_session_id == None
+  assert updated.session_started_at == None
+}
+
+pub fn visibility_change_visible_opens_new_session_when_in_reader_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-x"),
+      active_session_id: None,
+    )
+  let #(updated, _effect) =
+    reducer.update(prior, msg.VisibilityChanged(visible: True))
+  let assert Some(_) = updated.active_session_id
+  let assert Some(_) = updated.session_started_at
+}
+
+pub fn visibility_change_visible_in_library_is_no_op_test() {
+  // Tab-show while in the library should NOT spuriously open a
+  // session — the surface has no book to attach to.
+  let prior = Model(..empty_model(), view: Library, active_book_id: None)
+  let #(updated, _effect) =
+    reducer.update(prior, msg.VisibilityChanged(visible: True))
+  assert updated.active_session_id == None
+  assert updated.session_started_at == None
+}
+
+pub fn lock_in_jump_accumulates_session_words_skipped_test() {
+  // Build a paginated three-page model so the Lock-In jump from page
+  // 0 to page 2 will bulk-vanish words on page 0 and page 1.
+  let text = two_chapter_text()
+  let model_with_jump =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-x"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      pages: [
+        Page(index: 0, paragraphs: [
+          pagination.PageParagraph(
+            global_index: 0,
+            chapter_index: 0,
+            chapter_title: None,
+            paragraph: Paragraph(index: 0, sentences: [
+              Sentence(index: 0, global_index: 0, words: [
+                Word(index: 0, global_index: 0, text: "Hello"),
+                Word(index: 1, global_index: 1, text: "world."),
+              ]),
+            ]),
+          ),
+        ]),
+        Page(index: 1, paragraphs: [
+          pagination.PageParagraph(
+            global_index: 1,
+            chapter_index: 0,
+            chapter_title: None,
+            paragraph: Paragraph(index: 1, sentences: [
+              Sentence(index: 1, global_index: 1, words: [
+                Word(index: 0, global_index: 2, text: "Second"),
+                Word(index: 1, global_index: 3, text: "para."),
+              ]),
+            ]),
+          ),
+        ]),
+        Page(index: 2, paragraphs: [
+          pagination.PageParagraph(
+            global_index: 2,
+            chapter_index: 1,
+            chapter_title: Some("Two"),
+            paragraph: Paragraph(index: 0, sentences: [
+              Sentence(index: 2, global_index: 2, words: [
+                Word(index: 0, global_index: 4, text: "Third."),
+              ]),
+            ]),
+          ),
+        ]),
+      ],
+      total_pages: 3,
+      current_page: 2,
+      jump_preview: Some(JumpPreview(
+        source_page: 0,
+        prior_engine_state: Stopped,
+        prior_next_word_index: None,
+      )),
+      active_session_id: Some("session-1"),
+      session_words_skipped: 0,
+    )
+
+  let #(updated, _effect) = reducer.update(model_with_jump, LockInJump)
+
+  // Pages 0 and 1 together have 4 words (global indices 0..3); none
+  // were previously in erased_words so all 4 land as session-skipped.
+  assert updated.session_words_skipped == 4
+  assert updated.jump_preview == None
+}
+
+pub fn toggle_stats_view_flips_open_flag_test() {
+  let #(opened, _e1) = reducer.update(empty_model(), msg.ToggleStatsView)
+  assert opened.stats_open == True
+  let #(closed, _e2) = reducer.update(opened, msg.ToggleStatsView)
+  assert closed.stats_open == False
+}
+
+pub fn fetch_library_stats_result_stamps_library_stats_test() {
+  let payload =
+    "{\"total_words_read\":100,\"total_duration_seconds\":600,\"books_completed\":2,\"current_streak_days\":3}"
+  let #(updated, _effect) =
+    reducer.update(empty_model(), msg.FetchLibraryStatsResult(Ok(payload)))
+  let assert Some(s) = updated.library_stats
+  assert s.total_words_read == 100
+  assert s.total_duration_seconds == 600
+  assert s.books_completed == 2
+  assert s.current_streak_days == 3
+}
+
+pub fn fetch_book_stats_result_drops_response_when_active_book_changed_test() {
+  // The Msg carries the originating `book_id`. If the active book has
+  // changed under the in-flight request, the result must NOT stamp
+  // book_stats — the previous book's aggregates would otherwise paint
+  // the new book's header.
+  let prior =
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-b"))
+  let payload =
+    "{\"total_words_read\":1,\"total_words_skipped\":0,\"total_duration_seconds\":1,\"session_count\":1}"
+  let #(updated, _effect) =
+    reducer.update(prior, msg.FetchBookStatsResult("book-a", Ok(payload)))
+  assert updated.book_stats == None
+}
+
+pub fn fetch_library_book_stats_result_builds_dict_test() {
+  let payload =
+    "[{\"book_id\":\"a\",\"total_words_read\":7,\"total_words_skipped\":1,\"total_duration_seconds\":1800,\"session_count\":1},{\"book_id\":\"b\",\"total_words_read\":3,\"total_words_skipped\":0,\"total_duration_seconds\":900,\"session_count\":1}]"
+  let #(updated, _effect) =
+    reducer.update(empty_model(), msg.FetchLibraryBookStatsResult(Ok(payload)))
+  assert dict.size(updated.library_book_stats) == 2
+  let assert Ok(stats_a) = dict.get(updated.library_book_stats, "a")
+  assert stats_a.total_words_read == 7
+  assert stats_a.session_count == 1
+  let assert Ok(stats_b) = dict.get(updated.library_book_stats, "b")
+  assert stats_b.total_duration_seconds == 900
+}
+
+// ---------------------------------------------------------------------------
+// Stats overlay — rendering
+// ---------------------------------------------------------------------------
+
+pub fn stats_view_renders_overlay_when_open_test() {
+  let model = Model(..library_model(), stats_open: True)
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "class=\"stats-overlay\"")
+  assert string.contains(rendered, "Reading stats")
+}
+
+pub fn stats_view_hidden_when_closed_test() {
+  let rendered = view.view(library_model()) |> element.to_string
+  assert !string.contains(rendered, "class=\"stats-overlay\"")
+}
+
+pub fn stats_view_renders_tile_values_test() {
+  let model =
+    Model(
+      ..library_model(),
+      stats_open: True,
+      library_stats: Some(shared_stats.LibraryStats(
+        total_words_read: 1234,
+        total_duration_seconds: 3700,
+        books_completed: 2,
+        current_streak_days: 4,
+      )),
+    )
+  let rendered = view.view(model) |> element.to_string
+  // Total words read formatted with thousands separator.
+  assert string.contains(rendered, "1,234")
+  // Duration formatted as 1h 1m.
+  assert string.contains(rendered, "1h 1m")
+  // Books completed and streak.
+  assert string.contains(rendered, "2")
+  assert string.contains(rendered, "4 days")
+}
+
+pub fn library_appbar_carries_stats_button_test() {
+  let rendered = view.view(library_model()) |> element.to_string
+  assert string.contains(rendered, "aria-label=\"Open reading stats\"")
+}
+
+pub fn library_card_renders_book_stats_summary_when_available_test() {
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 50,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "class=\"book-stats-line\"")
+  // 50+50=100 reads against word_count=100 → 100% progress.
+  assert string.contains(rendered, "100%")
+  assert string.contains(rendered, "10m")
+}
+
+pub fn library_card_hides_stats_when_no_sessions_test() {
+  let book = sample_book("a", "Alpha", None)
+  let model = Model(..library_model(), books: [book])
+  let rendered = view.view(model) |> element.to_string
+  assert !string.contains(rendered, "class=\"book-stats-line\"")
+}
+
+pub fn stats_format_duration_examples_test() {
+  // Pin the formatter behaviour at each boundary so future tweaks do
+  // not silently change library / stats overlay copy.
+  assert stats_view_module.format_duration(0) == "0s"
+  assert stats_view_module.format_duration(59) == "59s"
+  assert stats_view_module.format_duration(60) == "1m"
+  assert stats_view_module.format_duration(125) == "2m"
+  assert stats_view_module.format_duration(3600) == "1h"
+  assert stats_view_module.format_duration(3660) == "1h 1m"
+  assert stats_view_module.format_duration(7325) == "2h 2m"
+}
+
+pub fn stats_format_streak_examples_test() {
+  assert stats_view_module.format_streak(0) == "None"
+  assert stats_view_module.format_streak(1) == "1 day"
+  assert stats_view_module.format_streak(7) == "7 days"
 }
