@@ -87,8 +87,19 @@ function makeLoader(entries) {
     // `sha1` is only invoked by foliate-js when the OPF marks
     // resources as obfuscated (Adobe / IDPF font mangling). We do not
     // need decrypted fonts to extract prose, so return a deterministic
-    // empty buffer rather than wiring up a SubtleCrypto round-trip
-    // that could fail on insecure-context dev pages.
+    // 20-byte zero buffer rather than wiring up a SubtleCrypto round-
+    // trip that could fail on insecure-context dev pages.
+    //
+    // Upstream-behavior dependency (pinned to vendored commit
+    // 78914aef4466eb960965702401634c2cb348e9b1): foliate-js consumes
+    // this hash only as an input to its font deobfuscation key
+    // derivation — it never compares the value against the OPF's
+    // declared hash. If a future bump of foliate-js starts checking
+    // the returned bytes against a real digest, our prose-extraction
+    // path silently miscomputes font keys (still fine, we don't read
+    // fonts) but the assumption that "any 20-byte buffer is OK" will
+    // need to be re-verified. The vendored snapshot is the source of
+    // truth here — re-verify on every upstream bump.
     sha1: async () => new Uint8Array(20),
   };
 }
@@ -260,6 +271,15 @@ async function parseEpub(file) {
     // foliate-js throws bare `Error("...")` for missing
     // container/OPF; the message text is the only signal we have for
     // the DRM-vs-malformed distinction.
+    //
+    // Upstream-string dependency (pinned to vendored commit
+    // 78914aef4466eb960965702401634c2cb348e9b1): the `/encryption/i`
+    // and `/drm/i` patterns are matched against the bare `error.message`
+    // foliate-js produces today. A future bump that rephrases or
+    // localises those error strings would silently regress the
+    // `DrmEncrypted` branch into `UnsupportedFormat`. Re-verify on
+    // every upstream bump that the error wording still contains one
+    // of these tokens.
     const message = error?.message ?? "";
     if (/encryption/i.test(message) || /drm/i.test(message)) {
       throw new DrmEncryptedMarker(message);
