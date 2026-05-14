@@ -41,9 +41,9 @@ import client/msg.{
 import client/pagination.{type Page, type PageParagraph}
 import client/state.{
   type LineBox, type Mode, type Model, Manual, Paused, RealTime, Running,
-  Stopped, erased_opacity_value, measurement_id, page_content_id,
-  progress_percentage, reading_area_id,
+  Stopped, measurement_id, page_content_id, reading_area_id,
 }
+import client/state/helpers.{erased_opacity_value, progress_percentage}
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
 
 /// Reader-view body. Renders a loading placeholder until a

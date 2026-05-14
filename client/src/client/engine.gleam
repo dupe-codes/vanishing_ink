@@ -47,9 +47,9 @@ import client/ffi
 import client/msg.{type Msg}
 import client/pagination.{type Page}
 import client/state.{
-  type LineBox, type Model, Model, Paused, Running, Stopped, go_to_page,
-  ms_per_minute,
+  type LineBox, type Model, Model, Paused, Running, Stopped, ms_per_minute,
 }
+import client/state/helpers.{go_to_page}
 
 // ---------------------------------------------------------------------------
 // WordContext (private)

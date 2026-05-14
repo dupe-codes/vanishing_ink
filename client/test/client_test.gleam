@@ -62,6 +62,7 @@ import client/state.{
   type LineBox, type Model, Library, LineBox, Manual, Model, Paused, Reader,
   RealTime, Running, Stopped,
 }
+import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
 import client/view
 import client/view/reader as view_reader
@@ -2215,46 +2216,46 @@ pub fn update_toggle_dyslexia_font_flips_field_test() {
 // rails.
 
 pub fn clamp_int_below_lo_returns_lo_test() {
-  assert state.clamp_int(-5, 0, 10) == 0
+  assert state_helpers.clamp_int(-5, 0, 10) == 0
 }
 
 pub fn clamp_int_above_hi_returns_hi_test() {
-  assert state.clamp_int(99, 0, 10) == 10
+  assert state_helpers.clamp_int(99, 0, 10) == 10
 }
 
 pub fn clamp_int_in_range_returns_value_test() {
-  assert state.clamp_int(7, 0, 10) == 7
+  assert state_helpers.clamp_int(7, 0, 10) == 7
 }
 
 pub fn clamp_int_at_lo_returns_lo_test() {
   // Boundary inclusivity: `value < lo` not `value <= lo`, so the lo
   // rail itself is "in range" and passes through.
-  assert state.clamp_int(0, 0, 10) == 0
+  assert state_helpers.clamp_int(0, 0, 10) == 0
 }
 
 pub fn clamp_int_at_hi_returns_hi_test() {
   // Mirror inclusivity check at the hi rail.
-  assert state.clamp_int(10, 0, 10) == 10
+  assert state_helpers.clamp_int(10, 0, 10) == 10
 }
 
 pub fn clamp_float_below_lo_returns_lo_test() {
-  assert state.clamp_float(-1.5, 0.0, 1.0) == 0.0
+  assert state_helpers.clamp_float(-1.5, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_above_hi_returns_hi_test() {
-  assert state.clamp_float(2.5, 0.0, 1.0) == 1.0
+  assert state_helpers.clamp_float(2.5, 0.0, 1.0) == 1.0
 }
 
 pub fn clamp_float_in_range_returns_value_test() {
-  assert state.clamp_float(0.42, 0.0, 1.0) == 0.42
+  assert state_helpers.clamp_float(0.42, 0.0, 1.0) == 0.42
 }
 
 pub fn clamp_float_at_lo_returns_lo_test() {
-  assert state.clamp_float(0.0, 0.0, 1.0) == 0.0
+  assert state_helpers.clamp_float(0.0, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_at_hi_returns_hi_test() {
-  assert state.clamp_float(1.0, 0.0, 1.0) == 1.0
+  assert state_helpers.clamp_float(1.0, 0.0, 1.0) == 1.0
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,7 +2267,7 @@ pub fn erased_opacity_value_false_branch_returns_zero_test() {
   // this branch via `style="opacity:0"` substrings, but having a
   // direct assertion here makes the contract explicit.
   let model = Model(..empty_model(), ghost_mode: False, ghost_opacity: 0.25)
-  assert state.erased_opacity_value(model) == "0"
+  assert state_helpers.erased_opacity_value(model) == "0"
 }
 
 pub fn erased_opacity_value_true_branch_returns_ghost_opacity_test() {
@@ -2276,7 +2277,7 @@ pub fn erased_opacity_value_true_branch_returns_ghost_opacity_test() {
   // replaced `float.to_string(model.ghost_opacity)` with the literal
   // `"0"` would have passed CI; this assertion catches that.
   let model = Model(..empty_model(), ghost_mode: True, ghost_opacity: 0.18)
-  assert state.erased_opacity_value(model) == "0.18"
+  assert state_helpers.erased_opacity_value(model) == "0.18"
 }
 
 pub fn erased_opacity_value_true_branch_at_default_test() {
@@ -2284,7 +2285,7 @@ pub fn erased_opacity_value_true_branch_at_default_test() {
   // — pin the exact string form so a future locale change in the
   // stdlib (e.g. comma decimal separator) is caught.
   let model = Model(..empty_model(), ghost_mode: True)
-  assert state.erased_opacity_value(model) == "0.06"
+  assert state_helpers.erased_opacity_value(model) == "0.06"
 }
 
 // ---------------------------------------------------------------------------
