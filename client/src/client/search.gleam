@@ -18,6 +18,36 @@
 //// the full word, and capitalisation at the start of a sentence is
 //// noise on the search surface.
 ////
+//// **Punctuation attachment.** Page text is built by joining each
+//// word's `text` with a single space (`page_text`). The segmenter
+//// keeps punctuation attached to the word it follows, so a sentence
+//// rendered as "The quick, brown fox" searches as
+//// `"The quick, brown fox"` — a query for `"quick brown"` does **not**
+//// match because the comma stays attached to "quick". A reader
+//// hunting for a phrase fragment they remember without punctuation
+//// will see fewer hits than a punctuation-stripped index would
+//// surface. Intentional: stripping punctuation would force the
+//// snippet algorithm to track two parallel indices (stripped for
+//// matching, original for display) and the corpus of reading-room
+//// texts the reader actually uses rarely contains the
+//// adversarial punctuation density (comma-spliced phrases) where
+//// the attachment matters.
+////
+//// **Unicode lowercase caveat.** `find_match` lowercases the haystack
+//// once, then walks it grapheme-by-grapheme to locate the needle and
+//// returns the position index. `snippet_around` slices the *original*
+//// haystack at that position. For ASCII and the bulk of Western
+//// punctuation the lowercased and original-case haystacks share the
+//// same grapheme count and the indices align byte-for-byte. Unicode
+//// lowercase can change grapheme counts on some inputs (e.g. German
+//// `ß` → `ss` in some locales, Turkish `İ` → `i̇` produces two
+//// graphemes from one); on such text the snippet may start
+//// mid-grapheme. The reading corpus the app exists to serve is
+//// predominantly English-language literary prose, so the failure
+//// mode is exceedingly rare in practice — but the docstring is
+//// upfront about the gap rather than promising what the algorithm
+//// cannot deliver.
+////
 //// **Boundary contracts** — the entry point is total over its inputs:
 ////
 //// * Empty / whitespace-only `query` returns `[]` without scanning
@@ -136,10 +166,27 @@ fn page_text(page: Page) -> String {
 
 /// Locate the first case-insensitive occurrence of `needle` in
 /// `haystack` and return its starting grapheme position. The lookup
-/// is done by walking the lowercased haystack one grapheme at a time
-/// so the returned index aligns with the original-case haystack's
-/// grapheme indices — `string.slice` on the result preserves the
-/// reader's view of the prose (capitalisation, accents, etc.).
+/// is done by walking the lowercased haystack one grapheme at a
+/// time so the returned index aligns with the original-case
+/// haystack's grapheme indices — `string.slice` on the result
+/// preserves the reader's view of the prose (capitalisation,
+/// accents, etc.) on every input where lowercasing is a per-grapheme
+/// operation. The alignment is exact for ASCII and the bulk of
+/// Western punctuation, where `string.lowercase` swaps each
+/// uppercase grapheme for a single lowercase grapheme of the same
+/// width in the grapheme sequence.
+///
+/// The alignment can drift on Unicode inputs where lowercasing
+/// changes the grapheme count (see the module docstring for the
+/// canonical examples — German `ß` → `ss`, Turkish `İ` → `i̇`).
+/// On such text the returned index points into the lowercased
+/// haystack at a position that does not exist in the original-case
+/// haystack, and `snippet_around` may slice the snippet at a
+/// mid-grapheme boundary. The English-literary corpus the reader
+/// is expected to load rarely contains the offending characters,
+/// but the failure mode is documented here so a future reader
+/// reaching for the per-grapheme walk does not assume Unicode
+/// length-preservation in the general case.
 fn find_match(haystack: String, needle: String) -> Result(Int, Nil) {
   let lowered = string.lowercase(haystack)
   scan_for_needle(lowered, needle, 0)
