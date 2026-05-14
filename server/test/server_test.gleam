@@ -59,6 +59,7 @@ type BookMetaWire {
     id: String,
     title: String,
     author: Option(String),
+    genre: Option(String),
     word_count: Int,
     sentence_count: Int,
     uploaded_at: String,
@@ -71,6 +72,7 @@ type BookFullWire {
     id: String,
     title: String,
     author: Option(String),
+    genre: Option(String),
     raw_text: String,
     word_count: Int,
     sentence_count: Int,
@@ -84,6 +86,7 @@ fn book_meta_wire_decoder() -> decode.Decoder(BookMetaWire) {
   use id <- decode.field("id", decode.string)
   use title <- decode.field("title", decode.string)
   use author <- decode.field("author", decode.optional(decode.string))
+  use genre <- decode.field("genre", decode.optional(decode.string))
   use word_count <- decode.field("word_count", decode.int)
   use sentence_count <- decode.field("sentence_count", decode.int)
   use uploaded_at <- decode.field("uploaded_at", decode.string)
@@ -95,6 +98,7 @@ fn book_meta_wire_decoder() -> decode.Decoder(BookMetaWire) {
     id: id,
     title: title,
     author: author,
+    genre: genre,
     word_count: word_count,
     sentence_count: sentence_count,
     uploaded_at: uploaded_at,
@@ -112,6 +116,7 @@ fn book_full_decoder() -> decode.Decoder(BookFullWire) {
   use id <- decode.field("id", decode.string)
   use title <- decode.field("title", decode.string)
   use author <- decode.field("author", decode.optional(decode.string))
+  use genre <- decode.field("genre", decode.optional(decode.string))
   use raw_text <- decode.field("raw_text", decode.string)
   use word_count <- decode.field("word_count", decode.int)
   use sentence_count <- decode.field("sentence_count", decode.int)
@@ -125,6 +130,7 @@ fn book_full_decoder() -> decode.Decoder(BookFullWire) {
     id: id,
     title: title,
     author: author,
+    genre: genre,
     raw_text: raw_text,
     word_count: word_count,
     sentence_count: sentence_count,
@@ -272,6 +278,7 @@ pub fn create_book_returns_full_payload_and_persists_test() {
         id: decoded.book.id,
         title: "Tale of Two Cities",
         author: Some("Dickens"),
+        genre: None,
         word_count: 12,
         sentence_count: 2,
         uploaded_at: decoded.book.uploaded_at,
@@ -355,6 +362,7 @@ pub fn get_book_returns_full_payload_test() {
       id: created.book.id,
       title: "Tale",
       author: Some("Dickens"),
+      genre: None,
       raw_text: sample_text,
       word_count: 12,
       sentence_count: 2,
@@ -457,6 +465,7 @@ pub fn put_reading_state_stamps_books_last_read_at_test() {
       id: created.book.id,
       title: "Title",
       author: None,
+      genre: None,
       word_count: 12,
       sentence_count: 2,
       uploaded_at: created.book.uploaded_at,
@@ -517,6 +526,7 @@ pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
       id: created.book.id,
       title: "Title",
       author: None,
+      genre: None,
       word_count: 12,
       sentence_count: 2,
       uploaded_at: created.book.uploaded_at,
@@ -620,6 +630,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       id: "book-1",
       title: "Test",
       author: None,
+      genre: None,
       raw_text: "Sentence one. Sentence two.",
       segments_json: "{\"chapters\":[]}",
       word_count: 4,

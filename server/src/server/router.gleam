@@ -13,7 +13,7 @@
 
 import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/http.{Delete, Get, Post, Put}
+import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -109,7 +109,12 @@ fn list_books_handler(ctx: Context) -> Response {
 }
 
 type CreateBookInput {
-  CreateBookInput(title: String, text: String, author: Option(String))
+  CreateBookInput(
+    title: String,
+    text: String,
+    author: Option(String),
+    genre: Option(String),
+  )
 }
 
 fn create_book_decoder() -> decode.Decoder(CreateBookInput) {
@@ -120,7 +125,17 @@ fn create_book_decoder() -> decode.Decoder(CreateBookInput) {
     None,
     decode.optional(decode.string),
   )
-  decode.success(CreateBookInput(title: title, text: text, author: author))
+  use genre <- decode.optional_field(
+    "genre",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(CreateBookInput(
+    title: title,
+    text: text,
+    author: author,
+    genre: genre,
+  ))
 }
 
 fn create_book_handler(req: Request, ctx: Context) -> Response {
@@ -165,6 +180,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
       id: id,
       title: input.title,
       author: input.author,
+      genre: input.genre,
       raw_text: input.text,
       segments_json: segments_json,
       word_count: word_count,
@@ -179,6 +195,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
           id: id,
           title: input.title,
           author: input.author,
+          genre: input.genre,
           word_count: word_count,
           sentence_count: sentence_count,
           uploaded_at: uploaded_at,
@@ -206,7 +223,172 @@ fn books_item(req: Request, ctx: Context, id: String) -> Response {
   case req.method {
     Get -> get_book_handler(ctx, id)
     Delete -> delete_book_handler(ctx, id)
-    _ -> wisp.method_not_allowed([Get, Delete])
+    Patch -> patch_book_metadata_handler(req, ctx, id)
+    _ -> wisp.method_not_allowed([Get, Delete, Patch])
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Book metadata edit
+// ---------------------------------------------------------------------------
+//
+// `PATCH /api/books/:id` accepts an object whose three editable fields
+// — `title`, `author`, `genre` — are independently optional. An omitted
+// field means "leave the on-disk value alone"; an explicit `null` for
+// `author` or `genre` clears that column. The router reads the
+// existing row first so the SQL UPDATE writes a full triple back; the
+// schema's `title NOT NULL` constraint is preserved by client-side
+// validation rejecting an empty trimmed title.
+//
+// The handler returns the updated `BookMeta` on the wire so the
+// client can drop the response into its library list without a
+// follow-up GET — same shape as `POST /api/books` returning the
+// freshly-minted metadata.
+
+type MetadataUpdateInput {
+  MetadataUpdateInput(
+    title: Option(String),
+    author: MetadataField(String),
+    genre: MetadataField(String),
+  )
+}
+
+/// Three-way state for a partial-update field. `Untouched` means the
+/// client did not include the field at all — the existing value
+/// stays. `Cleared` means the client sent `null` — the column gets
+/// nulled out. `Set(value)` means the client sent a non-null value —
+/// the column takes that value. `decode.optional` collapses the
+/// `null` vs missing distinction the first two states need, so the
+/// decoder reads the field via `decode.field` with a custom
+/// branching decoder that surfaces the three cases.
+type MetadataField(a) {
+  Untouched
+  Cleared
+  Set(value: a)
+}
+
+fn metadata_update_decoder() -> decode.Decoder(MetadataUpdateInput) {
+  use title <- decode.optional_field(
+    "title",
+    None,
+    decode.optional(decode.string),
+  )
+  use author <- metadata_field_decoder("author")
+  use genre <- metadata_field_decoder("genre")
+  decode.success(MetadataUpdateInput(title: title, author: author, genre: genre))
+}
+
+fn metadata_field_decoder(
+  field: String,
+  next: fn(MetadataField(String)) -> decode.Decoder(a),
+) -> decode.Decoder(a) {
+  decode.optional_field(
+    field,
+    Untouched,
+    decode.map(decode.optional(decode.string), fn(value) {
+      case value {
+        None -> Cleared
+        Some(text) -> Set(text)
+      }
+    }),
+    next,
+  )
+}
+
+fn patch_book_metadata_handler(
+  req: Request,
+  ctx: Context,
+  id: String,
+) -> Response {
+  use body <- wisp.require_json(req)
+
+  case decode.run(body, metadata_update_decoder()) {
+    Error(errors) -> wisp.bad_request(describe_decode_errors(errors))
+    Ok(input) -> apply_metadata_update(ctx, id, input)
+  }
+}
+
+fn apply_metadata_update(
+  ctx: Context,
+  id: String,
+  input: MetadataUpdateInput,
+) -> Response {
+  case db.get_book(ctx.db, id) {
+    Error(error) -> db_error_response("db.get_book", error)
+    Ok(None) -> wisp.not_found()
+    Ok(Some(book)) -> persist_metadata_update(ctx, id, book, input)
+  }
+}
+
+fn persist_metadata_update(
+  ctx: Context,
+  id: String,
+  book: types.Book,
+  input: MetadataUpdateInput,
+) -> Response {
+  // Resolve the three fields against the on-disk row before writing
+  // — an untouched field round-trips the existing value, a cleared
+  // field nulls the column, an explicitly set field writes the new
+  // value. Validating title up front keeps the schema's `NOT NULL`
+  // guard from surfacing as an opaque 500.
+  let title = case input.title {
+    Some(value) -> value
+    None -> book.title
+  }
+  case validate_metadata_title(title) {
+    Error(detail) -> wisp.bad_request(detail)
+    Ok(trimmed_title) -> {
+      let author = resolve_metadata_field(input.author, book.author)
+      let genre = resolve_metadata_field(input.genre, book.genre)
+      case
+        db.update_book_metadata(
+          ctx.db,
+          id: id,
+          title: trimmed_title,
+          author: author,
+          genre: genre,
+        )
+      {
+        Error(error) -> db_error_response("db.update_book_metadata", error)
+        Ok(False) -> wisp.not_found()
+        Ok(True) -> {
+          let meta =
+            BookMeta(
+              id: id,
+              title: trimmed_title,
+              author: author,
+              genre: genre,
+              word_count: book.word_count,
+              sentence_count: book.sentence_count,
+              uploaded_at: book.uploaded_at,
+              last_read_at: book.last_read_at,
+            )
+          let body =
+            types.book_meta_to_json(meta)
+            |> json.to_string
+          wisp.json_response(body, 200)
+        }
+      }
+    }
+  }
+}
+
+fn resolve_metadata_field(
+  field: MetadataField(String),
+  existing: Option(String),
+) -> Option(String) {
+  case field {
+    Untouched -> existing
+    Cleared -> None
+    Set(value) -> Some(value)
+  }
+}
+
+fn validate_metadata_title(title: String) -> Result(String, String) {
+  let trimmed = string.trim(title)
+  case trimmed {
+    "" -> Error("title must not be empty")
+    _ -> Ok(trimmed)
   }
 }
 

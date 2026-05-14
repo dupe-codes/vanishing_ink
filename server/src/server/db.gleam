@@ -28,8 +28,35 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
   use connection <- result.try(sqlight.open(path))
   use _ <- result.try(sqlight.exec(pragmas_sql, connection))
   use _ <- result.try(sqlight.exec(schema_sql, connection))
+  use _ <- result.try(ensure_books_genre_column(connection))
   use _ <- result.try(ensure_default_settings(connection))
   Ok(connection)
+}
+
+/// Add the `books.genre` column to databases created before the
+/// metadata-expansion quest. `CREATE TABLE IF NOT EXISTS` silently
+/// skips the table when it already exists — including its declared
+/// columns — so a fresh schema declaration alone cannot grow an
+/// existing table. The `ALTER TABLE ... ADD COLUMN` here is idempotent
+/// when guarded against the "duplicate column" error code; we treat
+/// that specific failure as a no-op and surface any other Sqlight
+/// error to the caller. Fresh databases also flow through this code
+/// path harmlessly: the column is already declared inline, so the
+/// ALTER fails with the same duplicate-column error.
+fn ensure_books_genre_column(
+  connection: sqlight.Connection,
+) -> Result(Nil, sqlight.Error) {
+  // SQLite phrases the duplicate-column failure as
+  // `"duplicate column name: genre"`. A more specific error code would
+  // be cleaner, but sqlight surfaces this class as the generic-error
+  // variant so we match on the message text.
+  case sqlight.exec("ALTER TABLE books ADD COLUMN genre TEXT;", connection) {
+    Ok(_) -> Ok(Nil)
+    Error(sqlight.SqlightError(code: sqlight.GenericError, message: msg, ..))
+      if msg == "duplicate column name: genre"
+    -> Ok(Nil)
+    Error(error) -> Error(error)
+  }
 }
 
 const pragmas_sql = "
@@ -37,11 +64,17 @@ PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
 "
 
+// Fresh databases pick up `books.genre` from the inline declaration
+// below. Existing databases predating the metadata-expansion quest
+// pick it up from `ensure_books_genre_column`, which runs after this
+// schema block and treats the "duplicate column" error as a no-op so
+// the same migration call works for both first-boot and upgrade paths.
 const schema_sql = "
 CREATE TABLE IF NOT EXISTS books (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   author TEXT,
+  genre TEXT,
   raw_text TEXT NOT NULL,
   segments_json TEXT NOT NULL,
   word_count INTEGER NOT NULL,
@@ -136,6 +169,7 @@ pub fn create_book(
   id id: shared.BookId,
   title title: String,
   author author: Option(String),
+  genre genre: Option(String),
   raw_text raw_text: String,
   segments_json segments_json: String,
   word_count word_count: Int,
@@ -144,9 +178,9 @@ pub fn create_book(
 ) -> Result(Nil, sqlight.Error) {
   let sql =
     "INSERT INTO books (
-      id, title, author, raw_text, segments_json,
+      id, title, author, genre, raw_text, segments_json,
       word_count, sentence_count, uploaded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);"
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
   case
     sqlight.query(
       sql,
@@ -155,6 +189,7 @@ pub fn create_book(
         sqlight.text(id),
         sqlight.text(title),
         sqlight.nullable(sqlight.text, author),
+        sqlight.nullable(sqlight.text, genre),
         sqlight.text(raw_text),
         sqlight.text(segments_json),
         sqlight.int(word_count),
@@ -177,7 +212,7 @@ pub fn list_books(
   connection: sqlight.Connection,
 ) -> Result(List(BookMeta), sqlight.Error) {
   let sql =
-    "SELECT id, title, author, word_count, sentence_count,
+    "SELECT id, title, author, genre, word_count, sentence_count,
             uploaded_at, last_read_at
        FROM books
    ORDER BY uploaded_at DESC;"
@@ -192,7 +227,7 @@ pub fn get_book(
   id: shared.BookId,
 ) -> Result(Option(Book), sqlight.Error) {
   let sql =
-    "SELECT id, title, author, raw_text, segments_json,
+    "SELECT id, title, author, genre, raw_text, segments_json,
             word_count, sentence_count, uploaded_at, last_read_at
        FROM books
       WHERE id = ?;"
@@ -246,6 +281,63 @@ pub fn set_book_last_read_at(
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(error)
   }
+}
+
+/// Overwrite the metadata fields of an existing book — `title`,
+/// `author`, and `genre`. Every field is sent on every call so the
+/// SQL stays a single statement and the client owns the merge: a
+/// `None` author clears the column to NULL, a `Some(value)` writes
+/// it. Returns `Ok(True)` when the row existed and was updated,
+/// `Ok(False)` when the id was unknown (no row touched), and
+/// `Error(error)` on any SQLite failure.
+///
+/// `title` is `NOT NULL` in the schema, so callers must validate it
+/// is non-empty before hitting this path; the SQL would otherwise
+/// raise a constraint violation that the router would surface as a
+/// generic 500. Author and genre are nullable on disk and on the wire.
+pub fn update_book_metadata(
+  connection: sqlight.Connection,
+  id id: shared.BookId,
+  title title: String,
+  author author: Option(String),
+  genre genre: Option(String),
+) -> Result(Bool, sqlight.Error) {
+  let sql =
+    "UPDATE books
+        SET title = ?,
+            author = ?,
+            genre = ?
+      WHERE id = ?;"
+  use _ <- result.try(sqlight.query(
+    sql,
+    on: connection,
+    with: [
+      sqlight.text(title),
+      sqlight.nullable(sqlight.text, author),
+      sqlight.nullable(sqlight.text, genre),
+      sqlight.text(id),
+    ],
+    expecting: decode.dynamic,
+  ))
+  // `changes()` reports rows touched by the preceding DML statement;
+  // 1 means the id existed and the metadata write applied, 0 means
+  // the id was unknown so the caller should map to a 404.
+  let count_decoder = {
+    use count <- decode.field(0, decode.int)
+    decode.success(count)
+  }
+  sqlight.query(
+    "SELECT changes();",
+    on: connection,
+    with: [],
+    expecting: count_decoder,
+  )
+  |> result.map(fn(rows) {
+    case rows {
+      [count, ..] -> count > 0
+      [] -> False
+    }
+  })
 }
 
 /// Delete a book and its dependent rows (`reading_state`, `book_settings`)
@@ -334,14 +426,16 @@ fn book_meta_decoder() -> decode.Decoder(BookMeta) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
   use author <- decode.field(2, decode.optional(decode.string))
-  use word_count <- decode.field(3, decode.int)
-  use sentence_count <- decode.field(4, decode.int)
-  use uploaded_at <- decode.field(5, decode.string)
-  use last_read_at <- decode.field(6, decode.optional(decode.string))
+  use genre <- decode.field(3, decode.optional(decode.string))
+  use word_count <- decode.field(4, decode.int)
+  use sentence_count <- decode.field(5, decode.int)
+  use uploaded_at <- decode.field(6, decode.string)
+  use last_read_at <- decode.field(7, decode.optional(decode.string))
   decode.success(BookMeta(
     id: id,
     title: title,
     author: author,
+    genre: genre,
     word_count: word_count,
     sentence_count: sentence_count,
     uploaded_at: uploaded_at,
@@ -353,16 +447,18 @@ fn book_decoder() -> decode.Decoder(Book) {
   use id <- decode.field(0, decode.string)
   use title <- decode.field(1, decode.string)
   use author <- decode.field(2, decode.optional(decode.string))
-  use raw_text <- decode.field(3, decode.string)
-  use segments_json <- decode.field(4, decode.string)
-  use word_count <- decode.field(5, decode.int)
-  use sentence_count <- decode.field(6, decode.int)
-  use uploaded_at <- decode.field(7, decode.string)
-  use last_read_at <- decode.field(8, decode.optional(decode.string))
+  use genre <- decode.field(3, decode.optional(decode.string))
+  use raw_text <- decode.field(4, decode.string)
+  use segments_json <- decode.field(5, decode.string)
+  use word_count <- decode.field(6, decode.int)
+  use sentence_count <- decode.field(7, decode.int)
+  use uploaded_at <- decode.field(8, decode.string)
+  use last_read_at <- decode.field(9, decode.optional(decode.string))
   decode.success(Book(
     id: id,
     title: title,
     author: author,
+    genre: genre,
     raw_text: raw_text,
     segments_json: segments_json,
     word_count: word_count,
