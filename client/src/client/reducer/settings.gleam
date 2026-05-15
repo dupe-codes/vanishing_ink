@@ -18,6 +18,7 @@ import client/effects.{
 }
 import client/ffi
 import client/msg.{type Msg}
+import client/numeric.{clamp_float, clamp_int}
 import client/state.{
   type Mode, type Model, Manual, Model, Reader, RealTime, Stopped,
   body_class_dyslexia_font, body_class_ghost_mode, body_class_light_mode,
@@ -27,7 +28,6 @@ import client/state.{
   min_ghost_opacity, min_line_spacing, min_page_delay_ms, min_paragraph_delay_ms,
   min_wpm,
 }
-import client/state/helpers.{clamp_float, clamp_int}
 import client/types.{
   type BookSettings, type UserSettings, BookSettings, UserSettings,
 }

@@ -146,6 +146,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       chapter_entries: [],
       jump_page_input: "",
       editing_metadata: None,
+      jump_search_query: "",
+      jump_search_results: [],
     )
 
   // Boot effects:
