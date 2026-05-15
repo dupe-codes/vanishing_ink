@@ -157,6 +157,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       book_stats: None,
       library_stats: None,
       library_book_stats: dict.new(),
+      jump_search_query: "",
+      jump_search_results: [],
     )
 
   // Boot effects:

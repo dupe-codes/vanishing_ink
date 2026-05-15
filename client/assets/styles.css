@@ -1882,9 +1882,106 @@ body.vi-reduced-motion .delete-confirm-sheet {
   outline-offset: 2px;
 }
 
+.jump-search-input {
+  /* Text-search field. Shares the input chrome with `.jump-page-input`
+   * — same surface, border, radius, focus ring — so the two affordances
+   * read as siblings even though one is numeric and one free-text. */
+  min-height: var(--vi-tap-target);
+  padding: 0 14px;
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 10px;
+  color: var(--vi-fg);
+  font-family: inherit;
+  font-size: 14px;
+  transition: background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition);
+}
+
+.jump-search-input:focus-visible {
+  outline: 2px solid var(--vi-accent);
+  outline-offset: 1px;
+}
+
+.jump-search-empty {
+  /* Muted empty-state line. Same colour treatment as the section
+   * labels above so it reads as chrome rather than failure. */
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--vi-fg-muted);
+  padding: 4px 2px;
+}
+
+.jump-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* Bound the list with its own scroll envelope so a long results run
+   * does not push the page-number row off the bottom of the sheet on
+   * a short viewport. The 240px ceiling fits ~5 result rows at the
+   * configured `min-height`, which is enough to scan without
+   * obscuring the affordances below. */
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.jump-search-result-item {
+  /* Two-row layout: page badge on top, snippet underneath. Mirrors
+   * the chapter row's surface + radius so the search results read as
+   * the same family of tappable rows even though they carry more
+   * information per row. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-height: var(--vi-tap-target);
+  padding: 10px 14px;
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 10px;
+  color: var(--vi-fg);
+  font-family: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition),
+              transform 80ms;
+}
+
+.jump-search-result-item:active {
+  background-color: var(--vi-surface-border);
+  transform: scale(0.99);
+}
+
+.jump-search-result-page {
+  /* Page badge above the snippet. Small-caps system font so it reads
+   * as metadata, not as part of the prose. */
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: var(--vi-fg-muted);
+}
+
+.jump-search-snippet {
+  /* Snippet text — the prose context around the match. Single-line
+   * with ellipsis so wildly long sentences don't blow the row out
+   * vertically; the leading / trailing `…` characters from the
+   * search helper still convey clipping at the text level even when
+   * CSS truncates further. */
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--vi-fg);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 body.vi-reduced-motion .jump-overlay,
 body.vi-reduced-motion .jump-menu,
-body.vi-reduced-motion .jump-chapter-item {
+body.vi-reduced-motion .jump-chapter-item,
+body.vi-reduced-motion .jump-search-result-item {
   transition: none;
 }
 

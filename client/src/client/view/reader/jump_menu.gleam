@@ -1,4 +1,4 @@
-//// Jump Ahead overlay. Scrim + bottom-sheet wrapping two sections:
+//// Jump Ahead overlay. Scrim + bottom-sheet wrapping three sections:
 ////
 //// * **Chapters** — `model.chapter_entries`, rendered as tappable
 ////   rows. Only forward chapters are stored on the cache, so the
@@ -10,24 +10,33 @@
 ////   primary affordance on mobile, where soft numeric keyboards do
 ////   not always surface a return / go key; pressing Enter inside
 ////   the field also dispatches the same Msg path.
+//// * **Search** — free-text input that surfaces matching pages
+////   strictly ahead of the current one. Results show the page number
+////   and a ~50-character snippet of prose around the first match on
+////   that page; tapping a result feeds into the same preview / lock-
+////   in / undo flow as the other two affordances. An empty query
+////   shows nothing; a non-empty query with no matches shows a muted
+////   "No matches found" line so the reader knows the search ran.
 ////
 //// The scrim closes the menu on outside-tap (mirroring the settings
 //// panel); the inner sheet swallows clicks via `stop_click_propagation`
-//// so taps on a chapter row or the Go button never bubble up to the
-//// scrim's close handler.
+//// so taps on a chapter row, the Go button, or a search result never
+//// bubble up to the scrim's close handler.
 
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
+import gleam/string
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 
 import client/msg.{
-  type Msg, JumpToChapter, NoOp, SetJumpPageInput, SubmitJumpPage,
-  ToggleJumpMenu,
+  type Msg, JumpToChapter, NoOp, SelectSearchResult, SetJumpPageInput,
+  SetJumpSearchQuery, SubmitJumpPage, ToggleJumpMenu,
 }
+import client/search.{type SearchResult}
 import client/state.{type ChapterEntry, type Model}
 
 /// Render the Jump Ahead overlay when `model.jump_menu_open` is true.
@@ -52,9 +61,9 @@ pub fn view(model: Model) -> Element(Msg) {
 }
 
 /// Inner sheet. Swallows click events so taps inside the panel don't
-/// bubble up to the scrim's close handler. Renders the header,
-/// chapter list (when there are forward chapters), and the page
-/// input row.
+/// bubble up to the scrim's close handler. Renders the header, the
+/// chapter list (when there are forward chapters), the page input
+/// row, and the text-search section.
 fn view_sheet(model: Model) -> Element(Msg) {
   html.div([attribute.class("jump-menu"), stop_click_propagation()], [
     html.div(
@@ -64,6 +73,7 @@ fn view_sheet(model: Model) -> Element(Msg) {
     view_header(),
     view_chapter_section(model),
     view_page_section(model),
+    view_search_section(model),
   ])
 }
 
@@ -174,6 +184,134 @@ fn view_page_section(model: Model) -> Element(Msg) {
       ])
     }
   }
+}
+
+/// Search section. Renders the controlled input plus the results
+/// region underneath. The results region is one of three shapes:
+///
+/// * Empty query — nothing rendered, so the panel does not jump in
+///   height the moment focus lands on the input.
+/// * Non-empty query, no matches — a muted "No matches found" line so
+///   the reader knows the search executed.
+/// * Non-empty query, matches — a vertical list of result rows, each
+///   carrying the page number and a snippet of prose around the first
+///   match on that page.
+///
+/// Renders nothing when there is no forward page to search — every
+/// match the reducer is allowed to produce must satisfy
+/// `page_index > current_page`, and the only page the reader can be
+/// on with no forward target is the final page. Hiding the section
+/// mirrors `view_page_section`'s terminal-page guard so the two
+/// forward-navigation surfaces in the menu behave consistently; an
+/// always-rendered input that can only ever return "No matches
+/// found" is a phantom affordance.
+fn view_search_section(model: Model) -> Element(Msg) {
+  let next_page_one_based = model.current_page + 2
+  case model.total_pages < next_page_one_based {
+    True -> element.none()
+    False ->
+      html.div([attribute.class("jump-section")], [
+        html.div([attribute.class("jump-section-label")], [
+          html.text("Search"),
+        ]),
+        html.input([
+          attribute.class("jump-search-input"),
+          attribute.type_("search"),
+          attribute.attribute("inputmode", "search"),
+          attribute.attribute("placeholder", "Search ahead..."),
+          attribute.attribute("autocomplete", "off"),
+          attribute.attribute("spellcheck", "false"),
+          attribute.aria_label("Search ahead"),
+          attribute.value(model.jump_search_query),
+          event.on_input(SetJumpSearchQuery),
+        ]),
+        view_search_results(model),
+      ])
+  }
+}
+
+/// Render the search-results region. An empty trimmed query returns
+/// `element.none()`; a non-empty query with no live matches renders
+/// the muted empty-state line; live matches render as a list of
+/// tappable rows.
+///
+/// **Stale-row filter.** The cached `jump_search_results` was built
+/// by `apply_set_jump_search_query` against the `current_page` at
+/// the time the reader typed. The fade engine continues ticking
+/// while the jump menu is open, so on a long enough open the
+/// engine can advance `current_page` past one or more cached
+/// `page_index` values. Tapping a row whose `page_index` no longer
+/// satisfies the strict-forward contract dispatches a
+/// `SelectSearchResult(stale_page)` that the reducer's forward-only
+/// guard in `apply_jump_to_page` silently rejects — a tap that
+/// visibly "does nothing", which is the worst sort of UX defect.
+/// Filtering at the view boundary drops the stale rows before the
+/// reader can tap them, and when every cached row is stale the
+/// section falls back to the same "No matches found" line a
+/// genuine zero-match query produces. The reducer-side guard
+/// remains the authority on what a tap is allowed to commit; this
+/// filter is the second rail that keeps the affordance honest.
+fn view_search_results(model: Model) -> Element(Msg) {
+  case string.trim(model.jump_search_query) {
+    "" -> element.none()
+    _ -> {
+      let live =
+        list.filter(model.jump_search_results, fn(result) {
+          result.page_index > model.current_page
+        })
+      case live {
+        [] ->
+          html.div([attribute.class("jump-search-empty")], [
+            html.text("No matches found"),
+          ])
+        results ->
+          html.div(
+            [attribute.class("jump-search-results")],
+            list.map(results, view_search_result_row),
+          )
+      }
+    }
+  }
+}
+
+/// Render one search result. Dispatches `SelectSearchResult(page_index)`,
+/// whose reducer arm delegates to `apply_jump_to_page` — the same arm
+/// the page-number input's `SubmitJumpPage` delegates to after parsing
+/// its 1-based string into a 0-based index. The two surfaces are
+/// peers: each owns its own controller Msg (`SelectSearchResult` /
+/// `SubmitJumpPage`) and funnels through `apply_jump_to_page`, where
+/// the forward-only guard, engine pause, preview snapshot, and
+/// chapter-cache refresh all live. The 1-based page label is shown to
+/// the reader (matching the bottom-bar page indicator's convention);
+/// the dispatch payload remains the 0-based reducer index.
+///
+/// The `aria-label` carries both the page number and the snippet so
+/// a screen-reader user navigating the results list hears *what*
+/// matched on each page, not just the page index. Without the
+/// snippet, the list announces as "Jump to page 3, Jump to page 7,
+/// Jump to page 12 ..." with no indication of which page contains
+/// the phrase fragment the reader was hunting for — the whole reason
+/// the search surface exists.
+fn view_search_result_row(result: SearchResult) -> Element(Msg) {
+  let page_label = int.to_string(result.page_index + 1)
+  html.button(
+    [
+      attribute.class("jump-search-result-item"),
+      attribute.type_("button"),
+      attribute.aria_label(
+        "Jump to page " <> page_label <> ": " <> result.snippet,
+      ),
+      event.on_click(SelectSearchResult(result.page_index)),
+    ],
+    [
+      html.span([attribute.class("jump-search-result-page")], [
+        html.text("p. " <> page_label),
+      ]),
+      html.span([attribute.class("jump-search-snippet")], [
+        html.text(result.snippet),
+      ]),
+    ],
+  )
 }
 
 /// `Enter`-key handler on the numeric input. Dispatches the same

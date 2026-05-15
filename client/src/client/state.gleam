@@ -1,21 +1,40 @@
 //// Application-state types and compile-time constants. This module
-//// sits at the foundation of the client's dependency graph: it
-//// depends only on `client/types`, `client/pagination`, and
-//// `shared/segmenter`, and is imported by every other client module
-//// that touches the model.
+//// sits near the foundation of the client's dependency graph: it
+//// depends only on `client/types`, `client/pagination`, `client/search`
+//// (for the `SearchResult` type embedded in `Model.jump_search_results`),
+//// and `shared/segmenter`, and is imported by every other client
+//// module that touches the model. `client/search` is itself a pure
+//// leaf module — it imports `client/pagination` plus the pure-leaf
+//// `client/numeric` for its clamp helper, so pulling its type into
+//// the model does not enlarge the import graph beyond what was here
+//// before the search field landed.
 ////
 //// The pure model-mutation helpers (`go_to_page`, `change_page`,
 //// `total_counts`, `progress_percentage`, `compute_current_chapter_title`,
-//// `chapter_title_at`, `clamp_int`, `clamp_float`, `erased_opacity_value`)
-//// live in the sibling `client/state/helpers` module so this file
-//// stays within the 800-line file budget.
+//// `chapter_title_at`, `erased_opacity_value`) live in the sibling
+//// `client/state/helpers` module so this file stays within the 800-
+//// line file budget. The numeric clamp primitives (`clamp_int`,
+//// `clamp_float`) used to live in `client/state/helpers` but were
+//// extracted to the pure-leaf `client/numeric` module so
+//// `client/search` could reuse them without forming a
+//// `search → state/helpers → state → search` import cycle.
 ////
 //// **Cached-field invariant.** Several `Model` fields are caches over
 //// other fields; the reducer is responsible for keeping them in
 //// lock-step:
 ////
 //// * Writing `pages` requires writing `total_pages`
-////   (`total_pages == list.length(pages)`).
+////   (`total_pages == list.length(pages)`). Re-writing `pages` —
+////   i.e. a re-pagination, not just a clamp — also requires
+////   refreshing `jump_search_results` via
+////   `search.search_forward(pages, clamped, jump_search_query)`
+////   so the cached snippets continue to describe prose that is
+////   actually on the page they reference; the forward-only guard
+////   at `apply_jump_to_page` and the view-side stale-row filter
+////   keep the worst failure mode (a tap landing on the wrong
+////   page) impossible, but the snippet text is otherwise
+////   cosmetically incoherent across a page-shape shift (phone
+////   rotation, font-size slider, line-spacing slider).
 //// * Writing `current_page` requires writing
 ////   `current_chapter_title` (refresh via
 ////   `compute_current_chapter_title` from `client/state/helpers`)
@@ -45,6 +64,7 @@ import gleam/set.{type Set}
 import gleam/string
 
 import client/pagination.{type Page, type PageParagraph}
+import client/search.{type SearchResult}
 import client/types.{
   type BookMeta, type BookSettings, type UserSettings, BookSettings,
   UserSettings,
@@ -764,5 +784,22 @@ pub type Model {
     /// every closing PUT. The library cards look up their stats
     /// here rather than firing N round trips at render time.
     library_book_stats: Dict(String, BookStats),
+    /// Controlled input value for the Jump Ahead menu's text-search
+    /// field. Held on the model so the controlled-input contract
+    /// stays consistent with `jump_page_input` (Enter / clear / live
+    /// rebind from a model mutation all flow through one path).
+    /// Cleared on `ToggleJumpMenu`, `apply_text_load`, and
+    /// `apply_go_to_library` for the same reason `jump_page_input`
+    /// is — a stale query from a prior session must not pre-populate
+    /// the next book's search.
+    jump_search_query: String,
+    /// Cached results for the in-flight `jump_search_query`. Recomputed
+    /// by `apply_set_jump_search_query` whenever the query changes;
+    /// reading them back from the model rather than re-running the
+    /// search on every render keeps the view path O(results) instead
+    /// of O(words-after-current-page). Capped at
+    /// `search.jump_search_result_limit`. Cleared alongside
+    /// `jump_search_query` on every reset point.
+    jump_search_results: List(SearchResult),
   )
 }

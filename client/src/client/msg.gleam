@@ -471,6 +471,24 @@ pub type Msg {
   /// shows the latest aggregate values.
   ToggleStatsView
 
+  /// Controlled change of the Jump Ahead menu's text-search input.
+  /// Stores the new query on `model.jump_search_query` and recomputes
+  /// `model.jump_search_results` against the pages strictly ahead of
+  /// `current_page`. The recompute is intentionally synchronous in
+  /// the reducer rather than effect-driven — the search walks page
+  /// text in pure Gleam and the result list is capped at
+  /// `search.jump_search_result_limit`, so per-keystroke recompute is
+  /// well within frame budget. Empty / whitespace-only queries
+  /// collapse to an empty result list rather than scanning the book.
+  SetJumpSearchQuery(value: String)
+
+  /// Reader tapped a row in the Jump Ahead search results. Delegates
+  /// to the same code path as `JumpToPage` — the search results are
+  /// just a different surface for the existing jump mechanism, and
+  /// re-using `apply_jump_to_page` means lock-in / undo / engine
+  /// pause / chapter-cache refresh all flow through one tested arm.
+  SelectSearchResult(page_index: Int)
+
   /// Sentinel Msg variant used as the placeholder type parameter for
   /// `decode.failure` in event decoders that intentionally never
   /// dispatch — `stop_click_propagation` on overlay sheets, the
