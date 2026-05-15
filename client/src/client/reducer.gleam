@@ -46,16 +46,18 @@ import client/engine.{
 }
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
-  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FetchBookStatsResult,
-  FetchLibraryBookStatsResult, FetchLibraryStatsResult, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
-  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SelectSearchResult, SessionCreated, SessionEnded, SetFontSize,
-  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitJumpPage, SubmitPaste,
+  BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
+  CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
+  EraseSentence, ExecuteDelete, FetchBookStatsResult, FetchLibraryBookStatsResult,
+  FetchLibraryStatsResult, FocusNext, FocusParagraphDown, FocusParagraphUp,
+  FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured,
+  LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured,
+  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
+  SelectSearchResult, SessionCreated, SessionEnded, SetEditMetadataAuthor,
+  SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize, SetGhostOpacity,
+  SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay,
+  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
+  SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage, SubmitPaste,
   TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
   ToggleJumpMenu, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
   TouchStart, Undo, UndoJump, ViewportResized, VisibilityChanged,
@@ -79,6 +81,12 @@ import client/reducer/session.{
   apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,
   apply_fetch_library_stats_result, apply_session_created, apply_session_ended,
   apply_toggle_stats_view, apply_visibility_changed,
+}
+import client/reducer/metadata.{
+  apply_book_metadata_updated, apply_close_edit_metadata,
+  apply_open_edit_metadata, apply_set_edit_metadata_author,
+  apply_set_edit_metadata_genre, apply_set_edit_metadata_title,
+  apply_submit_edit_metadata,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -238,6 +246,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         books: [meta, ..model.books],
         paste_title: "",
         paste_text: "",
+        paste_author: None,
         paste_submitting: False,
         paste_error: None,
         paste_warning: None,
@@ -429,6 +438,21 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       apply_fetch_library_book_stats_result(model, result)
 
     ToggleStatsView -> apply_toggle_stats_view(model)
+
+    OpenEditMetadata(id) -> apply_open_edit_metadata(model, id)
+
+    CloseEditMetadata -> apply_close_edit_metadata(model)
+
+    SetEditMetadataTitle(value) -> apply_set_edit_metadata_title(model, value)
+
+    SetEditMetadataAuthor(value) -> apply_set_edit_metadata_author(model, value)
+
+    SetEditMetadataGenre(value) -> apply_set_edit_metadata_genre(model, value)
+
+    SubmitEditMetadata -> apply_submit_edit_metadata(model)
+
+    BookMetadataUpdated(id, result) ->
+      apply_book_metadata_updated(model, id, result)
 
     SetJumpSearchQuery(value) -> apply_set_jump_search_query(model, value)
 

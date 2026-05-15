@@ -50,18 +50,20 @@ import client/epub.{
 import client/ffi
 import client/gestures
 import client/msg.{
-  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
-  BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected, EpubParsed,
-  EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
-  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
-  LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, ParagraphsMeasured,
-  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
-  SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
-  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
+  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookMetadataUpdated,
+  BookSettingsLoaded, BooksLoaded, CancelDelete, CloseEditMetadata,
+  ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused, EraseSentence,
+  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
+  GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage,
+  NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SelectSearchResult,
+  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
+  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
@@ -71,7 +73,7 @@ import client/sample
 import client/search.{SearchResult}
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
-  Model, Paused, Reader, RealTime, Running, Stopped,
+  MetadataEdit, Model, Paused, Reader, RealTime, Running, Stopped,
 }
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
@@ -154,6 +156,7 @@ fn empty_model() -> Model {
     active_book_id: None,
     paste_title: "",
     paste_text: "",
+    paste_author: None,
     paste_submitting: False,
     paste_error: None,
     paste_warning: None,
@@ -186,6 +189,7 @@ fn empty_model() -> Model {
     book_stats: None,
     library_stats: None,
     library_book_stats: dict.new(),
+    editing_metadata: None,
     jump_search_query: "",
     jump_search_results: [],
   )
@@ -5192,6 +5196,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
   // those fields would surface here as a decode failure.
   let payload =
     "{\"id\":\"book-1\",\"title\":\"Walden\",\"author\":\"Henry David Thoreau\","
+    <> "\"genre\":\"Memoir\","
     <> "\"word_count\":7421,\"sentence_count\":523,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":\"2026-04-02T08:14:00Z\"}"
@@ -5203,6 +5208,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
       id: "book-1",
       title: "Walden",
       author: Some("Henry David Thoreau"),
+      genre: Some("Memoir"),
       word_count: 7421,
       sentence_count: 523,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5217,6 +5223,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
   // round-trip into `None`.
   let payload =
     "{\"id\":\"book-2\",\"title\":\"Untitled\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":0,\"sentence_count\":0,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null}"
@@ -5228,6 +5235,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
       id: "book-2",
       title: "Untitled",
       author: None,
+      genre: None,
       word_count: 0,
       sentence_count: 0,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5248,6 +5256,7 @@ pub fn book_with_segments_decoder_decodes_a_get_by_id_payload_test() {
 
   let payload =
     "{\"id\":\"book-3\",\"title\":\"Hi\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null,"
@@ -5287,6 +5296,7 @@ pub fn create_book_response_decoder_decodes_a_201_payload_test() {
 
   let payload =
     "{\"book\":{\"id\":\"book-4\",\"title\":\"New\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null},"
@@ -5336,6 +5346,7 @@ fn sample_book(
     id: id,
     title: title,
     author: None,
+    genre: None,
     word_count: 100,
     sentence_count: 10,
     uploaded_at: "2026-04-01T12:00:00Z",
@@ -5753,7 +5764,7 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
       paste_error: Some("old"),
     )
 
-  let extract = EpubExtract("Walden", "# Walden\n\nProse.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "# Walden\n\nProse.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5779,7 +5790,7 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
       paste_submitting: True,
     )
 
-  let extract = EpubExtract("Walden", "Some text.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Some text.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5798,7 +5809,7 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   // type a meaningful title, so the extractor's guess fills in.
   let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5821,7 +5832,7 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
   // message natural.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 1)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 1)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5845,7 +5856,7 @@ pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
   // the singular case — warning, not error.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 3)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 3)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -7772,6 +7783,69 @@ pub fn stats_format_streak_examples_test() {
   assert stats_view_module.format_streak(7) == "7 days"
 }
 
+// ---------------------------------------------------------------------------
+// library — metadata edit
+// ---------------------------------------------------------------------------
+
+fn metadata_sample_book(
+  id: String,
+  title: String,
+  author: option.Option(String),
+  genre: option.Option(String),
+) -> BookMeta {
+  BookMeta(
+    id: id,
+    title: title,
+    author: author,
+    genre: genre,
+    word_count: 42,
+    sentence_count: 4,
+    uploaded_at: "2026-04-01T12:00:00Z",
+    last_read_at: None,
+  )
+}
+
+pub fn update_open_edit_metadata_seeds_draft_from_library_row_test() {
+  // The draft pre-fills with the row's current values so the form
+  // does not start blank — `Option`-valued columns flatten to `""`
+  // because the inputs bind to plain strings.
+  let book =
+    metadata_sample_book(
+      "book-1",
+      "Dune",
+      Some("Frank Herbert"),
+      Some("Sci-Fi"),
+    )
+  let prior = Model(..empty_model(), view: Library, books: [book])
+
+  let #(updated, _effect) = reducer.update(prior, OpenEditMetadata("book-1"))
+
+  assert updated.editing_metadata
+    == Some(MetadataEdit(
+      book_id: "book-1",
+      title: "Dune",
+      author: "Frank Herbert",
+      genre: "Sci-Fi",
+      submitting: False,
+      error: None,
+    ))
+}
+
+pub fn update_open_edit_metadata_unknown_id_is_a_noop_test() {
+  // A stale tap (the row was deleted between render and dispatch)
+  // must not seed a draft against a missing id — the sheet would
+  // otherwise open with an empty book_id and a save would PATCH
+  // an unknown row.
+  let prior =
+    Model(..empty_model(), view: Library, books: [
+      metadata_sample_book("book-a", "Alpha", None, None),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, OpenEditMetadata("missing"))
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
 // update — SetJumpSearchQuery / SelectSearchResult
 // ---------------------------------------------------------------------------
 
