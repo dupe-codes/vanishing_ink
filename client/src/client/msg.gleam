@@ -471,6 +471,44 @@ pub type Msg {
   /// shows the latest aggregate values.
   ToggleStatsView
 
+  /// Reader tapped the edit-metadata affordance on a book card.
+  /// Seeds `model.editing_metadata` with the current title / author /
+  /// genre values so the form starts pre-filled with what the book
+  /// already carries. A no-op when no book matches the id (a stale
+  /// tap after a `BookDeleted` race).
+  OpenEditMetadata(id: String)
+
+  /// Scrim tap or close button on the metadata edit sheet. Clears
+  /// `editing_metadata` without firing a PATCH; any unsaved input is
+  /// discarded.
+  CloseEditMetadata
+
+  /// Controlled title input change on the metadata edit sheet.
+  /// Stores the new value on `editing_metadata.title` and clears
+  /// the in-flight error so the message disappears as soon as the
+  /// reader starts typing again.
+  SetEditMetadataTitle(value: String)
+
+  /// Controlled author input change on the metadata edit sheet.
+  SetEditMetadataAuthor(value: String)
+
+  /// Controlled genre input change on the metadata edit sheet.
+  SetEditMetadataGenre(value: String)
+
+  /// "Save" pressed on the metadata edit sheet. Validates that the
+  /// title is non-empty, marks `editing_metadata.submitting: True`,
+  /// and dispatches `update_book_metadata`. The save button's
+  /// `disabled` reflects `submitting` so a double-tap cannot fire
+  /// two PATCHes.
+  SubmitEditMetadata
+
+  /// `PATCH /api/books/:id` resolved. The `Ok` arm replaces the
+  /// matching book in `model.books` with the updated metadata and
+  /// closes the edit sheet. The `Error` arm leaves the sheet open
+  /// with a human-readable message in `editing_metadata.error` so
+  /// the reader can retry.
+  BookMetadataUpdated(id: String, result: Result(BookMeta, ffi.FetchError))
+
   /// Controlled change of the Jump Ahead menu's text-search input.
   /// Stores the new query on `model.jump_search_query` and recomputes
   /// `model.jump_search_results` against the pages strictly ahead of

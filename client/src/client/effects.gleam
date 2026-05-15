@@ -27,10 +27,11 @@ import client/epub
 import client/ffi
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, EpubParsed, FetchBookStatsResult,
-  FetchLibraryBookStatsResult, FetchLibraryStatsResult, LinesMeasured,
-  ParagraphsMeasured, ReadingStateLoaded, SessionCreated, SessionEnded,
-  SettingsLoaded, ViewportResized,
+  BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, EpubParsed,
+  FetchBookStatsResult, FetchLibraryBookStatsResult,
+  FetchLibraryStatsResult, LinesMeasured, ParagraphsMeasured,
+  ReadingStateLoaded, SessionCreated, SessionEnded, SettingsLoaded,
+  ViewportResized,
 }
 import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
@@ -351,6 +352,44 @@ pub fn fetch_library_book_stats() -> Effect(Msg) {
   })
 }
 
+/// `PATCH /api/books/:id` with the three metadata fields (`title`,
+/// `author`, `genre`) and dispatch `BookMetadataUpdated`. The server
+/// echoes the updated `BookMeta` back; the reducer drops it onto
+/// `model.books` and closes the edit sheet.
+///
+/// Every field rides on every call: an `Option(String)` that is
+/// `None` clears the column to `null`, and a `Some(value)` writes
+/// the value. The metadata-edit form has no "leave untouched"
+/// affordance, so the partial-update semantics the server supports
+/// are not exposed here — the simplest mapping wins.
+pub fn update_book_metadata(
+  id id: String,
+  title title: String,
+  author author: Option(String),
+  genre genre: Option(String),
+) -> Effect(Msg) {
+  let body =
+    json.object([
+      #("title", json.string(title)),
+      #("author", json.nullable(author, json.string)),
+      #("genre", json.nullable(genre, json.string)),
+    ])
+    |> json.to_string
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_patch("/api/books/" <> id, body, fn(result) {
+      let decoded =
+        result
+        |> result.try(fn(body) {
+          json.parse(body, types.book_meta_decoder())
+          |> result.map_error(fn(_) {
+            ffi.DecodeError("Failed to decode metadata update response")
+          })
+        })
+      dispatch(BookMetadataUpdated(id, decoded))
+    })
+  })
+}
+
 /// `DELETE /api/books/:id` and dispatch `BookDeleted`. The server
 /// responds 204 No Content on success and 404 when the id is not found;
 /// both resolve through the same `Result(String, FetchError)` shape the
@@ -379,15 +418,29 @@ pub fn parse_epub(file: Dynamic) -> Effect(Msg) {
   })
 }
 
-/// `POST /api/books` with the JSON body `{ "title", "text" }` and
-/// dispatch `BookCreated`. The server segments and stores the text;
-/// the response carries both the new metadata and the parsed
+/// `POST /api/books` with the JSON body `{ "title", "text", "author" }`
+/// and dispatch `BookCreated`. The server segments and stores the
+/// text; the response carries both the new metadata and the parsed
 /// segments so the client could open the reader directly — today
 /// we stay in the library so the reader can see the new card
 /// appear before deciding to open it.
-pub fn create_book(title: String, text: String) -> Effect(Msg) {
+///
+/// `author` rides as `Option(String)` — `None` for raw-paste flows,
+/// `Some(_)` for an ePub import (or a future form field). The server
+/// accepts a missing or `null` author so omitting the key on the
+/// `None` branch would also work, but always sending it keeps the
+/// wire shape canonical and the integration tests symmetrical.
+pub fn create_book(
+  title: String,
+  text: String,
+  author: Option(String),
+) -> Effect(Msg) {
   let body =
-    json.object([#("title", json.string(title)), #("text", json.string(text))])
+    json.object([
+      #("title", json.string(title)),
+      #("text", json.string(text)),
+      #("author", json.nullable(author, json.string)),
+    ])
     |> json.to_string
   effect.from(fn(dispatch) {
     ffi.fetch_json_post("/api/books", body, fn(result) {
