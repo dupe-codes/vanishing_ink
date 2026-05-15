@@ -19,34 +19,6 @@ import client/state.{
 }
 import shared/segmenter.{type SegmentedText}
 
-/// Clamp `value` into `[lo, hi]`. Defensive helper for slider /
-/// stepper inputs; the inputs themselves carry `min` and `max`
-/// attributes, but a future programmatic call (or a malformed event)
-/// could bypass them, so the reducer is the authority.
-///
-/// Exposed for tests that pin the boundary behaviour at the lo and
-/// hi rails — the slider arms in the reducer delegate to this helper,
-/// so asserting it directly is the smallest unit that proves the
-/// out-of-range guard works.
-pub fn clamp_int(value: Int, lo: Int, hi: Int) -> Int {
-  case value < lo, value > hi {
-    True, _ -> lo
-    _, True -> hi
-    _, _ -> value
-  }
-}
-
-/// Float counterpart to `clamp_int`. Exposed for the same reason —
-/// the line-spacing and ghost-opacity sliders both delegate to this
-/// helper.
-pub fn clamp_float(value: Float, lo: Float, hi: Float) -> Float {
-  case value <. lo, value >. hi {
-    True, _ -> lo
-    _, True -> hi
-    _, _ -> value
-  }
-}
-
 /// Resolve the opacity string applied to erased sentences. Returns
 /// `"0"` when ghost mode is off so the bundled rendered-HTML tests
 /// (which pin `opacity:0;`) stay stable; otherwise the configured

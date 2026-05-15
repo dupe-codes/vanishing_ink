@@ -54,18 +54,20 @@ import client/msg.{
   EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
   FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
   LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, ParagraphsMeasured,
-  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade, SetFontSize,
-  SetGhostOpacity, SetJumpPageInput, SetLineSpacing, SetMode, SetPageDelay,
-  SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded,
-  SpacePressed, StartFade, SubmitJumpPage, SubmitPaste, TextLoaded,
-  ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode,
-  ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo,
-  UndoJump, ViewportResized,
+  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
+  SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
+  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
 }
+import client/numeric
 import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/jump as jump_reducer
 import client/sample
+import client/search.{SearchResult}
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
   Model, Paused, Reader, RealTime, Running, Stopped,
@@ -171,6 +173,8 @@ fn empty_model() -> Model {
     jump_preview: None,
     chapter_entries: [],
     jump_page_input: "",
+    jump_search_query: "",
+    jump_search_results: [],
   )
 }
 
@@ -604,6 +608,75 @@ pub fn update_paragraphs_measured_sets_total_pages_zero_when_no_text_test() {
     )
 
   assert updated.total_pages == 0
+}
+
+pub fn update_paragraphs_measured_recomputes_jump_search_results_test() {
+  // `jump_search_results` is a parallel cache to `chapter_entries`
+  // — both reference `page_index` values into the post-measurement
+  // page list. A re-pagination (phone rotation, dynamic font-size
+  // slider, line-spacing slider) can shift prose to a different
+  // page offset; the cached snippets must be rebuilt against the
+  // new pagination or they describe prose that is no longer on the
+  // referenced page. This test prepopulates `jump_search_results`
+  // with an entry that is *obviously* stale (a snippet that never
+  // appears in the fixture's prose), then dispatches
+  // `ParagraphsMeasured` and asserts the cached results are
+  // recomputed from the current pagination — the stale snippet is
+  // gone, and the actual matching page surfaces with its real
+  // snippet text.
+  let text = jump_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 99, snippet: "OBVIOUSLY-STALE-SNIPPET"),
+      ],
+    )
+  // One paragraph per page (25px budget) so chapter boundaries
+  // align with page boundaries — same shape as `jump_pages()`.
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    reducer.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  // The stale entry is gone and the live match on page 2 is
+  // present with the actual prose. Whole-payload assertion so a
+  // regression that leaves the stale field in place cannot slip
+  // past a field-level case match.
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn update_paragraphs_measured_keeps_jump_search_results_empty_when_query_is_empty_test() {
+  // The empty-query short-circuit inside `search.search_forward`
+  // means a re-pagination with no active query produces no
+  // results — the recompute is total over the input but does not
+  // surface phantom hits when there is no search intent. Pins the
+  // parallel branch to the recompute test above.
+  let text = jump_text()
+  let prior =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      jump_search_query: "",
+      jump_search_results: [],
+    )
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0)]
+
+  let #(updated, _) =
+    reducer.update(
+      prior,
+      ParagraphsMeasured(heights: heights, available_height: 25.0),
+    )
+
+  assert updated.jump_search_results == []
 }
 
 // ---------------------------------------------------------------------------
@@ -2221,54 +2294,57 @@ pub fn update_toggle_dyslexia_font_flips_field_test() {
 // clamp helpers
 // ---------------------------------------------------------------------------
 //
-// `clamp_int` and `clamp_float` are exposed for testing because every
-// settings-slider reducer arm delegates to them; pinning the boundary
-// behaviour here means a future refactor that swaps the comparison
-// operators (e.g. inclusive vs. exclusive bounds) will fail at this
-// unit level rather than producing surprising slider behaviour at the
-// rails.
+// `clamp_int` and `clamp_float` live in the pure-leaf `client/numeric`
+// module. They are exposed for testing because every settings-slider
+// reducer arm delegates to them, and `client/search` uses
+// `clamp_int` to bracket its snippet window into the haystack;
+// pinning the boundary behaviour here means a future refactor that
+// swaps the comparison operators (e.g. inclusive vs. exclusive
+// bounds) will fail at this unit level rather than producing
+// surprising slider behaviour at the rails or off-by-one snippets at
+// the head and tail of a page.
 
 pub fn clamp_int_below_lo_returns_lo_test() {
-  assert state_helpers.clamp_int(-5, 0, 10) == 0
+  assert numeric.clamp_int(-5, 0, 10) == 0
 }
 
 pub fn clamp_int_above_hi_returns_hi_test() {
-  assert state_helpers.clamp_int(99, 0, 10) == 10
+  assert numeric.clamp_int(99, 0, 10) == 10
 }
 
 pub fn clamp_int_in_range_returns_value_test() {
-  assert state_helpers.clamp_int(7, 0, 10) == 7
+  assert numeric.clamp_int(7, 0, 10) == 7
 }
 
 pub fn clamp_int_at_lo_returns_lo_test() {
   // Boundary inclusivity: `value < lo` not `value <= lo`, so the lo
   // rail itself is "in range" and passes through.
-  assert state_helpers.clamp_int(0, 0, 10) == 0
+  assert numeric.clamp_int(0, 0, 10) == 0
 }
 
 pub fn clamp_int_at_hi_returns_hi_test() {
   // Mirror inclusivity check at the hi rail.
-  assert state_helpers.clamp_int(10, 0, 10) == 10
+  assert numeric.clamp_int(10, 0, 10) == 10
 }
 
 pub fn clamp_float_below_lo_returns_lo_test() {
-  assert state_helpers.clamp_float(-1.5, 0.0, 1.0) == 0.0
+  assert numeric.clamp_float(-1.5, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_above_hi_returns_hi_test() {
-  assert state_helpers.clamp_float(2.5, 0.0, 1.0) == 1.0
+  assert numeric.clamp_float(2.5, 0.0, 1.0) == 1.0
 }
 
 pub fn clamp_float_in_range_returns_value_test() {
-  assert state_helpers.clamp_float(0.42, 0.0, 1.0) == 0.42
+  assert numeric.clamp_float(0.42, 0.0, 1.0) == 0.42
 }
 
 pub fn clamp_float_at_lo_returns_lo_test() {
-  assert state_helpers.clamp_float(0.0, 0.0, 1.0) == 0.0
+  assert numeric.clamp_float(0.0, 0.0, 1.0) == 0.0
 }
 
 pub fn clamp_float_at_hi_returns_hi_test() {
-  assert state_helpers.clamp_float(1.0, 0.0, 1.0) == 1.0
+  assert numeric.clamp_float(1.0, 0.0, 1.0) == 1.0
 }
 
 // ---------------------------------------------------------------------------
@@ -7223,4 +7299,664 @@ pub fn view_renders_preview_banner_when_jump_preview_some_test() {
   // The regular manual chrome must step aside while previewing.
   assert !string.contains(rendered, "reader-bottom-manual")
   assert !string.contains(rendered, "Turn Page →")
+}
+
+// ---------------------------------------------------------------------------
+// update — SetJumpSearchQuery / SelectSearchResult
+// ---------------------------------------------------------------------------
+
+pub fn update_set_jump_search_query_caches_query_and_results_test() {
+  // A non-empty query lands on `jump_search_query` and the cached
+  // result list is populated by `search.search_forward` against the
+  // pages strictly ahead of `current_page`. The fixture's page 2
+  // contains "Two charlie." (12 chars — shorter than the 50-char
+  // snippet window), so the snippet collapses to the full page text
+  // with no ellipses. Whole-payload assertion so a regression in the
+  // snippet algorithm cannot slip past a field-level case match.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("two"))
+
+  assert updated.jump_search_query == "two"
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn update_set_jump_search_query_empty_clears_results_test() {
+  // An empty query collapses to no results — the view treats this as
+  // "show nothing" rather than "no matches", so a reader who hasn't
+  // typed yet is not greeted with a misleading empty-state message.
+  let prior =
+    Model(..jump_model(), jump_search_query: "two", jump_search_results: [
+      SearchResult(page_index: 2, snippet: "..."),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery(""))
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_whitespace_clears_results_test() {
+  // Whitespace-only queries are no-search just like empty queries.
+  // `search.search_forward` trims the query and short-circuits on
+  // `""`, so the result list is empty regardless of what the
+  // reader typed (a stray spacebar press in the field must not
+  // surface every page that contains a space).
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("   "))
+
+  assert updated.jump_search_query == "   "
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_is_case_insensitive_test() {
+  // The fixture's page 2 contains "Two charlie." Typing "TWO" (upper
+  // case) must still match — both the query and the page text are
+  // lowercased before the substring check. The snippet preserves the
+  // original-case haystack, so the rendered prefix is `"Two"` even
+  // though the query was upper-case.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("TWO"))
+
+  assert updated.jump_search_results
+    == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn update_set_jump_search_query_only_searches_forward_pages_test() {
+  // Forward-only: page 0 contains "Zero alpha." but is the current
+  // page, so a search for "zero" from page 0 must return no hits.
+  // Page-level skipping mirrors the chapter list and page-number
+  // input, both of which only render forward targets.
+  let prior = jump_model()
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("zero"))
+
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_excludes_current_page_even_when_match_present_test() {
+  // Self-check on the forward-only contract: bumping `current_page`
+  // to 1 must drop page 1 ("One bravo.") from the search even though
+  // it textually matches "one". Only page 2 ("Two charlie.")
+  // remains as a forward target — no hit for "one".
+  let prior = Model(..jump_model(), current_page: 1)
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("one"))
+
+  assert updated.jump_search_results == []
+}
+
+pub fn update_set_jump_search_query_caps_results_at_limit_test() {
+  // Build a long-document fixture where every page after the current
+  // one contains the search needle. The cap is the reducer's
+  // authority: a 30-page run on a popular needle ("the") must
+  // produce exactly `jump_search_result_limit` hits, not 30.
+  //
+  // Pin the full window — every page index from 1 to 20 — so a
+  // regression that walks from the wrong end (e.g., a stray
+  // `list.reverse` applied *before* the cap rather than after) or
+  // skips alternate pages can never produce the right length with
+  // the wrong contents.
+  let pages = many_matching_pages(30)
+  let prior =
+    Model(
+      ..jump_model(),
+      pages: pages,
+      total_pages: list.length(pages),
+      current_page: 0,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SetJumpSearchQuery("needle"))
+
+  assert list.length(updated.jump_search_results)
+    == search.jump_search_result_limit
+  // Pin both ends of the window. Asserting only the first element
+  // would let a regression that walks from the wrong end (e.g.,
+  // `list.reverse` applied *before* the cap, surfacing pages 10..29)
+  // still produce a `first.page_index == 1` if the bug also skipped
+  // pages; pinning both rails closes the gap.
+  assert list.first(updated.jump_search_results)
+    == Ok(SearchResult(page_index: 1, snippet: "needle"))
+  assert list.last(updated.jump_search_results)
+    == Ok(SearchResult(page_index: 20, snippet: "needle"))
+}
+
+pub fn update_select_search_result_dispatches_jump_test() {
+  // A tap on a search-result row routes through `apply_jump_to_page`
+  // — same path the page-input row uses. The reader lands in
+  // preview mode with the pre-jump snapshot stashed.
+  let prior =
+    Model(
+      ..jump_model(),
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: "...Two charlie..."),
+      ],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SelectSearchResult(2))
+
+  assert updated.current_page == 2
+  assert updated.jump_menu_open == False
+  assert updated.jump_preview
+    == Some(JumpPreview(
+      source_page: 0,
+      prior_engine_state: Stopped,
+      prior_next_word_index: None,
+    ))
+}
+
+pub fn update_select_search_result_rejects_backward_target_test() {
+  // The forward-only guard in `apply_jump_to_page` still applies
+  // through the search path. A `SelectSearchResult(0)` from page 1
+  // is a no-op — search results land in `jump_search_results` only
+  // for forward pages, but the reducer-side guard is the authority.
+  let prior = Model(..jump_model(), current_page: 1)
+
+  let #(updated, _effect) = reducer.update(prior, SelectSearchResult(0))
+
+  assert updated == prior
+}
+
+pub fn update_toggle_jump_menu_clears_search_state_test() {
+  // Closing the menu wipes the search query and cached results so a
+  // half-typed query does not pre-populate the next open, and a
+  // stale hit list does not flash on screen before the reader has
+  // retyped anything.
+  let prior =
+    Model(
+      ..jump_model(),
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [SearchResult(page_index: 2, snippet: "...")],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, ToggleJumpMenu)
+
+  assert updated.jump_menu_open == False
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_text_loaded_clears_search_state_test() {
+  // A fresh `TextLoaded` resets per-book scratch state — search
+  // included. Without this reset, opening a new book while the
+  // previous one had a search in flight would carry the stale
+  // query and results across.
+  let prior =
+    Model(..jump_model(), jump_search_query: "two", jump_search_results: [
+      SearchResult(page_index: 2, snippet: "..."),
+    ])
+
+  let payload =
+    SegmentedText(chapters: [
+      Chapter(index: 0, title: None, paragraphs: []),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, TextLoaded(payload))
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+pub fn update_go_to_library_clears_search_state_test() {
+  // Returning to the library tears down per-book reader state; the
+  // search query and cache go with it for the same reason as the
+  // jump menu open flag and the chapter cache.
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      view: Reader,
+      jump_search_query: "two",
+      jump_search_results: [SearchResult(page_index: 2, snippet: "...")],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, GoToLibrary)
+
+  assert updated.jump_search_query == ""
+  assert updated.jump_search_results == []
+}
+
+// Build `n` pages, each carrying one paragraph whose single sentence
+// contains the word "needle". Used by the cap test to fabricate
+// enough matching forward pages to drive the result-count past the
+// `jump_search_result_limit` constant.
+fn many_matching_pages(n: Int) -> List(Page) {
+  build_pages(0, n, []) |> list.reverse
+}
+
+fn build_pages(i: Int, n: Int, acc: List(Page)) -> List(Page) {
+  case i >= n {
+    True -> acc
+    False -> {
+      let paragraph =
+        Paragraph(index: 0, sentences: [
+          Sentence(index: i, global_index: i, words: [
+            Word(index: 0, global_index: i, text: "needle"),
+          ]),
+        ])
+      let page_paragraph =
+        pagination.PageParagraph(
+          global_index: i,
+          chapter_index: 0,
+          chapter_title: None,
+          paragraph: paragraph,
+        )
+      let page = Page(index: i, paragraphs: [page_paragraph])
+      build_pages(i + 1, n, [page, ..acc])
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// View — Jump menu search section
+// ---------------------------------------------------------------------------
+
+pub fn view_renders_search_input_when_menu_open_test() {
+  // The search input is the third affordance in the open modal,
+  // sitting under the page-number row. The controlled value echoes
+  // `model.jump_search_query`; the empty seed lands as the literal
+  // `value=""` substring in the rendered HTML.
+  let open = Model(..jump_model(), view: Reader, jump_menu_open: True)
+
+  let rendered = view.view(open) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-input\"")
+  assert string.contains(rendered, "Search ahead...")
+  assert string.contains(rendered, "aria-label=\"Search ahead\"")
+}
+
+pub fn view_renders_search_results_when_query_has_matches_test() {
+  // A non-empty query with cached results renders one row per hit.
+  // Each row carries the 1-based page label and the snippet text.
+  // The row is a `<button>` so screen readers announce it as a
+  // navigable target rather than a passive cell.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: "…Two charlie…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-results\"")
+  assert string.contains(rendered, "class=\"jump-search-result-item\"")
+  // 1-based page label in the result row.
+  assert string.contains(rendered, "p. 3")
+  // Snippet text rendered.
+  assert string.contains(rendered, "Two charlie")
+  // Aria-label carries both the 1-based page number and the snippet
+  // so screen-reader users get matched-context parity with sighted
+  // readers — see `view_search_result_aria_label_includes_snippet_test`
+  // for the dedicated coverage of the snippet half.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Jump to page 3: …Two charlie…\"",
+  )
+}
+
+pub fn view_search_result_aria_label_includes_snippet_test() {
+  // The visible snippet is the whole reason the search surface
+  // exists — a screen-reader user navigating the results must hear
+  // the matched context, not just "Jump to page 3". Folding the
+  // snippet into the aria-label gives non-sighted readers parity
+  // with the sighted result row.
+  //
+  // Pin via two assertions so a regression that *drops* the snippet
+  // (regression: aria-label collapses back to "Jump to page N")
+  // and a regression that *replaces* the page number with the
+  // snippet only (regression: aria-label drops the page index)
+  // both fail this test rather than passing on the literal
+  // `string.contains(rendered, snippet)`.
+  let snippet = "…Two charlie matched in this snippet…"
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "two",
+      jump_search_results: [
+        SearchResult(page_index: 2, snippet: snippet),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  // Page number and snippet are both present in the aria-label,
+  // joined by a colon-space separator.
+  assert string.contains(
+    rendered,
+    "aria-label=\"Jump to page 3: " <> snippet <> "\"",
+  )
+}
+
+pub fn view_renders_no_matches_message_for_unmatched_query_test() {
+  // A non-empty query with an empty cached result list renders the
+  // muted "No matches found" line. The line is distinct from "search
+  // hasn't run yet" (empty query → nothing rendered) so the reader
+  // knows the search actually executed.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "zztop",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-empty\"")
+  assert string.contains(rendered, "No matches found")
+}
+
+pub fn view_omits_search_results_for_empty_query_test() {
+  // Empty query → no results region in the DOM at all. Not even the
+  // "No matches found" line should appear, because the search has
+  // not run yet. The input itself is still rendered so the reader
+  // sees the affordance.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"jump-search-input\"")
+  assert !string.contains(rendered, "jump-search-results")
+  assert !string.contains(rendered, "No matches found")
+}
+
+pub fn view_filters_stale_search_results_below_current_page_test() {
+  // The engine can advance `current_page` while the jump menu is
+  // open (a long enough open and a fast enough WPM cross a page
+  // boundary). The reducer's `jump_search_results` cache was built
+  // against the *prior* `current_page`, so it may now hold rows
+  // whose `page_index <= current_page`. Tapping such a row would
+  // dispatch into `apply_jump_to_page`'s forward-only guard and
+  // silently no-op — the view filters them out instead, so the
+  // reader never sees a row that does nothing on tap. When every
+  // cached row is stale, the section falls back to the same
+  // "No matches found" line a genuine zero-match query produces.
+  //
+  // `current_page: 1` with a 3-page fixture means the terminal-page
+  // guard in `view_search_section` still permits the section to
+  // render (there is at least one forward page), so the stale-row
+  // filter — not the section guard — is what produces the empty
+  // state asserted below.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      current_page: 1,
+      jump_search_query: "stale",
+      jump_search_results: [
+        SearchResult(page_index: 0, snippet: "…stale-row-zero…"),
+        SearchResult(page_index: 1, snippet: "…stale-row-equal…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "stale-row-zero")
+  assert !string.contains(rendered, "stale-row-equal")
+  assert string.contains(rendered, "No matches found")
+}
+
+pub fn view_keeps_live_results_and_drops_stale_results_test() {
+  // Mixed cache: one stale row, one live row. The stale row is
+  // filtered out at render time, the live row still appears. This
+  // pins the predicate (`result.page_index > model.current_page`)
+  // rather than the all-stale degenerate case above.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      current_page: 1,
+      jump_search_query: "mixed",
+      jump_search_results: [
+        SearchResult(page_index: 1, snippet: "…stale-equal-current…"),
+        SearchResult(page_index: 2, snippet: "…live-row-forward…"),
+      ],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "stale-equal-current")
+  assert string.contains(rendered, "live-row-forward")
+  // Both rows had a `page_index` past the menu's "no matches"
+  // threshold — the section must still render the results region,
+  // not the empty-state line, because at least one live row remains.
+  assert !string.contains(rendered, "No matches found")
+}
+
+pub fn view_omits_search_section_on_terminal_page_test() {
+  // No forward page → no search target → no search section. The
+  // guard mirrors `view_page_section`'s terminal-page guard so the
+  // two forward-navigation surfaces in the menu behave consistently.
+  // Without this, the reader on the final page sees a search input
+  // that can only ever render "No matches found" — a phantom
+  // affordance that promises a search will work and then fails it
+  // for any query.
+  //
+  // `jump_pages()` is a 3-page fixture; `current_page: 2` is the
+  // last valid page (0-based), so `total_pages - current_page == 1`
+  // and no `page_index > current_page` is reachable.
+  let model =
+    Model(..jump_model(), view: Reader, jump_menu_open: True, current_page: 2)
+
+  let rendered = view.view(model) |> element.to_string
+
+  // Neither the input nor the section label appears.
+  assert !string.contains(rendered, "jump-search-input")
+  assert !string.contains(rendered, "Search ahead")
+  // Sanity: the chapter section is also gone for the same reason
+  // (no forward chapters), so the only `jump-section` left would be
+  // the page input — and that one is also guarded by the same
+  // terminal-page condition, so it is absent too. The menu shell
+  // (header + close button) still renders.
+  assert string.contains(rendered, "Jump ahead")
+}
+
+pub fn view_omits_search_results_for_whitespace_query_test() {
+  // Whitespace-only queries are also "no search intent". The view
+  // mirrors `apply_set_jump_search_query`'s short-circuit: the
+  // results region trims the query before deciding whether to
+  // render the empty state.
+  let model =
+    Model(
+      ..jump_model(),
+      view: Reader,
+      jump_menu_open: True,
+      jump_search_query: "   ",
+      jump_search_results: [],
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert !string.contains(rendered, "jump-search-results")
+  assert !string.contains(rendered, "No matches found")
+}
+
+// ---------------------------------------------------------------------------
+// search.search_forward — direct snippet-algorithm coverage
+//
+// The reducer-level tests above exercise the dispatching machinery
+// (query lands on the model, results are cached, forward-only guard
+// holds). They do *not* pin the snippet algorithm — every snippet
+// helper in `client/search` (`collect_matches`, `find_match`,
+// `snippet_around`, `snap_left_to_boundary`,
+// `snap_right_to_boundary`, etc.) is reachable only through
+// `search_forward`, so a regression in (say) the left/right
+// whitespace snap or an off-by-one in `snippet_half_window` would
+// produce a SearchResult with the wrong snippet string but the
+// right page index, and the reducer-level case patterns would not
+// notice.
+//
+// The tests below construct deterministic single-page fixtures
+// with hand-computed expected snippets so any drift in the
+// algorithm surfaces as a string-equality failure rather than a
+// silent regression. Cases covered:
+//
+//   * haystack shorter than 2 × snippet_half_window — full text,
+//     no ellipses;
+//   * match at position 0 of a long haystack — no leading ellipsis,
+//     trailing ellipsis;
+//   * match at the end of a long haystack — leading ellipsis, no
+//     trailing ellipsis;
+//   * match in the middle of a long haystack — both ellipses, with
+//     window snapping to word boundaries;
+//   * empty page mid-document — the empty haystack collapses to
+//     `Error(_)` in `find_match` and produces no SearchResult.
+// ---------------------------------------------------------------------------
+
+pub fn search_forward_returns_full_text_when_haystack_shorter_than_window_test() {
+  // Haystack "Two charlie." is 12 chars — well below the
+  // 2 × snippet_half_window (50-char) threshold. The window
+  // clamps to the full string, both `snap_left` and `snap_right`
+  // collapse to the rails (cursor <= 0 and cursor >= total), and
+  // neither ellipsis prefix nor suffix is produced.
+  let pages = [search_test_page(1, ["Two", "charlie."])]
+
+  let results = search.search_forward(pages, 0, "two")
+
+  assert results == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+}
+
+pub fn search_forward_no_leading_ellipsis_when_match_starts_haystack_test() {
+  // Match at position 0 — `snap_left_to_boundary` short-circuits
+  // on the `cursor <= 0` rail, the prefix is empty. The right
+  // edge clips inside the long haystack, so the trailing ellipsis
+  // *is* present. Position 30 lands on the space after "echo",
+  // so the right snap returns the cursor unchanged.
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf",
+    ]),
+  ]
+
+  let results = search.search_forward(pages, 0, "alpha")
+
+  assert results
+    == [
+      SearchResult(page_index: 1, snippet: "alpha bravo charlie delta echo…"),
+    ]
+}
+
+pub fn search_forward_no_trailing_ellipsis_when_match_ends_haystack_test() {
+  // Match at the tail of the page. The right edge clamps to
+  // `total`, `snap_right` short-circuits on `cursor >= total`,
+  // and the suffix is empty. The left edge snaps forward past
+  // the partial word "charlie" so the snippet starts on a clean
+  // word boundary ("delta") rather than mid-token.
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle",
+    ]),
+  ]
+
+  let results = search.search_forward(pages, 0, "needle")
+
+  assert results
+    == [
+      SearchResult(page_index: 1, snippet: "…delta echo foxtrot needle"),
+    ]
+}
+
+pub fn search_forward_brackets_centered_match_with_both_ellipses_test() {
+  // Match in the interior of a long haystack. Both edges clip
+  // inside `[0, total)`, both ellipses are emitted, and the
+  // whitespace snap pulls each edge onto a word boundary — the
+  // left edge moves rightward through "charlie" until the space
+  // before "delta", the right edge moves leftward through "kilo"
+  // back to the space after "juliet". The snippet body therefore
+  // contains exactly the whole-word tokens from "delta" through
+  // "juliet" centred on "needle".
+  let pages = [
+    search_test_page(1, [
+      "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "needle", "golf",
+      "hotel", "india", "juliet", "kilo",
+    ]),
+  ]
+
+  let results = search.search_forward(pages, 0, "needle")
+
+  assert results
+    == [
+      SearchResult(
+        page_index: 1,
+        snippet: "…delta echo foxtrot needle golf hotel india juliet…",
+      ),
+    ]
+}
+
+pub fn search_forward_skips_pages_with_empty_text_test() {
+  // A page with no paragraphs (chapter heading row, blank spine
+  // entry, malformed import) joins to the empty string. The
+  // empty-haystack arm in `find_match` (`scan_for_needle` →
+  // `pop_grapheme("")` → `Error(Nil)`) collapses to no match, the
+  // page is skipped without a SearchResult, and the next forward
+  // page's hit still surfaces — empty pages must not short-circuit
+  // the walk.
+  let empty_page = Page(index: 1, paragraphs: [])
+  let next_page = search_test_page(2, ["Two", "charlie."])
+  let pages = [empty_page, next_page]
+
+  let results = search.search_forward(pages, 0, "two")
+
+  assert results == [SearchResult(page_index: 2, snippet: "Two charlie.")]
+}
+
+pub fn search_forward_preserves_original_case_in_snippet_test() {
+  // Matching is case-insensitive — both sides lowercased — but
+  // the snippet is sliced from the *original* haystack, so the
+  // reader sees the prose as it was authored. Querying "TWO"
+  // must surface the snippet starting with capital "T", not the
+  // lower-cased shadow string `find_match` walks internally.
+  let pages = [search_test_page(1, ["Two", "charlie."])]
+
+  let results = search.search_forward(pages, 0, "TWO")
+
+  assert results == [SearchResult(page_index: 1, snippet: "Two charlie.")]
+}
+
+// Construct a single-paragraph, single-sentence page from a list of
+// word texts. Each word's index and global_index walk from zero so
+// the resulting page is internally consistent (a future engine pass
+// over the page would not trip on duplicate indices), but the values
+// are unobserved by `search_forward` — only the `text` field and the
+// `page.index` matter to the algorithm. Used by the
+// `search_forward_*` tests above to fabricate deterministic haystacks
+// with hand-computed expected snippets.
+fn search_test_page(index: Int, word_texts: List(String)) -> Page {
+  let words =
+    list.index_map(word_texts, fn(text, i) {
+      Word(index: i, global_index: i, text: text)
+    })
+  let sentence = Sentence(index: 0, global_index: 0, words: words)
+  let paragraph = Paragraph(index: 0, sentences: [sentence])
+  let page_paragraph =
+    pagination.PageParagraph(
+      global_index: 0,
+      chapter_index: 0,
+      chapter_title: None,
+      paragraph: paragraph,
+    )
+  Page(index: index, paragraphs: [page_paragraph])
 }
