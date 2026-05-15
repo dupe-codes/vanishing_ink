@@ -49,18 +49,20 @@ import client/epub.{
 import client/ffi
 import client/gestures
 import client/msg.{
-  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookSettingsLoaded,
-  BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected, EpubParsed,
-  EraseFocused, EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown,
-  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
-  LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, ParagraphsMeasured,
-  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
-  SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
-  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
+  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookMetadataUpdated,
+  BookSettingsLoaded, BooksLoaded, CancelDelete, CloseEditMetadata,
+  ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused, EraseSentence,
+  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
+  GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage,
+  NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SelectSearchResult,
+  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
+  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd,
+  TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
@@ -70,7 +72,7 @@ import client/sample
 import client/search.{SearchResult}
 import client/state.{
   type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
-  Model, Paused, Reader, RealTime, Running, Stopped,
+  MetadataEdit, Model, Paused, Reader, RealTime, Running, Stopped,
 }
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
@@ -151,6 +153,7 @@ fn empty_model() -> Model {
     active_book_id: None,
     paste_title: "",
     paste_text: "",
+    paste_author: None,
     paste_submitting: False,
     paste_error: None,
     paste_warning: None,
@@ -173,6 +176,7 @@ fn empty_model() -> Model {
     jump_preview: None,
     chapter_entries: [],
     jump_page_input: "",
+    editing_metadata: None,
     jump_search_query: "",
     jump_search_results: [],
   )
@@ -5162,6 +5166,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
   // those fields would surface here as a decode failure.
   let payload =
     "{\"id\":\"book-1\",\"title\":\"Walden\",\"author\":\"Henry David Thoreau\","
+    <> "\"genre\":\"Memoir\","
     <> "\"word_count\":7421,\"sentence_count\":523,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":\"2026-04-02T08:14:00Z\"}"
@@ -5173,6 +5178,7 @@ pub fn book_meta_decoder_round_trips_a_wire_shaped_payload_test() {
       id: "book-1",
       title: "Walden",
       author: Some("Henry David Thoreau"),
+      genre: Some("Memoir"),
       word_count: 7421,
       sentence_count: 523,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5187,6 +5193,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
   // round-trip into `None`.
   let payload =
     "{\"id\":\"book-2\",\"title\":\"Untitled\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":0,\"sentence_count\":0,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null}"
@@ -5198,6 +5205,7 @@ pub fn book_meta_decoder_accepts_null_author_and_last_read_at_test() {
       id: "book-2",
       title: "Untitled",
       author: None,
+      genre: None,
       word_count: 0,
       sentence_count: 0,
       uploaded_at: "2026-04-01T12:00:00Z",
@@ -5218,6 +5226,7 @@ pub fn book_with_segments_decoder_decodes_a_get_by_id_payload_test() {
 
   let payload =
     "{\"id\":\"book-3\",\"title\":\"Hi\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null,"
@@ -5257,6 +5266,7 @@ pub fn create_book_response_decoder_decodes_a_201_payload_test() {
 
   let payload =
     "{\"book\":{\"id\":\"book-4\",\"title\":\"New\",\"author\":null,"
+    <> "\"genre\":null,"
     <> "\"word_count\":1,\"sentence_count\":1,"
     <> "\"uploaded_at\":\"2026-04-01T12:00:00Z\","
     <> "\"last_read_at\":null},"
@@ -5306,6 +5316,7 @@ fn sample_book(
     id: id,
     title: title,
     author: None,
+    genre: None,
     word_count: 100,
     sentence_count: 10,
     uploaded_at: "2026-04-01T12:00:00Z",
@@ -5713,7 +5724,7 @@ pub fn update_epub_parsed_ok_fills_form_when_title_is_blank_test() {
       paste_error: Some("old"),
     )
 
-  let extract = EpubExtract("Walden", "# Walden\n\nProse.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "# Walden\n\nProse.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5739,7 +5750,7 @@ pub fn update_epub_parsed_ok_preserves_existing_title_test() {
       paste_submitting: True,
     )
 
-  let extract = EpubExtract("Walden", "Some text.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Some text.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5758,7 +5769,7 @@ pub fn update_epub_parsed_ok_overwrites_whitespace_only_title_test() {
   // type a meaningful title, so the extractor's guess fills in.
   let prior = Model(..empty_model(), paste_title: "   ", paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 0)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 0)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5781,7 +5792,7 @@ pub fn update_epub_parsed_ok_warns_when_one_section_skipped_test() {
   // message natural.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 1)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 1)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -5805,7 +5816,7 @@ pub fn update_epub_parsed_ok_warns_when_multiple_sections_skipped_test() {
   // the singular case — warning, not error.
   let prior = Model(..empty_model(), paste_submitting: True)
 
-  let extract = EpubExtract("Walden", "Body.\n\n", 3)
+  let extract = EpubExtract("Walden", None, "Body.\n\n", 3)
   let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
 
   let expected =
@@ -7302,6 +7313,68 @@ pub fn view_renders_preview_banner_when_jump_preview_some_test() {
 }
 
 // ---------------------------------------------------------------------------
+// library — metadata edit
+// ---------------------------------------------------------------------------
+
+fn metadata_sample_book(
+  id: String,
+  title: String,
+  author: option.Option(String),
+  genre: option.Option(String),
+) -> BookMeta {
+  BookMeta(
+    id: id,
+    title: title,
+    author: author,
+    genre: genre,
+    word_count: 42,
+    sentence_count: 4,
+    uploaded_at: "2026-04-01T12:00:00Z",
+    last_read_at: None,
+  )
+}
+
+pub fn update_open_edit_metadata_seeds_draft_from_library_row_test() {
+  // The draft pre-fills with the row's current values so the form
+  // does not start blank — `Option`-valued columns flatten to `""`
+  // because the inputs bind to plain strings.
+  let book =
+    metadata_sample_book(
+      "book-1",
+      "Dune",
+      Some("Frank Herbert"),
+      Some("Sci-Fi"),
+    )
+  let prior = Model(..empty_model(), view: Library, books: [book])
+
+  let #(updated, _effect) = reducer.update(prior, OpenEditMetadata("book-1"))
+
+  assert updated.editing_metadata
+    == Some(MetadataEdit(
+      book_id: "book-1",
+      title: "Dune",
+      author: "Frank Herbert",
+      genre: "Sci-Fi",
+      submitting: False,
+      error: None,
+    ))
+}
+
+pub fn update_open_edit_metadata_unknown_id_is_a_noop_test() {
+  // A stale tap (the row was deleted between render and dispatch)
+  // must not seed a draft against a missing id — the sheet would
+  // otherwise open with an empty book_id and a save would PATCH
+  // an unknown row.
+  let prior =
+    Model(..empty_model(), view: Library, books: [
+      metadata_sample_book("book-a", "Alpha", None, None),
+    ])
+
+  let #(updated, _effect) = reducer.update(prior, OpenEditMetadata("missing"))
+  assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
 // update — SetJumpSearchQuery / SelectSearchResult
 // ---------------------------------------------------------------------------
 
@@ -7462,6 +7535,416 @@ pub fn update_select_search_result_rejects_backward_target_test() {
   assert updated == prior
 }
 
+pub fn update_close_edit_metadata_drops_the_draft_test() {
+  // Closing discards every in-progress input — there is no implicit
+  // save, the row stays at its persisted state.
+  let prior =
+    Model(
+      ..empty_model(),
+      editing_metadata: Some(MetadataEdit(
+        book_id: "x",
+        title: "edits",
+        author: "edits",
+        genre: "edits",
+        submitting: False,
+        error: None,
+      )),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, CloseEditMetadata)
+
+  assert updated == Model(..prior, editing_metadata: None)
+}
+
+pub fn update_set_edit_metadata_fields_stamp_the_draft_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      editing_metadata: Some(MetadataEdit(
+        book_id: "x",
+        title: "",
+        author: "",
+        genre: "",
+        submitting: False,
+        error: Some("stale"),
+      )),
+    )
+
+  let #(after_title, _) =
+    reducer.update(prior, SetEditMetadataTitle("New Title"))
+  let #(after_author, _) =
+    reducer.update(after_title, SetEditMetadataAuthor("New Author"))
+  let #(after_genre, _) =
+    reducer.update(after_author, SetEditMetadataGenre("Fantasy"))
+
+  assert after_genre.editing_metadata
+    == Some(MetadataEdit(
+      book_id: "x",
+      title: "New Title",
+      author: "New Author",
+      genre: "Fantasy",
+      submitting: False,
+      // Every input clears the in-flight error so a previous attempt's
+      // message does not greet the next typed character.
+      error: None,
+    ))
+}
+
+pub fn update_submit_edit_metadata_rejects_empty_title_test() {
+  let prior =
+    Model(
+      ..empty_model(),
+      editing_metadata: Some(MetadataEdit(
+        book_id: "x",
+        title: "   ",
+        author: "Whoever",
+        genre: "",
+        submitting: False,
+        error: None,
+      )),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, SubmitEditMetadata)
+
+  assert updated.editing_metadata
+    == Some(MetadataEdit(
+      book_id: "x",
+      title: "   ",
+      author: "Whoever",
+      genre: "",
+      submitting: False,
+      error: Some("Please add a title."),
+    ))
+}
+
+pub fn update_book_metadata_updated_ok_replaces_row_and_closes_sheet_test() {
+  let original =
+    metadata_sample_book("book-1", "Dune", Some("Frank Herbert"), None)
+  let updated_meta =
+    metadata_sample_book(
+      "book-1",
+      "Dune (revised)",
+      Some("Frank Herbert"),
+      Some("Sci-Fi"),
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [original],
+      editing_metadata: Some(MetadataEdit(
+        book_id: "book-1",
+        title: "Dune (revised)",
+        author: "Frank Herbert",
+        genre: "Sci-Fi",
+        submitting: True,
+        error: None,
+      )),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-1", Ok(updated_meta)))
+
+  // Row gets stamped onto `books` and the sheet closes — same shape
+  // every other successful-save arm produces.
+  assert updated.books == [updated_meta]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_error_keeps_sheet_open_test() {
+  let book = metadata_sample_book("book-1", "Dune", None, None)
+  let draft =
+    MetadataEdit(
+      book_id: "book-1",
+      title: "Dune (revised)",
+      author: "",
+      genre: "",
+      submitting: True,
+      error: None,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book],
+      editing_metadata: Some(draft),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      BookMetadataUpdated("book-1", Error(ffi.NetworkError("offline"))),
+    )
+
+  // The row stays at its persisted state, the sheet stays open with
+  // a human-readable error so the reader can retry.
+  assert updated.books == [book]
+  assert updated.editing_metadata
+    == Some(
+      MetadataEdit(
+        ..draft,
+        submitting: False,
+        error: Some("Could not reach the server: offline"),
+      ),
+    )
+}
+
+pub fn update_book_metadata_updated_ok_is_noop_when_no_draft_open_test() {
+  // Stale-response race: the reader submitted the PATCH for book A,
+  // then cancelled the sheet before the response arrived. The Ok
+  // arrives with `editing_metadata: None`. The reducer must not
+  // mutate `books` from under the reader — they have visibly moved
+  // on and would be surprised by a library list update they did not
+  // ask for. The PATCH did fire and the disk reflects it; the local
+  // view will catch up on the next refresh.
+  let original = metadata_sample_book("book-1", "Dune", None, None)
+  let updated_meta =
+    metadata_sample_book("book-1", "Dune (revised)", None, Some("Sci-Fi"))
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [original],
+      editing_metadata: None,
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-1", Ok(updated_meta)))
+
+  assert updated.books == [original]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_ok_is_noop_when_draft_id_differs_test() {
+  // Stale-response race (the one Critic Lockwood named): reader opens
+  // Edit on book A, fires PATCH, cancels, opens Edit on book B, then
+  // A's response lands. Without the gate, B's sheet closes with no
+  // warning. The gate makes A's response a no-op so B's draft stays
+  // intact — the reader can finish editing B without surprise.
+  let book_a = metadata_sample_book("book-a", "Alpha", None, None)
+  let book_b = metadata_sample_book("book-b", "Beta", None, None)
+  let updated_a =
+    metadata_sample_book("book-a", "Alpha (revised)", None, Some("Sci-Fi"))
+  let draft_b =
+    MetadataEdit(
+      book_id: "book-b",
+      title: "Beta",
+      author: "",
+      genre: "",
+      submitting: False,
+      error: None,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book_a, book_b],
+      editing_metadata: Some(draft_b),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-a", Ok(updated_a)))
+
+  // Neither the library list nor the open B-draft are touched.
+  assert updated.books == [book_a, book_b]
+  assert updated.editing_metadata == Some(draft_b)
+}
+
+pub fn update_book_metadata_updated_ok_keys_row_replace_on_url_id_test() {
+  // Trust-boundary regression: if a misbehaving server echoes a
+  // different id in the response body than the URL we PATCHed, the
+  // row replace must still target the row the reader was editing (the
+  // URL id), not whatever the server claims in the payload. Pre-fix
+  // the row match used `book.id == updated.id`, which would mean a
+  // divergent server-id silently skipped the replace and left the row
+  // stale. Post-fix the match uses the URL `id` we trust, so the row
+  // the reader was editing is the row that gets replaced.
+  let original = metadata_sample_book("book-1", "Dune", None, None)
+  let server_lied =
+    metadata_sample_book("book-WRONG", "Dune (revised)", None, Some("Sci-Fi"))
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [original],
+      editing_metadata: Some(MetadataEdit(
+        book_id: "book-1",
+        title: "Dune (revised)",
+        author: "",
+        genre: "Sci-Fi",
+        submitting: True,
+        error: None,
+      )),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(prior, BookMetadataUpdated("book-1", Ok(server_lied)))
+
+  // The row at the URL id ("book-1") gets replaced with the server's
+  // payload; we do not search for the divergent id and leave the row
+  // stale. Sheet closes either way.
+  assert updated.books == [server_lied]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_error_is_noop_when_no_draft_open_test() {
+  // Symmetric to the Ok case: a failed PATCH whose draft has been
+  // cancelled cannot leave a popup or stamp an error message
+  // anywhere — there is nothing open to stamp.
+  let book = metadata_sample_book("book-1", "Dune", None, None)
+  let prior =
+    Model(..empty_model(), view: Library, books: [book], editing_metadata: None)
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      BookMetadataUpdated("book-1", Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.books == [book]
+  assert updated.editing_metadata == None
+}
+
+pub fn update_book_metadata_updated_error_is_noop_when_draft_id_differs_test() {
+  // The error-arm half of the stale-response race: A's failure must
+  // not stamp its error message onto B's draft. Pre-fix, the error
+  // arm discarded `id` entirely and unconditionally stamped onto
+  // whatever draft was open — the gate keeps B's draft clean.
+  let book_a = metadata_sample_book("book-a", "Alpha", None, None)
+  let book_b = metadata_sample_book("book-b", "Beta", None, None)
+  let draft_b =
+    MetadataEdit(
+      book_id: "book-b",
+      title: "Beta",
+      author: "",
+      genre: "",
+      submitting: False,
+      error: None,
+    )
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book_a, book_b],
+      editing_metadata: Some(draft_b),
+    )
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      BookMetadataUpdated("book-a", Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.books == [book_a, book_b]
+  assert updated.editing_metadata == Some(draft_b)
+}
+
+pub fn update_epub_parsed_ok_populates_paste_author_when_empty_test() {
+  // The ePub OPF can carry a `<dc:creator>` we want to surface on the
+  // paste form — fills the `paste_author` slot when the reader has not
+  // typed an author yet. The reducer trims the value to `Option(String)`
+  // so the eventual `POST /api/books` body carries the right shape.
+  let prior = Model(..empty_model(), paste_author: None)
+  let extract =
+    EpubExtract("Walden", Some("Henry David Thoreau"), "Body.\n\n", 0)
+
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  assert updated.paste_author == Some("Henry David Thoreau")
+}
+
+pub fn update_epub_parsed_ok_preserves_existing_paste_author_test() {
+  // First-write-wins symmetry with `paste_title`: a reader who typed
+  // an author before picking the file keeps their value. The
+  // extracted creator only fills the slot when the existing value is
+  // `None`.
+  let prior = Model(..empty_model(), paste_author: Some("Pre-typed Author"))
+  let extract =
+    EpubExtract("Walden", Some("Henry David Thoreau"), "Body.\n\n", 0)
+
+  let #(updated, _effect) = reducer.update(prior, EpubParsed(Ok(extract)))
+
+  assert updated.paste_author == Some("Pre-typed Author")
+}
+
+pub fn library_card_renders_genre_tag_when_present_test() {
+  let book =
+    metadata_sample_book("book-1", "Dune", Some("Author"), Some("Sci-Fi"))
+  let model = Model(..empty_model(), view: Library, books: [book])
+  let rendered = view.view(model) |> element.to_string
+
+  // The genre tag and its containing wrapper are both present in the
+  // rendered DOM when the book carries a genre.
+  assert string.contains(rendered, "class=\"book-genre\"")
+  assert string.contains(rendered, "class=\"book-genre-tag\"")
+  assert string.contains(rendered, "Sci-Fi")
+}
+
+pub fn library_card_omits_genre_tag_when_absent_test() {
+  let book = metadata_sample_book("book-1", "Untitled", None, None)
+  let model = Model(..empty_model(), view: Library, books: [book])
+  let rendered = view.view(model) |> element.to_string
+
+  // A `None` genre collapses the wrapper so the card height stays
+  // consistent with pre-genre renders.
+  assert !string.contains(rendered, "class=\"book-genre\"")
+  assert !string.contains(rendered, "book-genre-tag")
+}
+
+pub fn library_card_includes_edit_metadata_button_test() {
+  // The edit affordance is rendered as a button with the
+  // `btn-edit-metadata` class so the CSS pencil glyph picks up its
+  // hit target. Asserts the aria-label too so the affordance is
+  // legible to assistive tech.
+  let book = metadata_sample_book("book-1", "Dune", None, None)
+  let model = Model(..empty_model(), view: Library, books: [book])
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "class=\"btn-edit-metadata\"")
+  assert string.contains(rendered, "aria-label=\"Edit metadata for Dune\"")
+}
+
+pub fn library_edit_metadata_sheet_is_absent_until_opened_test() {
+  let book = metadata_sample_book("book-1", "Dune", None, None)
+  let model = Model(..empty_model(), view: Library, books: [book])
+  let rendered = view.view(model) |> element.to_string
+
+  // Without `editing_metadata: Some(_)`, the sheet markup never lands
+  // in the DOM — keeps the closed-state tree small.
+  assert !string.contains(rendered, "Edit Book Details")
+  assert !string.contains(rendered, "Save Changes")
+}
+
+pub fn library_edit_metadata_sheet_renders_when_open_test() {
+  let book =
+    metadata_sample_book(
+      "book-1",
+      "Dune",
+      Some("Frank Herbert"),
+      Some("Sci-Fi"),
+    )
+  let model =
+    Model(
+      ..empty_model(),
+      view: Library,
+      books: [book],
+      editing_metadata: Some(MetadataEdit(
+        book_id: "book-1",
+        title: "Dune",
+        author: "Frank Herbert",
+        genre: "Sci-Fi",
+        submitting: False,
+        error: None,
+      )),
+    )
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(rendered, "Edit Book Details")
+  assert string.contains(rendered, "Save Changes")
+  // The three inputs render with the draft's current values so the
+  // sheet starts pre-filled.
+  assert string.contains(rendered, "value=\"Frank Herbert\"")
+  assert string.contains(rendered, "value=\"Sci-Fi\"")
 pub fn update_toggle_jump_menu_clears_search_state_test() {
   // Closing the menu wipes the search query and cached results so a
   // half-typed query does not pre-populate the next open, and a

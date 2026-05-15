@@ -1,19 +1,24 @@
 //// HTTP request router and handlers for the Vanishing Ink API.
 ////
-//// Routing is plain `case` pattern-matching on path segments; handlers
-//// live alongside the routing table because the surface is small
-//// enough that a per-feature split would add ceremony without
-//// clarifying anything. Each handler reads the request, talks to
-//// `server/db`, and either returns JSON or maps a precise error to a
-//// 4xx/5xx response.
+//// Routing is plain `case` pattern-matching on path segments. Most
+//// handlers still live alongside the routing table; per-feature
+//// submodules under `server/router/` carve out the larger surfaces
+//// (e.g. `metadata` for `PATCH /api/books/:id`) so the dispatcher
+//// stays at a readable size as the API surface grows. Each handler
+//// reads the request, talks to `server/db`, and either returns JSON
+//// or maps a precise error to a 4xx/5xx response.
 ////
 //// JSON bodies are decoded with `gleam/dynamic/decode`; on a decode
 //// failure we return 400 with the first error's message so clients can
-//// see exactly which field was wrong.
+//// see exactly which field was wrong. The decode-error formatter and
+//// the SQLite-error response builder live in `server/router/helpers`
+//// because submodules need them too — keeping them here would force
+//// every per-feature submodule to import the dispatcher and close an
+//// import cycle.
 
 import gleam/bit_array
 import gleam/dynamic/decode
-import gleam/http.{Delete, Get, Post, Put}
+import gleam/http.{Delete, Get, Patch, Post, Put}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -21,6 +26,8 @@ import gleam/result
 import gleam/string
 import server/clock
 import server/db
+import server/router/helpers.{db_error_response, describe_decode_errors}
+import server/router/metadata
 import server/types.{
   type BookSettings, type ReadingState, type UserSettings, BookMeta,
   BookSettings, ReadingState, UserSettings,
@@ -29,7 +36,6 @@ import server/web.{type Context}
 import shared
 import shared/segmenter
 import simplifile
-import sqlight
 import wisp.{type Request, type Response}
 
 /// Closed vocabulary for `reading_state.mode`. The schema defaults to
@@ -109,7 +115,12 @@ fn list_books_handler(ctx: Context) -> Response {
 }
 
 type CreateBookInput {
-  CreateBookInput(title: String, text: String, author: Option(String))
+  CreateBookInput(
+    title: String,
+    text: String,
+    author: Option(String),
+    genre: Option(String),
+  )
 }
 
 fn create_book_decoder() -> decode.Decoder(CreateBookInput) {
@@ -120,7 +131,17 @@ fn create_book_decoder() -> decode.Decoder(CreateBookInput) {
     None,
     decode.optional(decode.string),
   )
-  decode.success(CreateBookInput(title: title, text: text, author: author))
+  use genre <- decode.optional_field(
+    "genre",
+    None,
+    decode.optional(decode.string),
+  )
+  decode.success(CreateBookInput(
+    title: title,
+    text: text,
+    author: author,
+    genre: genre,
+  ))
 }
 
 fn create_book_handler(req: Request, ctx: Context) -> Response {
@@ -165,6 +186,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
       id: id,
       title: input.title,
       author: input.author,
+      genre: input.genre,
       raw_text: input.text,
       segments_json: segments_json,
       word_count: word_count,
@@ -179,6 +201,7 @@ fn persist_new_book(ctx: Context, input: CreateBookInput) -> Response {
           id: id,
           title: input.title,
           author: input.author,
+          genre: input.genre,
           word_count: word_count,
           sentence_count: sentence_count,
           uploaded_at: uploaded_at,
@@ -206,7 +229,8 @@ fn books_item(req: Request, ctx: Context, id: String) -> Response {
   case req.method {
     Get -> get_book_handler(ctx, id)
     Delete -> delete_book_handler(ctx, id)
-    _ -> wisp.method_not_allowed([Get, Delete])
+    Patch -> metadata.handle_patch(req, ctx, id)
+    _ -> wisp.method_not_allowed([Get, Delete, Patch])
   }
 }
 
@@ -793,38 +817,6 @@ fn user_settings_decoder() -> decode.Decoder(UserSettings) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Render every decode failure on a single line. Reporting only the
-/// first error meant a client missing two fields had to fix one,
-/// re-request, then learn about the second; rolling them all up
-/// removes that round-trip.
-fn describe_decode_errors(errors: List(decode.DecodeError)) -> String {
-  case errors {
-    [] -> "invalid JSON body"
-    _ ->
-      errors
-      |> list.map(describe_decode_error)
-      |> string.join("; ")
-  }
-}
-
-fn describe_decode_error(error: decode.DecodeError) -> String {
-  let decode.DecodeError(expected, found, path) = error
-  let path_str = case path {
-    [] -> "<root>"
-    _ -> string.join(path, ".")
-  }
-  "expected " <> expected <> " at " <> path_str <> " but found " <> found
-}
-
-/// Log a SQLite error with operator-visible context, then return the
-/// generic 500. Centralised so every call site has the same shape
-/// (operation tag plus a structured Sqlight error inspection) and no
-/// future error path can silently drop the trail.
-fn db_error_response(operation: String, error: sqlight.Error) -> Response {
-  wisp.log_error(operation <> " failed: " <> string.inspect(error))
-  wisp.internal_server_error()
-}
 
 /// Word and sentence totals for the stored `books` row. Global indices
 /// are assigned by the segmenter in document reading order starting at

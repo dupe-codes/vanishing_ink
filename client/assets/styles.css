@@ -2015,3 +2015,104 @@ body.vi-reduced-motion .jump-search-result-item {
   font-size: 12px;
   color: var(--vi-fg-muted);
 }
+
+/* Metadata genre tag --------------------------------------------------- */
+
+/* Pill containing the book's genre. Distinct from `.book-author` so the
+ * genre reads as a category badge rather than as another muted line —
+ * a subtle accent border and tight padding keep it visually separate
+ * from the surrounding meta. Hidden when the book has no genre by
+ * collapsing the wrapper (`view_genre_badge` returns `element.none()`
+ * for `None`). */
+.book-genre {
+  margin: 0 0 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.book-genre-tag {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 10px;
+  color: var(--vi-fg-muted);
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Metadata edit (✎) badge --------------------------------------------- */
+
+/* Mirrors `.btn-delete-book` shape but with a less alarming palette —
+ * editing is a routine action, not destructive, so the badge reads as
+ * a quiet affordance instead of an attention-getter. Positioned to the
+ * left of the delete × so the two badges sit side-by-side in the
+ * top-right corner of the card without overlapping. */
+.btn-edit-metadata {
+  position: absolute;
+  top: 6px;
+  right: 42px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.85);
+  border: none;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 1;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 120ms ease, transform 80ms ease;
+}
+
+.btn-edit-metadata:hover,
+.btn-edit-metadata:focus-visible {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+.btn-edit-metadata:active {
+  transform: scale(0.88);
+}
+
+.btn-edit-metadata:focus-visible {
+  outline: 2px solid var(--vi-focus-ring);
+  outline-offset: 2px;
+}
+
+body.vi-light-mode .btn-edit-metadata {
+  background-color: rgba(255, 255, 255, 0.7);
+  color: rgba(44, 36, 32, 0.8);
+}
+
+body.vi-light-mode .btn-edit-metadata:hover,
+body.vi-light-mode .btn-edit-metadata:focus-visible {
+  background-color: rgba(255, 255, 255, 0.9);
+  color: rgba(44, 36, 32, 1);
+}
+
+/* Hero variant — slightly larger to match the hero card scale, mirrors
+ * the `.btn-delete-hero` offsets. */
+.btn-edit-metadata-hero {
+  top: 40px;
+  right: 50px;
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+}
+
+/* Edit-metadata sheet wraps each labeled input in its own `.field`
+ * container so the vertical rhythm stays consistent without leaning on
+ * `<br>` or stray margins. */
+.edit-metadata-field {
+  display: block;
+}

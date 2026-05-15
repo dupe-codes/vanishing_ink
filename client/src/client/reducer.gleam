@@ -46,17 +46,20 @@ import client/engine.{
 }
 import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, ConfirmDelete, EpubFileSelected,
-  EpubParsed, EraseFocused, EraseSentence, ExecuteDelete, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
-  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SelectSearchResult, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
+  CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
+  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
+  FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured,
+  LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured,
+  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
+  SelectSearchResult, SetEditMetadataAuthor, SetEditMetadataGenre,
+  SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
   SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
   SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode,
-  ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu, ToggleSettings,
-  TouchCancel, TouchEnd, TouchStart, Undo, UndoJump, ViewportResized,
+  SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
+  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, UndoJump,
+  ViewportResized,
 }
 import client/navigation
 import client/pagination
@@ -72,6 +75,12 @@ import client/reducer/jump.{
   apply_select_search_result, apply_set_jump_page_input,
   apply_set_jump_search_query, apply_submit_jump_page, apply_toggle_jump_menu,
   apply_undo_jump,
+}
+import client/reducer/metadata.{
+  apply_book_metadata_updated, apply_close_edit_metadata,
+  apply_open_edit_metadata, apply_set_edit_metadata_author,
+  apply_set_edit_metadata_genre, apply_set_edit_metadata_title,
+  apply_submit_edit_metadata,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -231,6 +240,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         books: [meta, ..model.books],
         paste_title: "",
         paste_text: "",
+        paste_author: None,
         paste_submitting: False,
         paste_error: None,
         paste_warning: None,
@@ -404,6 +414,21 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     SetJumpPageInput(value) -> apply_set_jump_page_input(model, value)
 
     SubmitJumpPage -> apply_submit_jump_page(model)
+
+    OpenEditMetadata(id) -> apply_open_edit_metadata(model, id)
+
+    CloseEditMetadata -> apply_close_edit_metadata(model)
+
+    SetEditMetadataTitle(value) -> apply_set_edit_metadata_title(model, value)
+
+    SetEditMetadataAuthor(value) -> apply_set_edit_metadata_author(model, value)
+
+    SetEditMetadataGenre(value) -> apply_set_edit_metadata_genre(model, value)
+
+    SubmitEditMetadata -> apply_submit_edit_metadata(model)
+
+    BookMetadataUpdated(id, result) ->
+      apply_book_metadata_updated(model, id, result)
 
     SetJumpSearchQuery(value) -> apply_set_jump_search_query(model, value)
 
