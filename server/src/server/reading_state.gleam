@@ -63,6 +63,7 @@ fn put_reading_state_handler(
                 sentence_bitset,
                 word_bitset,
                 validated.current_page,
+                validated.percent_progress,
                 validated.updated_at,
               )
           }
@@ -84,12 +85,16 @@ fn validate_reading_state_input(
   use mode <- result.try(validate_mode(input.mode))
   use updated_at <- result.try(validate_updated_at(input.updated_at))
   use current_page <- result.try(validate_current_page(input.current_page))
+  use percent_progress <- result.try(validate_percent_progress(
+    input.percent_progress,
+  ))
   Ok(
     ReadingStateInput(
       ..input,
       mode: mode,
       updated_at: updated_at,
       current_page: current_page,
+      percent_progress: percent_progress,
     ),
   )
 }
@@ -116,6 +121,32 @@ fn validate_current_page(current_page: Int) -> Result(Int, String) {
   }
 }
 
+/// Refuse `percent_progress` values outside `[0.0, 100.0]`. The
+/// client computes the percentage as `(current_page + 1) / total_pages
+/// * 100`, which is mathematically inside the range, but the wire is
+/// untrusted — a future bug (or a hand-crafted PUT) that posted a
+/// negative or > 100 value would otherwise persist a garbage figure
+/// that the library card would happily render. Clamping at the
+/// boundary keeps the on-disk value within the same `[0, 100]` scale
+/// the rest of the surface assumes.
+///
+/// The two range conditions are split into nested `case` arms (rather
+/// than checked with a compound `&&`) so the structure matches the
+/// adjacent validators (`validate_current_page`,
+/// `validate_updated_at`) and aligns with the TigerStyle preference
+/// for single-condition arms — every test the validator runs lives on
+/// its own line and fails to its own error path.
+fn validate_percent_progress(percent_progress: Float) -> Result(Float, String) {
+  case percent_progress >=. 0.0 {
+    False -> Error("percent_progress must be a float in the range [0, 100]")
+    True ->
+      case percent_progress <=. 100.0 {
+        False -> Error("percent_progress must be a float in the range [0, 100]")
+        True -> Ok(percent_progress)
+      }
+  }
+}
+
 fn persist_reading_state(
   ctx: Context,
   id: String,
@@ -123,6 +154,7 @@ fn persist_reading_state(
   sentence_bitset: Option(BitArray),
   word_bitset: Option(BitArray),
   current_page: Int,
+  percent_progress: Float,
   updated_at: String,
 ) -> Response {
   // Existence-check the book first so the FK violation never reaches
@@ -150,6 +182,7 @@ fn persist_reading_state(
             sentence_bitset: sentence_bitset,
             word_bitset: word_bitset,
             current_page: current_page,
+            percent_progress: percent_progress,
             updated_at: updated_at,
           ))
           db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
@@ -219,6 +252,7 @@ fn empty_reading_state(book_id: shared.BookId) -> ReadingState {
     sentence_bitset: None,
     word_bitset: None,
     current_page: 0,
+    percent_progress: 0.0,
     updated_at: None,
   )
 }
@@ -229,6 +263,7 @@ type ReadingStateInput {
     sentence_bitset: Option(String),
     word_bitset: Option(String),
     current_page: Int,
+    percent_progress: Float,
     updated_at: String,
   )
 }
@@ -246,12 +281,23 @@ fn reading_state_input_decoder() -> decode.Decoder(ReadingStateInput) {
     decode.optional(decode.string),
   )
   use current_page <- decode.field("current_page", decode.int)
+  // `optional_field` with `0.0` as the default keeps the API
+  // backwards-compatible during the page-based-progress rollout: an
+  // older client that hasn't been redeployed yet can still PUT a
+  // reading state, and the server will persist `percent_progress = 0`
+  // until the next save from a newer client overwrites it.
+  use percent_progress <- decode.optional_field(
+    "percent_progress",
+    0.0,
+    decode.float,
+  )
   use updated_at <- decode.field("updated_at", decode.string)
   decode.success(ReadingStateInput(
     mode: mode,
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    percent_progress: percent_progress,
     updated_at: updated_at,
   ))
 }

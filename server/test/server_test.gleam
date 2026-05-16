@@ -153,6 +153,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
   )
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
+  use percent_progress <- decode.field("percent_progress", decode.float)
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   // Bitsets in `ReadingState` are `BitArray`, but the wire form is
   // base64. Decoding through the `String` and re-base64-decoding keeps
@@ -165,6 +166,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence,
     word_bitset: word,
     current_page: current_page,
+    percent_progress: percent_progress,
     updated_at: updated_at,
   ))
 }
@@ -398,6 +400,7 @@ pub fn get_reading_state_for_unwritten_book_returns_empty_default_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 0,
+      percent_progress: 0.0,
       updated_at: None,
     )
 }
@@ -420,6 +423,7 @@ pub fn put_reading_state_round_trips_through_http_test() {
       #("sentence_bitset", json.string(bit_array.base64_encode(bytes, True))),
       #("word_bitset", json.null()),
       #("current_page", json.int(5)),
+      #("percent_progress", json.float(60.0)),
       #("updated_at", json.string("2026-05-12T02:00:00Z")),
     ])
 
@@ -440,6 +444,7 @@ pub fn put_reading_state_round_trips_through_http_test() {
       sentence_bitset: Some(bytes),
       word_bitset: None,
       current_page: 5,
+      percent_progress: 60.0,
       // Canonicalised to millisecond precision so all timestamps
       // share width — `parse_iso8601` always emits `.sss`.
       updated_at: Some("2026-05-12T02:00:00.000Z"),
@@ -500,6 +505,7 @@ pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 7,
+      percent_progress: 0.0,
       updated_at: Some("2026-05-12T03:00:00.000Z"),
     )
 
@@ -619,6 +625,160 @@ pub fn put_reading_state_for_missing_book_is_404_test() {
   assert simulate.read_body(response) == "Not found"
 }
 
+/// Round-trip the new page-based `percent_progress` field end-to-end.
+/// The PUT body carries an explicit value, the response echoes the
+/// same value, and a subsequent GET resurfaces it from the
+/// `reading_state.percent_progress` column. Pinning the full
+/// `ReadingState` record (rather than just `.percent_progress`) keeps
+/// the round-trip honest — a silent drop of any other field on either
+/// side of the wire would otherwise slip through. The boundary value
+/// `100.0` is folded into the same test so the validator's
+/// accept-at-upper-bound path is exercised end-to-end alongside the
+/// mid-range `42.5` round-trip.
+pub fn put_reading_state_round_trips_percent_progress_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  // Mid-range value first. The response and the subsequent GET both
+  // pin the *whole* `ReadingState` record, following the precedent of
+  // `put_reading_state_round_trips_through_http_test`: pinning only
+  // `.percent_progress` would let a silent drop of any other field
+  // (current_page, mode, updated_at canonicalisation) slip through.
+  let mid_body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(4)),
+      #("percent_progress", json.float(42.5)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let mid_response = http_put_reading_state(ctx, created.book.id, mid_body)
+  assert mid_response.status == 200
+  let mid_decoded = decode_body(mid_response, reading_state_wire_decoder())
+  let mid_expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 4,
+      percent_progress: 42.5,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert mid_decoded == mid_expected
+
+  let mid_get_response = http_get_reading_state(ctx, created.book.id)
+  let mid_reloaded = decode_body(mid_get_response, reading_state_wire_decoder())
+  assert mid_reloaded == mid_expected
+
+  // Boundary case: `percent_progress == 100.0` is the most natural
+  // value a reader on the last page sends, so it must round-trip
+  // alongside the mid-range case. A later write at the upper bound
+  // overwrites the mid-range row (LWW), so the reload pins the
+  // boundary state — proving the validator accepts the upper bound
+  // and the column stores it back unchanged.
+  let upper_body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(9)),
+      #("percent_progress", json.float(100.0)),
+      #("updated_at", json.string("2026-05-12T03:00:00Z")),
+    ])
+  let upper_response = http_put_reading_state(ctx, created.book.id, upper_body)
+  assert upper_response.status == 200
+  let upper_decoded = decode_body(upper_response, reading_state_wire_decoder())
+  let upper_expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 9,
+      percent_progress: 100.0,
+      updated_at: Some("2026-05-12T03:00:00.000Z"),
+    )
+  assert upper_decoded == upper_expected
+
+  let upper_get_response = http_get_reading_state(ctx, created.book.id)
+  let upper_reloaded =
+    decode_body(upper_get_response, reading_state_wire_decoder())
+  assert upper_reloaded == upper_expected
+}
+
+/// A PUT that omits `percent_progress` lands with the schema-default
+/// of `0.0`. The optional-field decode on the server is what keeps an
+/// older client that has not been redeployed yet from 400-ing on
+/// every save — the value defaults to the same `0.0` the schema's
+/// `DEFAULT 0.0` would inject for an `ALTER TABLE`-upgraded row.
+pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  // The PUT body omits `percent_progress` entirely (the
+  // `put_reading_state_body` helper predates the field). Pinning the
+  // whole `ReadingState` record proves that (a) the optional-field
+  // decode injects `0.0`, and (b) no other field is mutated as a
+  // side-effect of the default landing.
+  let body = put_reading_state_body("manual", 3, "2026-05-12T02:00:00Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  let expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 3,
+      percent_progress: 0.0,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert decoded == expected
+
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let reloaded = decode_body(get_response, reading_state_wire_decoder())
+  assert reloaded == expected
+}
+
+/// A PUT with a `percent_progress` outside `[0, 100]` is refused with
+/// a 400 — the column stores a `REAL` and the schema would happily
+/// accept a negative or oversize value, but the validator at the
+/// handler boundary keeps the persisted value within the same range
+/// the rest of the surface assumes.
+pub fn put_reading_state_rejects_out_of_range_percent_progress_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let too_high =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("percent_progress", json.float(150.0)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let high_response = http_put_reading_state(ctx, created.book.id, too_high)
+  assert high_response.status == 400
+  assert string.contains(simulate.read_body(high_response), "percent_progress")
+
+  let too_low =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("percent_progress", json.float(-0.1)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let low_response = http_put_reading_state(ctx, created.book.id, too_low)
+  assert low_response.status == 400
+  assert string.contains(simulate.read_body(low_response), "percent_progress")
+}
+
 // ---------------------------------------------------------------------------
 // Reading state — SQL layer
 // ---------------------------------------------------------------------------
@@ -651,6 +811,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      percent_progress: 30.0,
       updated_at: "2026-05-12T02:00:00Z",
     )
 
@@ -664,6 +825,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 99,
+      percent_progress: 99.0,
       updated_at: "2026-05-12T01:00:00Z",
     )
 
@@ -678,6 +840,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      percent_progress: 30.0,
       updated_at: Some("2026-05-12T02:00:00Z"),
     )
 
@@ -690,6 +853,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      percent_progress: 70.0,
       updated_at: "2026-05-12T03:00:00Z",
     )
   let assert Ok(Some(state)) = db.get_reading_state(ctx.db, "book-1")
@@ -700,6 +864,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      percent_progress: 70.0,
       updated_at: Some("2026-05-12T03:00:00Z"),
     )
 }
@@ -1314,7 +1479,7 @@ pub fn get_book_stats_for_book_with_no_sessions_returns_zero_record_test() {
     )
   assert response.status == 200
   let decoded = decode_body(response, stats.book_stats_decoder())
-  assert decoded == BookStats(0, 0, 0, 0)
+  assert decoded == BookStats(0, 0, 0, 0, 0.0)
 }
 
 pub fn get_book_stats_for_missing_book_is_404_test() {
@@ -1325,6 +1490,74 @@ pub fn get_book_stats_for_missing_book_is_404_test() {
       ctx,
     )
   assert response.status == 404
+}
+
+/// The library card needs `BookStats.percent_progress` to render the
+/// page-based progress percentage without re-deriving from the
+/// session counters. The SQL query for `get_book_stats` joins
+/// `reading_state` against `reading_sessions` so the field arrives
+/// alongside the aggregates; this test pins the seam by writing a
+/// reading-state row, recording a session, and asserting both the
+/// scalar query (`GET /api/books/:id/stats`) and the bulk listing
+/// (`GET /api/stats/books`) surface the persisted percentage.
+pub fn book_stats_surfaces_percent_progress_from_reading_state_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let id = created.book.id
+
+  // Stamp `reading_state.percent_progress` to a non-default value.
+  let state_body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(3)),
+      #("percent_progress", json.float(73.5)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let _ = http_put_reading_state(ctx, id, state_body)
+
+  // One recorded session so the book appears in the bulk listing too
+  // (which groups by `reading_sessions.book_id`).
+  let _ = http_post_session(ctx, id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      id,
+      "s1",
+      end_session_body("2026-05-12T10:30:00Z", 100, 0, 5, 1800),
+    )
+
+  // Pin the *whole* `BookStats` record on both the scalar and bulk
+  // surfaces. The session-aggregate fields come from
+  // `reading_sessions` (the single recorded session above), and
+  // `percent_progress` rides in from the `reading_state` join — so
+  // the full assertion proves both halves of the JOIN seam at once
+  // and catches a silent drop of any other field.
+  let expected_stats =
+    BookStats(
+      total_words_read: 100,
+      total_words_skipped: 0,
+      total_duration_seconds: 1800,
+      session_count: 1,
+      percent_progress: 73.5,
+    )
+
+  let scalar =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/books/" <> id <> "/stats"),
+      ctx,
+    )
+  assert decode_body(scalar, stats.book_stats_decoder()) == expected_stats
+
+  let listing =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/books"),
+      ctx,
+    )
+  let entries =
+    decode_body(listing, decode.list(stats.book_stats_entry_decoder()))
+  assert entries == [#(id, expected_stats)]
 }
 
 pub fn get_book_stats_aggregates_across_sessions_test() {
@@ -1358,12 +1591,16 @@ pub fn get_book_stats_aggregates_across_sessions_test() {
     )
   assert response.status == 200
   let decoded = decode_body(response, stats.book_stats_decoder())
+  // `percent_progress` is `0.0` because no reading-state row has been
+  // PUT for this book — sessions alone do not stamp the progress
+  // column. The next reader-side save would overwrite the default.
   assert decoded
     == BookStats(
       total_words_read: 150,
       total_words_skipped: 20,
       total_duration_seconds: 2700,
       session_count: 2,
+      percent_progress: 0.0,
     )
 }
 
@@ -1440,8 +1677,8 @@ pub fn get_library_book_stats_returns_per_book_entries_test() {
   // out of SQLite — different schema migrations could shuffle the
   // GROUP BY's natural ordering.
   let sorted = list.sort(entries, fn(a, b) { string.compare(a.0, b.0) })
-  let book_a_stats = BookStats(7, 1, 1800, 1)
-  let book_b_stats = BookStats(3, 0, 900, 1)
+  let book_a_stats = BookStats(7, 1, 1800, 1, 0.0)
+  let book_b_stats = BookStats(3, 0, 900, 1, 0.0)
   let expected = case string.compare(book_a.book.id, book_b.book.id) {
     order.Lt -> [
       #(book_a.book.id, book_a_stats),
@@ -1965,6 +2202,90 @@ pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
   let assert Ok([#("legacy-1", None)]) =
     sqlight.query(
       "SELECT id, genre FROM books;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
+
+  let assert Ok(_) = sqlight.close(conn)
+}
+
+pub fn ensure_reading_state_percent_progress_column_migrates_pre_percent_progress_schema_test() {
+  // Mirror the precedent set by `ensure_books_genre_column_migrates_
+  // pre_genre_schema_test` (server/test/server_test.gleam:2134). The
+  // ALTER TABLE branch of `ensure_reading_state_percent_progress_
+  // column` only fires against tables created before the column
+  // landed; every test that goes through `db.initialize` on a fresh
+  // `:memory:` database picks the column up from the inline
+  // `CREATE TABLE IF NOT EXISTS` and never drives the migration. This
+  // test hand-builds a pre-percent_progress `reading_state` table,
+  // seeds a row, runs the migration, and asserts both the column
+  // appears AND the seeded row's `percent_progress` reads back as the
+  // schema default `0.0` (not a backfill, not an error). Idempotency
+  // is then asserted: a second call leaves the row's `0.0` undisturbed.
+  let assert Ok(conn) = sqlight.open(":memory:")
+  // The pre-percent_progress schema omits the new column and the FK
+  // reference (FK enforcement is off by default, so a hand-built
+  // standalone `reading_state` table is sufficient for the migration
+  // path under test).
+  let pre_percent_progress_schema =
+    "CREATE TABLE reading_state (
+       book_id TEXT PRIMARY KEY,
+       mode TEXT NOT NULL DEFAULT 'manual',
+       sentence_bitset BLOB,
+       word_bitset BLOB,
+       current_page INTEGER NOT NULL DEFAULT 0,
+       updated_at TEXT NOT NULL
+     );"
+  let assert Ok(_) = sqlight.exec(pre_percent_progress_schema, conn)
+
+  // Seed a row at the pre-percent_progress schema so the migration
+  // runs against non-empty data. The contract under test: the seeded
+  // row's `percent_progress` must default to `0.0` (the column's
+  // `NOT NULL DEFAULT 0.0`) after the ALTER TABLE ADD COLUMN.
+  let seed_row_sql =
+    "INSERT INTO reading_state (book_id, mode, sentence_bitset, word_bitset,
+      current_page, updated_at)
+     VALUES ('legacy-1', 'manual', NULL, NULL, 3, '2026-04-01T12:00:00Z');"
+  let assert Ok(_) = sqlight.exec(seed_row_sql, conn)
+
+  // Sanity: the table starts without `percent_progress`. SELECT must
+  // fail with a column-missing error — confirms the seed schema is
+  // genuinely pre-percent_progress.
+  let assert Error(_) =
+    sqlight.exec("SELECT percent_progress FROM reading_state;", conn)
+
+  // First run: the migration adds the column.
+  let assert Ok(Nil) = db.ensure_reading_state_percent_progress_column(conn)
+  let assert Ok(_) =
+    sqlight.exec("SELECT percent_progress FROM reading_state;", conn)
+
+  // The pre-existing row's `percent_progress` reads back as `0.0` —
+  // the column default lands the floor on every existing row, and the
+  // seeded row is still there with its original `book_id` and
+  // `current_page`.
+  let row_decoder = {
+    use book_id <- decode.field(0, decode.string)
+    use current_page <- decode.field(1, decode.int)
+    use percent_progress <- decode.field(2, decode.float)
+    decode.success(#(book_id, current_page, percent_progress))
+  }
+  let assert Ok([#("legacy-1", 3, 0.0)]) =
+    sqlight.query(
+      "SELECT book_id, current_page, percent_progress FROM reading_state;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
+
+  // Second run: the PRAGMA-style column probe sees `percent_progress`
+  // already present and skips the ALTER. Still `Ok(Nil)`, still
+  // leaves the column intact, and the seeded row's `0.0` is
+  // undisturbed.
+  let assert Ok(Nil) = db.ensure_reading_state_percent_progress_column(conn)
+  let assert Ok([#("legacy-1", 3, 0.0)]) =
+    sqlight.query(
+      "SELECT book_id, current_page, percent_progress FROM reading_state;",
       on: conn,
       with: [],
       expecting: row_decoder,

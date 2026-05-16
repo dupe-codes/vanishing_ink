@@ -205,6 +205,16 @@ pub type ReadingState {
     sentence_bitset: Option(String),
     word_bitset: Option(String),
     current_page: Int,
+    /// Page-based progress percentage in `[0, 100]`. The server stores
+    /// the value the client last PUT (computed as
+    /// `(current_page + 1) / total_pages * 100`) and echoes it back on
+    /// the read; the GET handler stays a pure mirror of the on-disk
+    /// row, no derivation. The persisted number is
+    /// *viewport-of-last-save* — whatever pagination the saving
+    /// viewport happened to produce — not viewport-agnostic; see
+    /// `state/helpers.gleam:percent_progress` for the helper-purity
+    /// vs system-purity distinction.
+    percent_progress: Float,
     updated_at: Option(String),
   )
 }
@@ -222,6 +232,7 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   )
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
+  use percent_progress <- decode.field("percent_progress", decode.float)
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   decode.success(ReadingState(
     book_id: book_id,
@@ -229,6 +240,7 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    percent_progress: percent_progress,
     updated_at: updated_at,
   ))
 }
