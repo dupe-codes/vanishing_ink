@@ -1194,6 +1194,55 @@ pub fn put_session_round_trips_through_http_test() {
     )
 }
 
+/// The client's `pagehide`/`sendBeacon` durability path flushes the
+/// closing counters by POSTing to the item endpoint — `sendBeacon`
+/// only supports POST, so the dispatcher in `server/sessions.gleam`
+/// routes Post → put_session_handler. Pin both the 200 status and
+/// the persisted row shape so a future edit that removes the Post
+/// arm fails this test loudly rather than silently breaking the
+/// beacon path.
+pub fn post_session_update_round_trips_through_http_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let _ =
+    http_post_session(ctx, created.book.id, "session-1", "2026-05-12T10:00:00Z")
+
+  let body = end_session_body("2026-05-12T10:05:00Z", 120, 30, 4, 300)
+  let response =
+    http_post_session_update(ctx, created.book.id, "session-1", body)
+  assert response.status == 200
+
+  let decoded = decode_body(response, reading_session_wire_decoder())
+  assert decoded
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: Some("2026-05-12T10:05:00.000Z"),
+      words_read: 120,
+      words_skipped: 30,
+      pages_turned: 4,
+      duration_seconds: 300,
+    )
+
+  // And the row truly persisted — fetching the session from the DB
+  // returns the same closed shape. A handler that 200s without
+  // writing would slip past the status-only assertion above.
+  let assert Ok(Some(persisted)) =
+    db_sessions.get_reading_session(ctx.db, "session-1")
+  assert persisted
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: Some("2026-05-12T10:05:00.000Z"),
+      words_read: 120,
+      words_skipped: 30,
+      pages_turned: 4,
+      duration_seconds: 300,
+    )
+}
+
 pub fn put_session_with_mismatched_book_id_is_404_test() {
   use ctx <- with_context
   let book_a = http_create_book(ctx, "A", None, sample_text)
@@ -2009,6 +2058,24 @@ fn http_put_session(
 ) -> wisp.Response {
   simulate.browser_request(
     http.Put,
+    "/api/books/" <> book_id <> "/sessions/" <> session_id,
+  )
+  |> simulate.json_body(body)
+  |> router.handle_request(ctx)
+}
+
+/// POST the closing payload to the per-session item endpoint. The
+/// dispatcher routes `Post` → `put_session_handler` so the
+/// `navigator.sendBeacon` durability path (POST-only) can flush the
+/// closing counters; this helper exercises that same wire contract.
+fn http_post_session_update(
+  ctx: web.Context,
+  book_id: String,
+  session_id: String,
+  body: json.Json,
+) -> wisp.Response {
+  simulate.browser_request(
+    http.Post,
     "/api/books/" <> book_id <> "/sessions/" <> session_id,
   )
   |> simulate.json_body(body)
