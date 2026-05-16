@@ -639,7 +639,12 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
   use ctx <- with_context
   let created = http_create_book(ctx, "Title", None, sample_text)
 
-  let body =
+  // Mid-range value first. The response and the subsequent GET both
+  // pin the *whole* `ReadingState` record, following the precedent of
+  // `put_reading_state_round_trips_through_http_test`: pinning only
+  // `.percent_progress` would let a silent drop of any other field
+  // (current_page, mode, updated_at canonicalisation) slip through.
+  let mid_body =
     json.object([
       #("mode", json.string("manual")),
       #("sentence_bitset", json.null()),
@@ -648,14 +653,59 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
       #("percent_progress", json.float(42.5)),
       #("updated_at", json.string("2026-05-12T02:00:00Z")),
     ])
-  let response = http_put_reading_state(ctx, created.book.id, body)
-  assert response.status == 200
-  let decoded = decode_body(response, reading_state_wire_decoder())
-  assert decoded.percent_progress == 42.5
+  let mid_response = http_put_reading_state(ctx, created.book.id, mid_body)
+  assert mid_response.status == 200
+  let mid_decoded = decode_body(mid_response, reading_state_wire_decoder())
+  let mid_expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 4,
+      percent_progress: 42.5,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert mid_decoded == mid_expected
 
-  let get_response = http_get_reading_state(ctx, created.book.id)
-  let reloaded = decode_body(get_response, reading_state_wire_decoder())
-  assert reloaded.percent_progress == 42.5
+  let mid_get_response = http_get_reading_state(ctx, created.book.id)
+  let mid_reloaded = decode_body(mid_get_response, reading_state_wire_decoder())
+  assert mid_reloaded == mid_expected
+
+  // Boundary case: `percent_progress == 100.0` is the most natural
+  // value a reader on the last page sends, so it must round-trip
+  // alongside the mid-range case. A later write at the upper bound
+  // overwrites the mid-range row (LWW), so the reload pins the
+  // boundary state — proving the validator accepts the upper bound
+  // and the column stores it back unchanged.
+  let upper_body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(9)),
+      #("percent_progress", json.float(100.0)),
+      #("updated_at", json.string("2026-05-12T03:00:00Z")),
+    ])
+  let upper_response = http_put_reading_state(ctx, created.book.id, upper_body)
+  assert upper_response.status == 200
+  let upper_decoded = decode_body(upper_response, reading_state_wire_decoder())
+  let upper_expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 9,
+      percent_progress: 100.0,
+      updated_at: Some("2026-05-12T03:00:00.000Z"),
+    )
+  assert upper_decoded == upper_expected
+
+  let upper_get_response = http_get_reading_state(ctx, created.book.id)
+  let upper_reloaded =
+    decode_body(upper_get_response, reading_state_wire_decoder())
+  assert upper_reloaded == upper_expected
 }
 
 /// A PUT that omits `percent_progress` lands with the schema-default
@@ -667,11 +717,30 @@ pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
   use ctx <- with_context
   let created = http_create_book(ctx, "Title", None, sample_text)
 
+  // The PUT body omits `percent_progress` entirely (the
+  // `put_reading_state_body` helper predates the field). Pinning the
+  // whole `ReadingState` record proves that (a) the optional-field
+  // decode injects `0.0`, and (b) no other field is mutated as a
+  // side-effect of the default landing.
   let body = put_reading_state_body("manual", 3, "2026-05-12T02:00:00Z")
   let response = http_put_reading_state(ctx, created.book.id, body)
   assert response.status == 200
   let decoded = decode_body(response, reading_state_wire_decoder())
-  assert decoded.percent_progress == 0.0
+  let expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 3,
+      percent_progress: 0.0,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert decoded == expected
+
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let reloaded = decode_body(get_response, reading_state_wire_decoder())
+  assert reloaded == expected
 }
 
 /// A PUT with a `percent_progress` outside `[0, 100]` is refused with
@@ -1459,13 +1528,27 @@ pub fn book_stats_surfaces_percent_progress_from_reading_state_test() {
       end_session_body("2026-05-12T10:30:00Z", 100, 0, 5, 1800),
     )
 
+  // Pin the *whole* `BookStats` record on both the scalar and bulk
+  // surfaces. The session-aggregate fields come from
+  // `reading_sessions` (the single recorded session above), and
+  // `percent_progress` rides in from the `reading_state` join — so
+  // the full assertion proves both halves of the JOIN seam at once
+  // and catches a silent drop of any other field.
+  let expected_stats =
+    BookStats(
+      total_words_read: 100,
+      total_words_skipped: 0,
+      total_duration_seconds: 1800,
+      session_count: 1,
+      percent_progress: 73.5,
+    )
+
   let scalar =
     router.handle_request(
       simulate.browser_request(http.Get, "/api/books/" <> id <> "/stats"),
       ctx,
     )
-  assert decode_body(scalar, stats.book_stats_decoder()).percent_progress
-    == 73.5
+  assert decode_body(scalar, stats.book_stats_decoder()) == expected_stats
 
   let listing =
     router.handle_request(
@@ -1474,8 +1557,7 @@ pub fn book_stats_surfaces_percent_progress_from_reading_state_test() {
     )
   let entries =
     decode_body(listing, decode.list(stats.book_stats_entry_decoder()))
-  let assert [#(_, only_book_stats), ..] = entries
-  assert only_book_stats.percent_progress == 73.5
+  assert entries == [#(id, expected_stats)]
 }
 
 pub fn get_book_stats_aggregates_across_sessions_test() {
