@@ -161,6 +161,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       editing_metadata: None,
       jump_search_query: "",
       jump_search_results: [],
+      sentence_word_indices: dict.new(),
+      speed_trend: [],
     )
 
   // Boot effects:

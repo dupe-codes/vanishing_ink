@@ -67,6 +67,24 @@ pub type LibraryStats {
   )
 }
 
+/// One sample in the reading-speed trend. Returned by
+/// `GET /api/stats/speed` as a list of recent sessions in
+/// reverse-chronological order (most-recent first, mirroring the SQL
+/// `ORDER BY started_at DESC LIMIT N`). The client reverses the list
+/// on render so the rendered polyline reads left-to-right in
+/// chronological order.
+///
+/// * `date` — the session's `started_at` timestamp verbatim. ISO 8601
+///   wall-clock string; the client renders it as a tooltip / x-axis
+///   label only and does not parse it back into a date.
+/// * `wpm` — effective words-per-minute, computed server-side as
+///   `words_read * 60 / duration_seconds` so the client never has to
+///   re-derive the rate. Integer division — fractional rates aren't
+///   meaningful at the visual resolution of a 200×40 sparkline.
+pub type SessionSpeed {
+  SessionSpeed(date: String, wpm: Int)
+}
+
 /// Encode `BookStats` as a JSON object. Field names mirror the record
 /// fields verbatim so the encoder and decoder stay symmetrical — a
 /// drift on either side surfaces in tests rather than as a silent
@@ -163,6 +181,24 @@ pub fn library_stats_decoder() -> decode.Decoder(LibraryStats) {
     books_completed: books_completed,
     current_streak_days: current_streak_days,
   ))
+}
+
+/// Encode a `SessionSpeed` sample as a JSON object. Field names mirror
+/// the record fields verbatim so the encoder and decoder stay
+/// symmetrical — a drift on either side surfaces in tests rather than
+/// as a silent shape mismatch at runtime.
+pub fn session_speed_to_json(sample: SessionSpeed) -> json.Json {
+  json.object([
+    #("date", json.string(sample.date)),
+    #("wpm", json.int(sample.wpm)),
+  ])
+}
+
+/// Decoder for `SessionSpeed`. Symmetric with `session_speed_to_json`.
+pub fn session_speed_decoder() -> decode.Decoder(SessionSpeed) {
+  use date <- decode.field("date", decode.string)
+  use wpm <- decode.field("wpm", decode.int)
+  decode.success(SessionSpeed(date: date, wpm: wpm))
 }
 
 /// Compute the current reading streak from a list of distinct session

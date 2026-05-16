@@ -68,6 +68,7 @@ import client/msg.{
 import client/numeric
 import client/pagination.{type Page, Page}
 import client/reducer
+import client/reducer/book as book_reducer
 import client/reducer/jump as jump_reducer
 import client/sample
 import client/search.{SearchResult}
@@ -78,6 +79,7 @@ import client/state.{
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
 import client/view
+import client/view/library as library_view
 import client/view/reader as view_reader
 import client/view/stats as stats_view_module
 import shared/stats as shared_stats
@@ -192,6 +194,8 @@ fn empty_model() -> Model {
     editing_metadata: None,
     jump_search_query: "",
     jump_search_results: [],
+    sentence_word_indices: dict.new(),
+    speed_trend: [],
   )
 }
 
@@ -306,6 +310,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       flat_paragraphs: pagination.flatten(payload),
       total_sentence_count: 1,
       total_word_count: 1,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(payload),
     )
 }
 
@@ -1170,6 +1175,71 @@ pub fn update_undo_is_noop_when_stack_empty_test() {
   let #(updated, _effect) = reducer.update(prior, Undo)
 
   assert updated == prior
+}
+
+pub fn update_erase_sentence_projects_words_onto_erased_words_test() {
+  // The Manual-mode word-crediting contract: erasing a sentence
+  // folds the sentence's constituent words into `erased_words` via
+  // the `sentence_word_indices` projection. Without this, the
+  // closing PUT's `words_read` delta would always be zero for
+  // Manual-mode sessions whose erasures are sentence-level. Pinning
+  // the whole field surface (`erased`, `erased_words`, `undo_stack`)
+  // so a future regression on any of the three is caught here.
+  let prior =
+    Model(
+      ..empty_model(),
+      sentence_word_indices: dict.from_list([
+        #(0, [0, 1]),
+        #(1, [2, 3]),
+        #(2, [4]),
+      ]),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(1))
+
+  assert updated.erased == set.from_list([1])
+  assert updated.erased_words == set.from_list([2, 3])
+  assert updated.undo_stack == [1]
+}
+
+pub fn update_undo_removes_projected_words_from_erased_words_test() {
+  // The undo path is symmetric with `apply_erase`: the word indices
+  // that were folded into `erased_words` on the original erase must
+  // be removed on undo so the session's `words_read` counter does
+  // not grow on every erase-then-undo loop.
+  let prior =
+    Model(
+      ..empty_model(),
+      sentence_word_indices: dict.from_list([
+        #(0, [0, 1]),
+        #(1, [2, 3]),
+      ]),
+      erased: set.from_list([0, 1]),
+      erased_words: set.from_list([0, 1, 2, 3]),
+      undo_stack: [1, 0],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, Undo)
+
+  assert updated.erased == set.from_list([0])
+  assert updated.erased_words == set.from_list([0, 1])
+  assert updated.undo_stack == [0]
+}
+
+pub fn update_erase_sentence_with_unknown_index_leaves_words_alone_test() {
+  // A defensive guard: a sentence index with no entry in
+  // `sentence_word_indices` (a synthetic dispatch from outside the
+  // loaded document, or a stale tap after a re-segmentation) still
+  // updates the sentence-level bitset but contributes no word
+  // changes. The reducer must not crash and must not insert any
+  // erroneous word index.
+  let prior = empty_model()
+
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(42))
+
+  assert updated.erased == set.from_list([42])
+  assert updated.erased_words == set.new()
+  assert updated.undo_stack == [42]
 }
 
 // ---------------------------------------------------------------------------
@@ -5423,6 +5493,7 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
       flat_paragraphs: pagination.flatten(text),
       total_sentence_count: 3,
       total_word_count: 5,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(text),
     )
 }
 
@@ -5514,6 +5585,7 @@ pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
       total_sentence_count: 3,
       total_word_count: 5,
       created_book_segments: None,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(text),
     )
 }
 
@@ -7763,6 +7835,167 @@ pub fn library_card_hides_stats_when_no_sessions_test() {
   let model = Model(..library_model(), books: [book])
   let rendered = view.view(model) |> element.to_string
   assert !string.contains(rendered, "class=\"book-stats-line\"")
+}
+
+pub fn library_card_renders_session_count_singular_test() {
+  // A single recorded session reads as "1 session" (singular). The
+  // stats line therefore carries "10m • 1 session" rather than the
+  // misleading plural form a naive `<count> sessions` would produce.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 50,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "1 session")
+  // The pluralised form must not also appear ("1 session" is not a
+  // prefix of "1 sessions" but the substring check would still let
+  // through a future formatter that wrote "1 sessions" — pin both.)
+  assert !string.contains(rendered, "1 sessions")
+}
+
+pub fn library_card_renders_session_count_plural_test() {
+  // Multiple sessions render as "N sessions". The book is incomplete
+  // (50% covered) so the ETA also appears alongside the count, but
+  // this test pins the plural form in isolation.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 0,
+            total_duration_seconds: 600,
+            session_count: 4,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "4 sessions")
+}
+
+pub fn library_card_renders_eta_when_book_incomplete_test() {
+  // A 100-word book with 50 words read in 600 seconds (12 wpm) and 0
+  // words skipped — 50 words remain at the same pace, so ETA is
+  // 50 * 600 / 50 = 600 seconds = 10m. The ETA suffix appends to the
+  // stats line as "• ~10m left".
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 0,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "~10m left")
+}
+
+pub fn library_card_hides_eta_when_book_complete_test() {
+  // A book whose `words_read + words_skipped >= word_count` is
+  // complete; ETA is meaningless and must not render.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 60,
+            total_words_skipped: 40,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert !string.contains(rendered, "left")
+}
+
+pub fn estimate_remaining_returns_none_when_complete_test() {
+  // Pin the helper directly so a future regression in the view layer
+  // cannot mask a regression in the predicate.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 100,
+      total_words_skipped: 0,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_none_when_zero_words_read_test() {
+  // A reader who only Lock-In skipped — `total_words_read` is zero so
+  // dividing by it would either crash or produce a meaningless rate.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 0,
+      total_words_skipped: 50,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_none_when_zero_duration_test() {
+  // A degenerate stats record where duration is zero — the book has
+  // been touched but no time elapsed (or the data was malformed).
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 50,
+      total_words_skipped: 0,
+      total_duration_seconds: 0,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_some_for_normal_case_test() {
+  // 50 words read in 600s, 50 remain → 50 * 600 / 50 = 600s = 10m.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 50,
+      total_words_skipped: 0,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == Some("~10m left")
+}
+
+pub fn format_session_count_singular_plural_examples_test() {
+  assert library_view.format_session_count(1) == "1 session"
+  assert library_view.format_session_count(2) == "2 sessions"
+  assert library_view.format_session_count(0) == "0 sessions"
 }
 
 pub fn stats_format_duration_examples_test() {

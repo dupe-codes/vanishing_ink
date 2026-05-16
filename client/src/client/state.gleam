@@ -70,7 +70,7 @@ import client/types.{
   UserSettings,
 }
 import shared/segmenter.{type SegmentedText}
-import shared/stats.{type BookStats, type LibraryStats}
+import shared/stats.{type BookStats, type LibraryStats, type SessionSpeed}
 
 // ---------------------------------------------------------------------------
 // Undo
@@ -816,6 +816,30 @@ pub type Model {
     /// `search.jump_search_result_limit`. Cleared alongside
     /// `jump_search_query` on every reset point.
     jump_search_results: List(SearchResult),
+    /// Reverse index from `Sentence.global_index` to the list of
+    /// `Word.global_index` values contained in that sentence.
+    /// Populated once on `apply_text_load` by walking the
+    /// `SegmentedText` tree; consulted by `apply_erase` so a
+    /// Manual-mode sentence erase projects onto the underlying word
+    /// bitset, which is what the reading-session lifecycle counts
+    /// when it computes `words_read` for the closing PUT. Without
+    /// this projection, a Manual session that erased entire sentences
+    /// would report zero words read (the closing PUT counts
+    /// `set.size(erased_words)`, and sentence-only erasures never
+    /// reach that set).
+    ///
+    /// Reset alongside `text` / `flat_paragraphs` on every fresh book
+    /// load — the indices are absolute to the loaded document and
+    /// must not bleed across book switches.
+    sentence_word_indices: Dict(Int, List(Int)),
+    /// Cached recent reading-speed snapshot for the library stats
+    /// sparkline. One entry per recent session, oldest at the head
+    /// of the list so the line in the SVG renders left-to-right in
+    /// chronological order. Populated by the `fetch_speed_trend`
+    /// effect chained off `apply_toggle_stats_view`; cleared back
+    /// to `[]` on the same fetch path's error branch so a stale
+    /// snapshot never paints the new overlay.
+    speed_trend: List(SessionSpeed),
   )
 }
 

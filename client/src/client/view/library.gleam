@@ -410,7 +410,9 @@ fn view_book_card(
 /// Progress is reported as a percentage of `words_read + words_skipped`
 /// against the book's `word_count`; the time component uses the same
 /// formatter as the library-wide stats overlay so the two surfaces
-/// speak in one vocabulary.
+/// speak in one vocabulary. The session count and ETA append to the
+/// same `•`-delimited line so the card stays a single row of muted
+/// metadata rather than fragmenting into multiple lines.
 fn book_stats_summary(
   library_book_stats: Dict(String, BookStats),
   book: BookMeta,
@@ -423,11 +425,75 @@ fn book_stats_summary(
         _ -> {
           let pct = progress_percentage(stats, book.word_count)
           let time = stats_view.format_duration(stats.total_duration_seconds)
+          let sessions = format_session_count(stats.session_count)
+          let eta_suffix = case estimate_remaining(stats, book.word_count) {
+            None -> ""
+            Some(eta) -> " • " <> eta
+          }
           html.div([attribute.class("book-stats-line")], [
-            html.text(int.to_string(pct) <> "% • " <> time),
+            html.text(
+              int.to_string(pct)
+              <> "% • "
+              <> time
+              <> " • "
+              <> sessions
+              <> eta_suffix,
+            ),
           ])
         }
       }
+  }
+}
+
+/// Format the session count as `"1 session"` (singular) or `"N sessions"`
+/// (plural / zero). The zero branch is unreachable from `book_stats_summary`
+/// — the caller already short-circuits on `session_count == 0` — but the
+/// helper handles it cleanly so a future caller that wants the raw label
+/// does not have to special-case the empty case.
+pub fn format_session_count(count: Int) -> String {
+  case count {
+    1 -> "1 session"
+    _ -> int.to_string(count) <> " sessions"
+  }
+}
+
+/// Estimate the time remaining to finish the book at the reader's
+/// current pace. Returns `None` for edge cases where the projection
+/// has no meaning:
+///
+/// * `total_word_count` is zero — the book has no words, ETA is
+///   meaningless.
+/// * The book is already complete (`covered >= total_word_count`).
+/// * `total_words_read` is zero — the reader has not actually read
+///   anything, only skipped via Lock-In jumps. Computing speed from
+///   a zero numerator would either divide by zero or produce a
+///   meaningless `0 / duration` rate.
+/// * `total_duration_seconds` is zero — no time has elapsed, so no
+///   rate can be computed.
+///
+/// `total_words_read` (not `covered`) drives the speed denominator so
+/// Lock-In jumps don't inflate apparent reading speed — a reader who
+/// skipped 50k words in 1 minute has not "read" at 3M wpm.
+pub fn estimate_remaining(
+  stats: BookStats,
+  total_word_count: Int,
+) -> Option(String) {
+  let covered = stats.total_words_read + stats.total_words_skipped
+  let remaining = total_word_count - covered
+  case
+    total_word_count,
+    remaining,
+    stats.total_words_read,
+    stats.total_duration_seconds
+  {
+    0, _, _, _ -> None
+    _, r, _, _ if r <= 0 -> None
+    _, _, 0, _ -> None
+    _, _, _, 0 -> None
+    _, r, words_read, duration_seconds -> {
+      let eta_seconds = r * duration_seconds / words_read
+      Some("~" <> stats_view.format_duration(eta_seconds) <> " left")
+    }
   }
 }
 

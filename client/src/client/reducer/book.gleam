@@ -6,9 +6,11 @@
 //// limit and so the "book state lifecycle" axis of change lives
 //// behind one module boundary.
 
+import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/float
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set
 import gleam/string
@@ -224,7 +226,28 @@ pub fn apply_text_load(model: Model, text: SegmentedText) -> Model {
     jump_page_input: "",
     jump_search_query: "",
     jump_search_results: [],
+    sentence_word_indices: build_sentence_word_indices(text),
   )
+}
+
+/// Project a `SegmentedText` tree onto a flat `Dict` keyed by
+/// `Sentence.global_index` whose value is the list of
+/// `Word.global_index` entries contained in that sentence. Built once
+/// at text-load time so Manual-mode sentence erases can stamp the
+/// matching word indices into `erased_words` in constant time — see
+/// `client/reducer/touch.apply_erase`. The list order is left as the
+/// segmenter produced it (in-sentence reading order) so the projection
+/// is a faithful round-trip of the tree.
+pub fn build_sentence_word_indices(
+  text: SegmentedText,
+) -> dict.Dict(Int, List(Int)) {
+  text.chapters
+  |> list.flat_map(fn(chapter) { chapter.paragraphs })
+  |> list.flat_map(fn(paragraph) { paragraph.sentences })
+  |> list.map(fn(sentence) {
+    #(sentence.global_index, list.map(sentence.words, fn(w) { w.global_index }))
+  })
+  |> dict.from_list
 }
 
 /// Tear down the reader and return to the library. Stops any
@@ -286,6 +309,11 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       jump_page_input: "",
       jump_search_query: "",
       jump_search_results: [],
+      // Drop the per-book word-index projection — the indices are
+      // absolute to the outgoing book's segmenter output and have no
+      // meaning once `text: None` lands. Re-populated on the next
+      // `apply_text_load`.
+      sentence_word_indices: dict.new(),
       // Returning to the library re-pins the four overridable fields
       // to the global defaults so the settings panel — which can be
       // opened from the library appbar — shows the user-wide
