@@ -26,7 +26,6 @@ import gleam/string
 import server/clock
 import server/db
 import server/reading_state
-import server/router/helpers.{db_error_response, describe_decode_errors}
 import server/router/metadata
 import server/sessions
 import server/types.{
