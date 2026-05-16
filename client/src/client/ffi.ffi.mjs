@@ -632,17 +632,27 @@ export function add_visibility_listener(callback) {
 let session_snapshot = null;
 
 /**
- * Stamp or clear the session snapshot slot. An empty `url` clears the
- * slot so the next `pagehide` is a no-op — used by
- * `apply_end_session` after the normal-close PUT has been queued
- * through the regular fetch path.
+ * Stamp or clear the session snapshot slot. Both `url` and `body`
+ * empty clears the slot — used by `refresh_session_snapshot` when no
+ * session is in flight. Either-empty (one populated, the other
+ * blank) is treated as a programming error: clearing on either-empty
+ * would let a future caller who passed a non-empty url with an empty
+ * body silently nuke the snapshot. Require both fields populated
+ * before stamping, both empty before clearing.
  *
  * @param {string} url
  * @param {string} body
  */
 export function set_session_snapshot(url, body) {
-  if (url === "" || body === "") {
+  if (url === "" && body === "") {
     session_snapshot = null;
+    return;
+  }
+  if (url === "" || body === "") {
+    // Refuse the half-formed pair rather than guessing. The Gleam
+    // caller (`refresh_session_snapshot`) only ever passes both
+    // populated or both empty; anything else is a bug at the call
+    // site that an undefined-behaviour clear would mask.
     return;
   }
   session_snapshot = { url, body };
