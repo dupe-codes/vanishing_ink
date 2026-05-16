@@ -7945,6 +7945,8 @@ pub fn library_edit_metadata_sheet_renders_when_open_test() {
   // sheet starts pre-filled.
   assert string.contains(rendered, "value=\"Frank Herbert\"")
   assert string.contains(rendered, "value=\"Sci-Fi\"")
+}
+
 pub fn update_toggle_jump_menu_clears_search_state_test() {
   // Closing the menu wipes the search query and cached results so a
   // half-typed query does not pre-populate the next open, and a
