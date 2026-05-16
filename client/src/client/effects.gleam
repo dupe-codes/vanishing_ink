@@ -36,6 +36,7 @@ import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
   page_content_id,
 }
+import client/state/helpers
 import client/types.{type BookSettings, type UserSettings}
 
 // ---------------------------------------------------------------------------
@@ -239,6 +240,11 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
             ),
           ),
           #("current_page", json.int(model.current_page)),
+          // `helpers.progress_percentage` is the canonical reader-side
+          // page-based progress computation; sending it here keeps the
+          // server view of progress in lock-step with the bar the
+          // reader sees rendered on screen.
+          #("percent_progress", json.float(helpers.progress_percentage(model))),
           #("updated_at", json.string(ffi.now_iso8601())),
         ])
         |> json.to_string

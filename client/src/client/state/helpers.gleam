@@ -10,13 +10,10 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
-import gleam/set
 
 import client/navigation
 import client/pagination.{type Page}
-import client/state.{
-  type ChapterEntry, type Model, ChapterEntry, Manual, Model, RealTime,
-}
+import client/state.{type ChapterEntry, type Model, ChapterEntry, Model}
 import shared/segmenter.{type SegmentedText}
 
 /// Resolve the opacity string applied to erased sentences. Returns
@@ -62,15 +59,25 @@ pub fn total_counts(text: SegmentedText) -> #(Int, Int) {
   })
 }
 
-/// Reading progress as a percentage, rounded to one decimal place.
+/// Reading progress as a viewport-agnostic page-based percentage,
+/// rounded to one decimal place. Computed as
+/// `(current_page + 1) / total_pages * 100` so a reader on the first
+/// of ten pages reads as 10%, and the last page reads as 100% — the
+/// `+1` reflects that `current_page` is a zero-based index, and the
+/// reader has reached the *end* of that page rather than the start.
 ///
-/// The denominator is read from the cached `total_sentence_count` /
-/// `total_word_count` fields on the model — those fields are
-/// computed once per `TextLoaded` (see `total_counts`) so the
-/// per-render cost here is constant. The previous revision walked
-/// every chapter → paragraph → sentence (and word) on every call,
-/// which compounded badly against the fade engine's ~3 dispatches
-/// per second at 200 WPM plus every settings drag and keystroke.
+/// Reads from cached `current_page` / `total_pages` fields on the
+/// model. The previous revision (the erased-words and -sentences
+/// model) was tightly coupled to the fade / erase mechanic and
+/// drifted away from the reader's actual reading position whenever
+/// they paged ahead without erasing every sentence — the new
+/// computation is viewport-size agnostic and tracks the page turns
+/// the reader is actually making.
+///
+/// Returns `0.0` when `total_pages` is `0` — the cache is reset to
+/// `0` between `TextLoaded` and the first `ParagraphsMeasured`, so
+/// guarding against the divide-by-zero keeps the helper total
+/// during the pagination-pending window.
 ///
 /// `float.to_precision(_, 1)` snaps the result to a single decimal
 /// digit so the serialised `width:<n>%` style is a clean prefix
@@ -79,14 +86,17 @@ pub fn total_counts(text: SegmentedText) -> #(Int, Int) {
 /// truncated value just as faithfully, and the rendered HTML tests
 /// can pin the full value instead of a prefix substring.
 pub fn progress_percentage(model: Model) -> Float {
-  let #(numerator, denominator) = case model.mode {
-    Manual -> #(set.size(model.erased), model.total_sentence_count)
-    RealTime -> #(set.size(model.erased_words), model.total_word_count)
-  }
-  case denominator {
+  // Postcondition invariant: a non-zero `total_pages` yields a
+  // percentage in `(0.0, 100.0]` because `current_page` is clamped
+  // into `[0, total_pages - 1]` by `change_page`, so the numerator
+  // `(current_page + 1)` is in `[1, total_pages]`. The zero-pages
+  // branch returns the literal `0.0`.
+  case model.total_pages {
     0 -> 0.0
-    _ ->
-      int.to_float(numerator) /. int.to_float(denominator) *. 100.0
+    total ->
+      int.to_float(model.current_page + 1)
+      /. int.to_float(total)
+      *. 100.0
       |> float.to_precision(1)
   }
 }

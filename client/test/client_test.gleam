@@ -4714,27 +4714,14 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
   assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
 }
 
-pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
-  // Progress bar fill starts at 0% before any erasure. The fill
-  // element always renders (so the CSS transition has a stable
-  // target to interpolate from) — only its inline width is driven
-  // by the model. With `total_sentence_count` seeded to the
-  // realistic value (the live app gets it from `TextLoaded`), the
-  // numerator drives the fraction to zero on its own — the
-  // denominator is non-zero, but `0 / 3 * 100` still rounds to
-  // `0.0`.
-  let text = two_chapter_text()
-  let flat = pagination.flatten(text)
-  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
-  let model =
-    Model(
-      ..empty_model(),
-      text: Some(text),
-      flat_paragraphs: flat,
-      pages: pages,
-      total_pages: list.length(pages),
-      total_sentence_count: 3,
-    )
+pub fn view_progress_bar_is_zero_when_no_pages_paginated_test() {
+  // Progress bar fill starts at 0% while pagination is pending. The
+  // fill element always renders (so the CSS transition has a stable
+  // target to interpolate from) — only its inline width is driven by
+  // the model. Before `ParagraphsMeasured` lands, `total_pages == 0`
+  // and the page-based numerator has nothing to divide by, so the
+  // helper short-circuits to `0.0`.
+  let model = Model(..empty_model(), total_pages: 0, current_page: 0)
 
   let rendered = view.view(model) |> element.to_string
 
@@ -4744,15 +4731,15 @@ pub fn view_progress_bar_is_zero_when_no_sentences_erased_test() {
   assert string.contains(rendered, "style=\"width:0.0%;\"")
 }
 
-pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
-  // Manual mode: width = erased sentences / total sentences * 100.
-  // `two_chapter_text` has three sentences total; erasing one
-  // resolves to 33.333...%, which `float.to_precision(_, 1)` snaps
-  // to exactly `33.3`. The single-decimal rounding is what lets
+pub fn view_progress_bar_reflects_page_position_test() {
+  // Page-based progress: width = (current_page + 1) / total_pages * 100.
+  // With three pages and `current_page == 0`, the reader has reached
+  // the end of page 1 of 3 → 33.333...%, which `float.to_precision(_, 1)`
+  // snaps to exactly `33.3`. The single-decimal rounding is what lets
   // this test pin the full numeric value rather than a prefix
-  // substring — the previous revision emitted
-  // `width:33.333333333333%` straight out of the float division
-  // and the assertion had to substring-match `33.3`.
+  // substring — the float division alone would emit
+  // `width:33.333333333333%` and force the assertion to substring-
+  // match `33.3`.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -4763,9 +4750,7 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
       flat_paragraphs: flat,
       pages: pages,
       total_pages: list.length(pages),
-      erased: set.from_list([0]),
-      mode: Manual,
-      total_sentence_count: 3,
+      current_page: 0,
     )
 
   let rendered = view.view(model) |> element.to_string
@@ -4774,32 +4759,51 @@ pub fn view_progress_bar_reflects_erased_sentences_in_manual_mode_test() {
   assert string.contains(rendered, "style=\"width:33.3%;\"")
 }
 
-pub fn view_progress_bar_reflects_faded_words_in_realtime_mode_test() {
-  // Real-time mode: width = faded words / total words * 100.
-  // `two_chapter_text` carries five words total; fading two
-  // resolves to exactly 40.0% — a clean denominator so the test
-  // can pin the full numeric value without floating-point
-  // ambiguity. The cached `total_word_count` on the model is what
-  // the progress fraction reads, so the test seeds it explicitly
-  // rather than relying on a `TextLoaded`-shaped derivation.
+pub fn view_progress_bar_reaches_one_hundred_on_last_page_test() {
+  // The last page (`current_page == total_pages - 1`) renders 100%
+  // because the reader has reached the *end* of the book — the `+1`
+  // in the helper reflects that `current_page` is a zero-based index.
+  // Without this contract, the bar would top out at 80% on a 5-page
+  // book and never visibly hit "done", which would silently regress
+  // the central "progress through this book" affordance.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let total = list.length(pages)
   let model =
     Model(
       ..empty_model(),
       text: Some(text),
       flat_paragraphs: flat,
       pages: pages,
-      total_pages: list.length(pages),
-      erased_words: set.from_list([0, 1]),
-      mode: RealTime,
-      total_word_count: 5,
+      total_pages: total,
+      current_page: total - 1,
     )
 
   let rendered = view.view(model) |> element.to_string
 
-  assert string.contains(rendered, "style=\"width:40.0%;\"")
+  assert string.contains(rendered, "style=\"width:100.0%;\"")
+}
+
+pub fn view_progress_bar_is_viewport_agnostic_test() {
+  // Two viewports that paginate the same text into different page
+  // counts should both report the same logical mid-book percentage
+  // for the matching mid-book page. A 4-page viewport at page 1 of 4
+  // (50%) and an 8-page viewport at page 3 of 8 (also 50%) must
+  // render identical bar fills — this is the central invariant of
+  // the page-based model.
+  let four_page_model =
+    Model(..empty_model(), total_pages: 4, current_page: 1)
+  let eight_page_model =
+    Model(..empty_model(), total_pages: 8, current_page: 3)
+
+  let four_page_rendered =
+    view.view(four_page_model) |> element.to_string
+  let eight_page_rendered =
+    view.view(eight_page_model) |> element.to_string
+
+  assert string.contains(four_page_rendered, "style=\"width:50.0%;\"")
+  assert string.contains(eight_page_rendered, "style=\"width:50.0%;\"")
 }
 
 pub fn next_page_refreshes_cached_chapter_title_when_crossing_boundary_test() {
@@ -4871,10 +4875,10 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
   // div must carry `role="progressbar"`, the `aria-valuemin` /
   // `aria-valuemax` bounds, an integer `aria-valuenow` rounded
   // from the inline-style float, and a human label. The same
-  // 33.3% scenario as the manual-mode rendering test (one of three
-  // sentences erased) rounds to a whole-percent `aria-valuenow`
-  // of `33`. The substring assertions match the rendered attribute
-  // form rather than encoding a particular Lustre attribute order.
+  // 33.3% scenario as the page-position rendering test (page 1 of 3)
+  // rounds to a whole-percent `aria-valuenow` of `33`. The substring
+  // assertions match the rendered attribute form rather than
+  // encoding a particular Lustre attribute order.
   let text = two_chapter_text()
   let flat = pagination.flatten(text)
   let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
@@ -4885,9 +4889,7 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
       flat_paragraphs: flat,
       pages: pages,
       total_pages: list.length(pages),
-      erased: set.from_list([0]),
-      mode: Manual,
-      total_sentence_count: 3,
+      current_page: 0,
     )
 
   let rendered = view.view(model) |> element.to_string
@@ -7745,7 +7747,7 @@ pub fn fetch_book_stats_result_drops_response_when_active_book_changed_test() {
   let prior =
     Model(..empty_model(), view: Reader, active_book_id: Some("book-b"))
   let payload =
-    "{\"total_words_read\":1,\"total_words_skipped\":0,\"total_duration_seconds\":1,\"session_count\":1}"
+    "{\"total_words_read\":1,\"total_words_skipped\":0,\"total_duration_seconds\":1,\"session_count\":1,\"percent_progress\":0.0}"
   let #(updated, _effect) =
     reducer.update(prior, msg.FetchBookStatsResult("book-a", Ok(payload)))
   assert updated.book_stats == None
@@ -7753,15 +7755,17 @@ pub fn fetch_book_stats_result_drops_response_when_active_book_changed_test() {
 
 pub fn fetch_library_book_stats_result_builds_dict_test() {
   let payload =
-    "[{\"book_id\":\"a\",\"total_words_read\":7,\"total_words_skipped\":1,\"total_duration_seconds\":1800,\"session_count\":1},{\"book_id\":\"b\",\"total_words_read\":3,\"total_words_skipped\":0,\"total_duration_seconds\":900,\"session_count\":1}]"
+    "[{\"book_id\":\"a\",\"total_words_read\":7,\"total_words_skipped\":1,\"total_duration_seconds\":1800,\"session_count\":1,\"percent_progress\":42.0},{\"book_id\":\"b\",\"total_words_read\":3,\"total_words_skipped\":0,\"total_duration_seconds\":900,\"session_count\":1,\"percent_progress\":17.5}]"
   let #(updated, _effect) =
     reducer.update(empty_model(), msg.FetchLibraryBookStatsResult(Ok(payload)))
   assert dict.size(updated.library_book_stats) == 2
   let assert Ok(stats_a) = dict.get(updated.library_book_stats, "a")
   assert stats_a.total_words_read == 7
   assert stats_a.session_count == 1
+  assert stats_a.percent_progress == 42.0
   let assert Ok(stats_b) = dict.get(updated.library_book_stats, "b")
   assert stats_b.total_duration_seconds == 900
+  assert stats_b.percent_progress == 17.5
 }
 
 // ---------------------------------------------------------------------------
@@ -7821,13 +7825,17 @@ pub fn library_card_renders_book_stats_summary_when_available_test() {
             total_words_skipped: 50,
             total_duration_seconds: 600,
             session_count: 1,
+            // Page-based progress now rides on the server value; the
+            // library card reads it verbatim rather than re-deriving
+            // from `words_read + words_skipped`.
+            percent_progress: 100.0,
           ),
         ),
       ]),
     )
   let rendered = view.view(model) |> element.to_string
   assert string.contains(rendered, "class=\"book-stats-line\"")
-  // 50+50=100 reads against word_count=100 → 100% progress.
+  // `percent_progress: 100.0` rounds to a "100%" prefix on the line.
   assert string.contains(rendered, "100%")
   assert string.contains(rendered, "10m")
 }
@@ -7856,6 +7864,7 @@ pub fn library_card_renders_session_count_singular_test() {
             total_words_skipped: 50,
             total_duration_seconds: 600,
             session_count: 1,
+            percent_progress: 100.0,
           ),
         ),
       ]),
@@ -7885,6 +7894,7 @@ pub fn library_card_renders_session_count_plural_test() {
             total_words_skipped: 0,
             total_duration_seconds: 600,
             session_count: 4,
+            percent_progress: 50.0,
           ),
         ),
       ]),
@@ -7911,6 +7921,7 @@ pub fn library_card_renders_eta_when_book_incomplete_test() {
             total_words_skipped: 0,
             total_duration_seconds: 600,
             session_count: 1,
+            percent_progress: 50.0,
           ),
         ),
       ]),
@@ -7935,6 +7946,7 @@ pub fn library_card_hides_eta_when_book_complete_test() {
             total_words_skipped: 40,
             total_duration_seconds: 600,
             session_count: 1,
+            percent_progress: 100.0,
           ),
         ),
       ]),
@@ -7952,6 +7964,7 @@ pub fn estimate_remaining_returns_none_when_complete_test() {
       total_words_skipped: 0,
       total_duration_seconds: 600,
       session_count: 1,
+      percent_progress: 100.0,
     )
   assert library_view.estimate_remaining(stats, 100) == None
 }
@@ -7965,6 +7978,7 @@ pub fn estimate_remaining_returns_none_when_zero_words_read_test() {
       total_words_skipped: 50,
       total_duration_seconds: 600,
       session_count: 1,
+      percent_progress: 0.0,
     )
   assert library_view.estimate_remaining(stats, 100) == None
 }
@@ -7978,6 +7992,7 @@ pub fn estimate_remaining_returns_none_when_zero_duration_test() {
       total_words_skipped: 0,
       total_duration_seconds: 0,
       session_count: 1,
+      percent_progress: 50.0,
     )
   assert library_view.estimate_remaining(stats, 100) == None
 }
@@ -7990,6 +8005,7 @@ pub fn estimate_remaining_returns_some_for_normal_case_test() {
       total_words_skipped: 0,
       total_duration_seconds: 600,
       session_count: 1,
+      percent_progress: 50.0,
     )
   assert library_view.estimate_remaining(stats, 100) == Some("~10m left")
 }

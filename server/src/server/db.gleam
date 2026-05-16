@@ -30,6 +30,7 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
   use _ <- result.try(sqlight.exec(pragmas_sql, connection))
   use _ <- result.try(sqlight.exec(schema_sql, connection))
   use _ <- result.try(ensure_books_genre_column(connection))
+  use _ <- result.try(ensure_reading_state_percent_progress_column(connection))
   use _ <- result.try(ensure_default_settings(connection))
   Ok(connection)
 }
@@ -70,12 +71,62 @@ pub fn ensure_books_genre_column(
 fn book_column_names(
   connection: sqlight.Connection,
 ) -> Result(List(String), sqlight.Error) {
+  table_column_names(connection, "books")
+}
+
+/// Add the `reading_state.percent_progress` column to databases created
+/// before the page-based progress quest. Mirrors the migration pattern
+/// established by `ensure_books_genre_column`: probe `PRAGMA table_info`
+/// for the column and only issue `ALTER TABLE` when it is missing. The
+/// fresh-database path lands the column inline through `schema_sql`'s
+/// `CREATE TABLE IF NOT EXISTS`, so this path is exercised only on
+/// upgrade.
+///
+/// The `DEFAULT 0.0` matches the schema declaration so existing rows
+/// (which previously persisted only the erased-bitset progress) land at
+/// the floor of the new scale rather than at a non-deterministic value
+/// SQLite would synthesise from an `ALTER TABLE` without a default. The
+/// next save from the client overwrites the default with the real
+/// page-based percentage.
+///
+/// Exposed as `pub` so tests can drive the upgrade path directly off a
+/// hand-built pre-percent-progress `reading_state` table.
+pub fn ensure_reading_state_percent_progress_column(
+  connection: sqlight.Connection,
+) -> Result(Nil, sqlight.Error) {
+  use columns <- result.try(table_column_names(connection, "reading_state"))
+  case list.contains(columns, "percent_progress") {
+    True -> Ok(Nil)
+    False ->
+      case
+        sqlight.exec(
+          "ALTER TABLE reading_state
+             ADD COLUMN percent_progress REAL NOT NULL DEFAULT 0.0;",
+          connection,
+        )
+      {
+        Ok(_) -> Ok(Nil)
+        Error(error) -> Error(error)
+      }
+  }
+}
+
+/// Read column names from any table via `PRAGMA table_info`. Centralised
+/// so future ADD COLUMN migrations don't each carry their own probe.
+fn table_column_names(
+  connection: sqlight.Connection,
+  table: String,
+) -> Result(List(String), sqlight.Error) {
   let name_decoder = {
     use name <- decode.field(1, decode.string)
     decode.success(name)
   }
+  // `PRAGMA table_info(?)` does not accept bound parameters in SQLite —
+  // the table name is identifier-position, not value-position. The
+  // table name is a compile-time constant supplied by the caller, never
+  // user-controlled, so inlining it into the SQL is safe.
   sqlight.query(
-    "PRAGMA table_info(books);",
+    "PRAGMA table_info(" <> table <> ");",
     on: connection,
     with: [],
     expecting: name_decoder,
@@ -145,6 +196,7 @@ CREATE TABLE IF NOT EXISTS reading_state (
   sentence_bitset BLOB,
   word_bitset BLOB,
   current_page INTEGER NOT NULL DEFAULT 0,
+  percent_progress REAL NOT NULL DEFAULT 0.0,
   updated_at TEXT NOT NULL
 );
 
@@ -532,17 +584,20 @@ pub fn update_reading_state(
   sentence_bitset sentence_bitset: Option(BitArray),
   word_bitset word_bitset: Option(BitArray),
   current_page current_page: Int,
+  percent_progress percent_progress: Float,
   updated_at updated_at: String,
 ) -> Result(Nil, sqlight.Error) {
   let sql =
     "INSERT INTO reading_state
-       (book_id, mode, sentence_bitset, word_bitset, current_page, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+       (book_id, mode, sentence_bitset, word_bitset,
+        current_page, percent_progress, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(book_id) DO UPDATE SET
        mode = excluded.mode,
        sentence_bitset = excluded.sentence_bitset,
        word_bitset = excluded.word_bitset,
        current_page = excluded.current_page,
+       percent_progress = excluded.percent_progress,
        updated_at = excluded.updated_at
      WHERE excluded.updated_at >= reading_state.updated_at;"
   case
@@ -555,6 +610,7 @@ pub fn update_reading_state(
         sqlight.nullable(sqlight.blob, sentence_bitset),
         sqlight.nullable(sqlight.blob, word_bitset),
         sqlight.int(current_page),
+        sqlight.float(percent_progress),
         sqlight.text(updated_at),
       ],
       expecting: decode.dynamic,
@@ -574,7 +630,7 @@ pub fn get_reading_state(
 ) -> Result(Option(ReadingState), sqlight.Error) {
   let sql =
     "SELECT book_id, mode, sentence_bitset, word_bitset,
-            current_page, updated_at
+            current_page, percent_progress, updated_at
        FROM reading_state
       WHERE book_id = ?;"
   case
@@ -597,17 +653,19 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   use sentence_bitset <- decode.field(2, decode.optional(decode.bit_array))
   use word_bitset <- decode.field(3, decode.optional(decode.bit_array))
   use current_page <- decode.field(4, decode.int)
+  use percent_progress <- decode.field(5, decode.float)
   // The column is `NOT NULL` so the value is always present; wrap in
   // `Some` to match the `Option(String)` shape of `ReadingState.updated_at`,
   // which the wire layer needs to distinguish a persisted row from a
   // synthesised empty default.
-  use updated_at <- decode.field(5, decode.string)
+  use updated_at <- decode.field(6, decode.string)
   decode.success(ReadingState(
     book_id: book_id,
     mode: mode,
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    percent_progress: percent_progress,
     updated_at: Some(updated_at),
   ))
 }

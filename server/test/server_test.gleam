@@ -153,6 +153,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
   )
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
+  use percent_progress <- decode.field("percent_progress", decode.float)
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   // Bitsets in `ReadingState` are `BitArray`, but the wire form is
   // base64. Decoding through the `String` and re-base64-decoding keeps
@@ -165,6 +166,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence,
     word_bitset: word,
     current_page: current_page,
+    percent_progress: percent_progress,
     updated_at: updated_at,
   ))
 }
@@ -398,6 +400,7 @@ pub fn get_reading_state_for_unwritten_book_returns_empty_default_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 0,
+      percent_progress: 0.0,
       updated_at: None,
     )
 }
@@ -420,6 +423,7 @@ pub fn put_reading_state_round_trips_through_http_test() {
       #("sentence_bitset", json.string(bit_array.base64_encode(bytes, True))),
       #("word_bitset", json.null()),
       #("current_page", json.int(5)),
+      #("percent_progress", json.float(60.0)),
       #("updated_at", json.string("2026-05-12T02:00:00Z")),
     ])
 
@@ -440,6 +444,7 @@ pub fn put_reading_state_round_trips_through_http_test() {
       sentence_bitset: Some(bytes),
       word_bitset: None,
       current_page: 5,
+      percent_progress: 60.0,
       // Canonicalised to millisecond precision so all timestamps
       // share width — `parse_iso8601` always emits `.sss`.
       updated_at: Some("2026-05-12T02:00:00.000Z"),
@@ -500,6 +505,7 @@ pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 7,
+      percent_progress: 0.0,
       updated_at: Some("2026-05-12T03:00:00.000Z"),
     )
 
@@ -651,6 +657,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      percent_progress: 30.0,
       updated_at: "2026-05-12T02:00:00Z",
     )
 
@@ -664,6 +671,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 99,
+      percent_progress: 99.0,
       updated_at: "2026-05-12T01:00:00Z",
     )
 
@@ -678,6 +686,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      percent_progress: 30.0,
       updated_at: Some("2026-05-12T02:00:00Z"),
     )
 
@@ -690,6 +699,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      percent_progress: 70.0,
       updated_at: "2026-05-12T03:00:00Z",
     )
   let assert Ok(Some(state)) = db.get_reading_state(ctx.db, "book-1")
@@ -700,6 +710,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      percent_progress: 70.0,
       updated_at: Some("2026-05-12T03:00:00Z"),
     )
 }
@@ -1314,7 +1325,7 @@ pub fn get_book_stats_for_book_with_no_sessions_returns_zero_record_test() {
     )
   assert response.status == 200
   let decoded = decode_body(response, stats.book_stats_decoder())
-  assert decoded == BookStats(0, 0, 0, 0)
+  assert decoded == BookStats(0, 0, 0, 0, 0.0)
 }
 
 pub fn get_book_stats_for_missing_book_is_404_test() {
@@ -1358,12 +1369,16 @@ pub fn get_book_stats_aggregates_across_sessions_test() {
     )
   assert response.status == 200
   let decoded = decode_body(response, stats.book_stats_decoder())
+  // `percent_progress` is `0.0` because no reading-state row has been
+  // PUT for this book — sessions alone do not stamp the progress
+  // column. The next reader-side save would overwrite the default.
   assert decoded
     == BookStats(
       total_words_read: 150,
       total_words_skipped: 20,
       total_duration_seconds: 2700,
       session_count: 2,
+      percent_progress: 0.0,
     )
 }
 
@@ -1440,8 +1455,8 @@ pub fn get_library_book_stats_returns_per_book_entries_test() {
   // out of SQLite — different schema migrations could shuffle the
   // GROUP BY's natural ordering.
   let sorted = list.sort(entries, fn(a, b) { string.compare(a.0, b.0) })
-  let book_a_stats = BookStats(7, 1, 1800, 1)
-  let book_b_stats = BookStats(3, 0, 900, 1)
+  let book_a_stats = BookStats(7, 1, 1800, 1, 0.0)
+  let book_b_stats = BookStats(3, 0, 900, 1, 0.0)
   let expected = case string.compare(book_a.book.id, book_b.book.id) {
     order.Lt -> [
       #(book_a.book.id, book_a_stats),

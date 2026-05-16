@@ -13,6 +13,7 @@
 
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -407,12 +408,16 @@ fn view_book_card(
 /// book has no sessions yet — the absence of stats is honest, and a
 /// `0% • 0s` line would clutter a freshly-imported book's card.
 ///
-/// Progress is reported as a percentage of `words_read + words_skipped`
-/// against the book's `word_count`; the time component uses the same
-/// formatter as the library-wide stats overlay so the two surfaces
-/// speak in one vocabulary. The session count and ETA append to the
-/// same `•`-delimited line so the card stays a single row of muted
-/// metadata rather than fragmenting into multiple lines.
+/// Progress is the page-based percentage the server persisted on
+/// `reading_state.percent_progress` and re-surfaced through
+/// `BookStats.percent_progress`. The library does not have access to
+/// the reader's pagination output (which is computed per-viewport in
+/// the reader view), so it cannot re-derive the page-based number; it
+/// reads the pre-computed server value verbatim. The time component
+/// uses the same formatter as the library-wide stats overlay so the
+/// two surfaces speak in one vocabulary. The session count and ETA
+/// append to the same `•`-delimited line so the card stays a single
+/// row of muted metadata rather than fragmenting into multiple lines.
 fn book_stats_summary(
   library_book_stats: Dict(String, BookStats),
   book: BookMeta,
@@ -423,7 +428,7 @@ fn book_stats_summary(
       case stats.session_count {
         0 -> element.none()
         _ -> {
-          let pct = progress_percentage(stats, book.word_count)
+          let pct = progress_percentage(stats)
           let time = stats_view.format_duration(stats.total_duration_seconds)
           let sessions = format_session_count(stats.session_count)
           let eta_suffix = case estimate_remaining(stats, book.word_count) {
@@ -497,22 +502,21 @@ pub fn estimate_remaining(
   }
 }
 
-/// Coarse progress percentage. Clamped into `[0, 100]` so a Lock-In
-/// session whose `words_read + words_skipped` exceeds the book's
-/// `word_count` (e.g., the same word counted across multiple
-/// sessions for a re-read) cannot push the bar past 100%.
-fn progress_percentage(stats: BookStats, total_word_count: Int) -> Int {
-  case total_word_count {
-    0 -> 0
-    _ -> {
-      let covered = stats.total_words_read + stats.total_words_skipped
-      let raw = covered * 100 / total_word_count
-      case raw {
-        n if n < 0 -> 0
-        n if n > 100 -> 100
-        n -> n
-      }
-    }
+/// Project the server-supplied `BookStats.percent_progress` into the
+/// `[0, 100]` integer the card renders. The value on the wire is
+/// already a `[0.0, 100.0]` float (validated at the server boundary
+/// in `validate_percent_progress` and bounded by the client-side
+/// `(current_page + 1) / total_pages * 100` derivation), so this
+/// helper is a thin float-to-int rounding step. The clamp guards
+/// against a future drift in either direction — a server bug that
+/// persisted a value outside the range, or a hand-crafted PUT that
+/// slipped past validation, must not push the rendered bar past 100%
+/// or below 0%.
+fn progress_percentage(stats: BookStats) -> Int {
+  case float.round(stats.percent_progress) {
+    n if n < 0 -> 0
+    n if n > 100 -> 100
+    n -> n
   }
 }
 

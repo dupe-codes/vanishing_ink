@@ -14,7 +14,7 @@ import gleam/json
 
 /// Per-book session aggregates. Returned by `GET /api/books/:id/stats`
 /// and shown alongside the book on the library card and the future
-/// reader header. The four fields together describe the reader's
+/// reader header. The fields together describe the reader's
 /// engagement with one book:
 ///
 /// * `total_words_read` — sum of `words_read` across every session.
@@ -29,12 +29,21 @@ import gleam/json
 /// * `session_count` — number of recorded sessions, including any
 ///   that are still in flight (no `ended_at`). The library view uses
 ///   this as a coarse measure of "how often did the reader return?".
+/// * `percent_progress` — the latest viewport-agnostic page-based
+///   progress percentage the client persisted on
+///   `reading_state.percent_progress`, joined into the aggregate so
+///   the library card can render the same percentage the reader sees
+///   in the progress bar without re-deriving from the session
+///   counters (which only know about words read / skipped, not pages
+///   turned). Defaults to `0.0` for books with no recorded reading
+///   state row.
 pub type BookStats {
   BookStats(
     total_words_read: Int,
     total_words_skipped: Int,
     total_duration_seconds: Int,
     session_count: Int,
+    percent_progress: Float,
   )
 }
 
@@ -95,6 +104,7 @@ pub fn book_stats_to_json(stats: BookStats) -> json.Json {
     #("total_words_skipped", json.int(stats.total_words_skipped)),
     #("total_duration_seconds", json.int(stats.total_duration_seconds)),
     #("session_count", json.int(stats.session_count)),
+    #("percent_progress", json.float(stats.percent_progress)),
   ])
 }
 
@@ -111,6 +121,7 @@ pub fn book_stats_entry_to_json(entry: #(String, BookStats)) -> json.Json {
     #("total_words_skipped", json.int(stats.total_words_skipped)),
     #("total_duration_seconds", json.int(stats.total_duration_seconds)),
     #("session_count", json.int(stats.session_count)),
+    #("percent_progress", json.float(stats.percent_progress)),
   ])
 }
 
@@ -125,6 +136,7 @@ pub fn book_stats_entry_decoder() -> decode.Decoder(#(String, BookStats)) {
     decode.int,
   )
   use session_count <- decode.field("session_count", decode.int)
+  use percent_progress <- decode.field("percent_progress", decode.float)
   decode.success(#(
     book_id,
     BookStats(
@@ -132,6 +144,7 @@ pub fn book_stats_entry_decoder() -> decode.Decoder(#(String, BookStats)) {
       total_words_skipped: total_words_skipped,
       total_duration_seconds: total_duration_seconds,
       session_count: session_count,
+      percent_progress: percent_progress,
     ),
   ))
 }
@@ -158,11 +171,13 @@ pub fn book_stats_decoder() -> decode.Decoder(BookStats) {
     decode.int,
   )
   use session_count <- decode.field("session_count", decode.int)
+  use percent_progress <- decode.field("percent_progress", decode.float)
   decode.success(BookStats(
     total_words_read: total_words_read,
     total_words_skipped: total_words_skipped,
     total_duration_seconds: total_duration_seconds,
     session_count: session_count,
+    percent_progress: percent_progress,
   ))
 }
 

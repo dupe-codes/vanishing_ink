@@ -135,24 +135,43 @@ pub fn get_book_stats(
   connection: sqlight.Connection,
   book_id: shared.BookId,
 ) -> Result(BookStats, sqlight.Error) {
+  // The `percent_progress` field rides on a correlated scalar subquery
+  // against `reading_state` rather than on a JOIN. The session
+  // aggregates are always returned (the aggregate-without-GROUP-BY
+  // emits exactly one row even when no sessions exist) — folding the
+  // join into the FROM clause would have to handle the no-sessions
+  // case separately, whereas the scalar subquery returns `NULL` for a
+  // book that has never been touched and the outer `COALESCE` lifts
+  // that to the `0.0` default.
   let sql =
     "SELECT
        COALESCE(SUM(words_read), 0),
        COALESCE(SUM(words_skipped), 0),
        COALESCE(SUM(duration_seconds), 0),
-       COUNT(*)
+       COUNT(*),
+       COALESCE(
+         (SELECT percent_progress
+            FROM reading_state
+           WHERE book_id = ?),
+         0.0
+       )
      FROM reading_sessions
      WHERE book_id = ?;"
   case
     sqlight.query(
       sql,
       on: connection,
-      with: [sqlight.text(book_id)],
+      // The book id is bound twice — once for the correlated subquery
+      // against `reading_state`, once for the outer `WHERE` clause on
+      // `reading_sessions`. Two bindings of the same value rather than
+      // one named placeholder because `sqlight` parameter binding is
+      // positional only.
+      with: [sqlight.text(book_id), sqlight.text(book_id)],
       expecting: book_stats_decoder(),
     )
   {
     Ok([row, ..]) -> Ok(row)
-    Ok([]) -> Ok(BookStats(0, 0, 0, 0))
+    Ok([]) -> Ok(BookStats(0, 0, 0, 0, 0.0))
     Error(error) -> Error(error)
   }
 }
@@ -216,21 +235,32 @@ pub fn get_books_completed_count(
 pub fn get_all_book_stats(
   connection: sqlight.Connection,
 ) -> Result(List(#(shared.BookId, BookStats)), sqlight.Error) {
+  // LEFT JOIN against `reading_state` so books with sessions but no
+  // saved progress (a pre-page-based-progress book that has not been
+  // re-opened since the migration) still appear in the result, with
+  // `percent_progress` falling back to `0.0` via `COALESCE`. Wrapping
+  // in `MAX` is mechanical — `reading_state.book_id` is the primary
+  // key so each session row joins to at most one progress row, but
+  // GROUP BY semantics formally require an aggregate on non-grouped
+  // columns.
   let sql =
     "SELECT
-       book_id,
-       COALESCE(SUM(words_read), 0),
-       COALESCE(SUM(words_skipped), 0),
-       COALESCE(SUM(duration_seconds), 0),
-       COUNT(*)
-     FROM reading_sessions
-     GROUP BY book_id;"
+       s.book_id,
+       COALESCE(SUM(s.words_read), 0),
+       COALESCE(SUM(s.words_skipped), 0),
+       COALESCE(SUM(s.duration_seconds), 0),
+       COUNT(*),
+       COALESCE(MAX(rs.percent_progress), 0.0)
+     FROM reading_sessions s
+     LEFT JOIN reading_state rs ON rs.book_id = s.book_id
+     GROUP BY s.book_id;"
   let decoder = {
     use book_id <- decode.field(0, decode.string)
     use words_read <- decode.field(1, decode.int)
     use words_skipped <- decode.field(2, decode.int)
     use duration_seconds <- decode.field(3, decode.int)
     use session_count <- decode.field(4, decode.int)
+    use percent_progress <- decode.field(5, decode.float)
     decode.success(#(
       book_id,
       BookStats(
@@ -238,6 +268,7 @@ pub fn get_all_book_stats(
         total_words_skipped: words_skipped,
         total_duration_seconds: duration_seconds,
         session_count: session_count,
+        percent_progress: percent_progress,
       ),
     ))
   }
@@ -348,10 +379,12 @@ fn book_stats_decoder() -> decode.Decoder(BookStats) {
   use words_skipped <- decode.field(1, decode.int)
   use duration_seconds <- decode.field(2, decode.int)
   use session_count <- decode.field(3, decode.int)
+  use percent_progress <- decode.field(4, decode.float)
   decode.success(BookStats(
     total_words_read: words_read,
     total_words_skipped: words_skipped,
     total_duration_seconds: duration_seconds,
     session_count: session_count,
+    percent_progress: percent_progress,
   ))
 }
