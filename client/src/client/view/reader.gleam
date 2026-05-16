@@ -47,6 +47,7 @@ import client/state.{
   measurement_id, page_content_id, reading_area_id,
 }
 import client/state/helpers.{erased_opacity_value, progress_percentage}
+import client/types.{type BookMeta}
 import client/view/library as library_view
 import client/view/reader/bottom_bar
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
@@ -243,9 +244,9 @@ fn view_progress_meta(model: Model) -> Element(Msg) {
     _ -> {
       let pct = progress_percentage(model)
       let pct_text = int.to_string(float.round(pct)) <> "%"
-      let label = case lookup_active_word_count(model), model.book_stats {
-        Some(word_count), Some(stats) ->
-          case library_view.estimate_remaining(stats, word_count) {
+      let label = case active_book_meta(model), model.book_stats {
+        Some(meta), Some(stats) ->
+          case library_view.estimate_remaining(stats, meta.word_count) {
             Some(eta) -> pct_text <> " • " <> eta
             None -> pct_text
           }
@@ -256,45 +257,38 @@ fn view_progress_meta(model: Model) -> Element(Msg) {
   }
 }
 
-/// Resolve the `word_count` of the currently-active book. Returns
-/// `None` when there is no active book id (the test-only `TextLoaded`
-/// entry point) or when the id is not in `model.books` (a path that
-/// does not occur in production today). Pulled out so `view_progress_meta`
-/// stays focused on the rendering decision rather than the lookup
-/// plumbing.
-fn lookup_active_word_count(model: Model) -> option.Option(Int) {
+/// Resolve the `BookMeta` for the currently-active book — the entry
+/// in `model.books` whose `id` matches `model.active_book_id`.
+/// Returns `None` when there is no active book id (the test-only
+/// `TextLoaded` entry point never stamps it) or when the id is not
+/// in `model.books` (a path that does not occur in production today
+/// — `BookCreated` prepends and `BooksLoaded` supplies the meta
+/// before `OpenBook` fires — but the helper stays total so a
+/// future direct-load entry point cannot crash the header).
+///
+/// Centralised so both the header title fallback and the ETA
+/// computation walk the same `active_book_id → list.find` path; an
+/// earlier revision had two near-identical helpers that read
+/// different fields off the resolved meta.
+fn active_book_meta(model: Model) -> Option(BookMeta) {
   case model.active_book_id {
     None -> None
     Some(id) ->
       case list.find(model.books, fn(meta) { meta.id == id }) {
-        Ok(meta) -> Some(meta.word_count)
+        Ok(meta) -> Some(meta)
         Error(_) -> None
       }
   }
 }
 
-/// Resolve the title of the active book — the `BookMeta` in
-/// `model.books` whose `id` matches `model.active_book_id`. Used
-/// by the reader header as a fallback when the visible chapter
-/// carries no title of its own (every chapter in the bundled
-/// Tell-Tale Heart fixture, for instance, has `title: None`, so
-/// the reader header would otherwise show an empty centre slot).
-///
-/// Falls through to `""` when there is no active book id (the
-/// test-only `TextLoaded` entry point never stamps it) or when
-/// the book is not in `model.books` (a path that does not occur
-/// in production today — `BookCreated` prepends and `BooksLoaded`
-/// supplies the meta before `OpenBook` fires — but the helper
-/// stays total so a future direct-load entry point cannot crash
-/// the header).
+/// Title of the active book, or `""` when no active book is
+/// resolvable. The empty fallback paints as a blank centre slot
+/// rather than as an error — every callsite already has a primary
+/// title path (the chapter title) that this only backs.
 fn active_book_title(model: Model) -> String {
-  case model.active_book_id {
+  case active_book_meta(model) {
     None -> ""
-    Some(id) ->
-      case list.find(model.books, fn(meta) { meta.id == id }) {
-        Ok(meta) -> meta.title
-        Error(_) -> ""
-      }
+    Some(meta) -> meta.title
   }
 }
 
