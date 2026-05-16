@@ -116,6 +116,29 @@ pub type ReadingState {
   )
 }
 
+/// One row in the `reading_sessions` table. The client generates the
+/// `id` (a `crypto.randomUUID()`-shaped string) before issuing the
+/// POST so the follow-up PUT — and the visibilitychange-triggered
+/// end-of-session PUT — can target the same row without waiting for
+/// the POST response to land.
+///
+/// `ended_at` is `Option` because a session is live until the client
+/// PUTs the end timestamp. The four counters default to zero so the
+/// initial POST can omit them; the closing PUT supplies the final
+/// values, which always overwrite whatever the row carries.
+pub type ReadingSession {
+  ReadingSession(
+    id: String,
+    book_id: shared.BookId,
+    started_at: String,
+    ended_at: Option(String),
+    words_read: Int,
+    words_skipped: Int,
+    pages_turned: Int,
+    duration_seconds: Int,
+  )
+}
+
 // ---------------------------------------------------------------------------
 // JSON encoders
 // ---------------------------------------------------------------------------
@@ -207,4 +230,21 @@ pub fn reading_state_to_json(state: ReadingState) -> json.Json {
 
 fn bit_array_to_json(bytes: BitArray) -> json.Json {
   json.string(bit_array.base64_encode(bytes, True))
+}
+
+/// Encode a `ReadingSession` as a JSON object. Field names mirror the
+/// SQLite columns so the wire shape is a faithful surface of the
+/// stored row — `ended_at` rides as `null` until the client closes
+/// the session.
+pub fn reading_session_to_json(session: ReadingSession) -> json.Json {
+  json.object([
+    #("id", json.string(session.id)),
+    #("book_id", json.string(session.book_id)),
+    #("started_at", json.string(session.started_at)),
+    #("ended_at", json.nullable(session.ended_at, json.string)),
+    #("words_read", json.int(session.words_read)),
+    #("words_skipped", json.int(session.words_skipped)),
+    #("pages_turned", json.int(session.pages_turned)),
+    #("duration_seconds", json.int(session.duration_seconds)),
+  ])
 }

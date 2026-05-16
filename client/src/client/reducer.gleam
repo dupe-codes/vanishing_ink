@@ -48,18 +48,20 @@ import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
-  EraseSentence, ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp,
-  FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured,
-  LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured,
-  PauseFade, ReadingStateLoaded, ResetBookSettings, ResumeFade,
-  SelectSearchResult, SetEditMetadataAuthor, SetEditMetadataGenre,
+  EraseSentence, ExecuteDelete, FetchBookStatsResult,
+  FetchLibraryBookStatsResult, FetchLibraryStatsResult, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
+  OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
+  ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
+  SessionEnded, SetEditMetadataAuthor, SetEditMetadataGenre,
   SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
   SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
   SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
   ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
-  ToggleSettings, TouchCancel, TouchEnd, TouchStart, Undo, UndoJump,
-  ViewportResized,
+  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized, VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -81,6 +83,11 @@ import client/reducer/metadata.{
   apply_open_edit_metadata, apply_set_edit_metadata_author,
   apply_set_edit_metadata_genre, apply_set_edit_metadata_title,
   apply_submit_edit_metadata,
+}
+import client/reducer/session.{
+  apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,
+  apply_fetch_library_stats_result, apply_session_created, apply_session_ended,
+  apply_toggle_stats_view, apply_visibility_changed,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -414,6 +421,24 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     SetJumpPageInput(value) -> apply_set_jump_page_input(model, value)
 
     SubmitJumpPage -> apply_submit_jump_page(model)
+
+    SessionCreated(book_id, result) ->
+      apply_session_created(model, book_id, result)
+
+    SessionEnded(result) -> apply_session_ended(model, result)
+
+    VisibilityChanged(visible) -> apply_visibility_changed(model, visible)
+
+    FetchBookStatsResult(book_id, result) ->
+      apply_fetch_book_stats_result(model, book_id, result)
+
+    FetchLibraryStatsResult(result) ->
+      apply_fetch_library_stats_result(model, result)
+
+    FetchLibraryBookStatsResult(result) ->
+      apply_fetch_library_book_stats_result(model, result)
+
+    ToggleStatsView -> apply_toggle_stats_view(model)
 
     OpenEditMetadata(id) -> apply_open_edit_metadata(model, id)
 

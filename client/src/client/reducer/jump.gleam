@@ -270,9 +270,23 @@ pub fn apply_lock_in_jump(model: Model) -> #(Model, Effect(Msg)) {
       let vanished_words =
         words_before_page(model.pages, model.current_page)
         |> set.union(model.erased_words, _)
+      // The Lock-In bulk vanish counts as "words skipped" against the
+      // in-flight reading session — the reader has jumped past them
+      // rather than read them. The accumulator on the model is added
+      // to here so the closing PUT subtracts it from the raw
+      // `erased_words` delta and so the stats surface reports the
+      // two flavours of erasure separately.
+      let bulk_vanished_count =
+        set.size(vanished_words) - set.size(model.erased_words)
       let restored =
         restore_engine_after_jump(
-          Model(..model, erased_words: vanished_words, jump_preview: None),
+          Model(
+            ..model,
+            erased_words: vanished_words,
+            jump_preview: None,
+            session_words_skipped: model.session_words_skipped
+              + bulk_vanished_count,
+          ),
           preview,
         )
       #(

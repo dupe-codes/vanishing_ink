@@ -25,6 +25,7 @@ import client/epub.{
 import client/ffi
 import client/msg.{type Msg}
 import client/pagination
+import client/reducer/session.{apply_end_session, apply_start_session}
 import client/state.{
   type Model, Library, Model, Reader, Stopped, css_var_ghost_opacity,
 }
@@ -42,19 +43,33 @@ import shared/segmenter.{type SegmentedText}
 /// book A then tapped book B) is also a miss — the cache is keyed by
 /// id, not just "is anything cached".
 pub fn apply_open_book(model: Model, id: String) -> #(Model, Effect(Msg)) {
-  case model.created_book_segments {
+  // Defensive end-of-session: a `GoToLibrary` between two book opens
+  // would have ended the prior session already, but a future surface
+  // that lets the reader switch directly between books (without
+  // returning to the library) must not leave a session in flight
+  // against the outgoing book. Routing through `apply_end_session`
+  // here keeps the invariant intact regardless of how the dispatch
+  // site composes navigation.
+  let #(ended, end_effect) = apply_end_session(model)
+  case ended.created_book_segments {
     Some(#(meta, segments)) ->
       case meta.id == id {
         True -> {
-          let #(loaded, eff) = apply_book_loaded(model, meta, segments)
-          #(Model(..loaded, created_book_segments: None), eff)
+          let #(loaded, eff) = apply_book_loaded(ended, meta, segments)
+          #(
+            Model(..loaded, created_book_segments: None),
+            effect.batch([end_effect, eff]),
+          )
         }
         False -> #(
-          Model(..model, view: Reader, library_error: None),
-          fetch_book(id),
+          Model(..ended, view: Reader, library_error: None),
+          effect.batch([end_effect, fetch_book(id)]),
         )
       }
-    None -> #(Model(..model, view: Reader, library_error: None), fetch_book(id))
+    None -> #(
+      Model(..ended, view: Reader, library_error: None),
+      effect.batch([end_effect, fetch_book(id)]),
+    )
   }
 }
 
@@ -108,7 +123,11 @@ pub fn apply_book_loaded(
   // simultaneously revert to the global defaults; the follow-up
   // fetch will re-merge any overrides the new book carries.
   let defaults = loaded.global_defaults
-  #(
+  // Stamp the active book id on the model *before* opening the
+  // reading session — `apply_start_session` guards on
+  // `active_book_id` being `Some(_)`, so opening with the field still
+  // `None` would collapse the dispatch to a no-op.
+  let with_book =
     Model(
       ..loaded,
       view: Reader,
@@ -117,12 +136,20 @@ pub fn apply_book_loaded(
       engine_state: Stopped,
       next_word_index: None,
       book_settings: None,
+      // Clear the per-book stats cache up front so a stale value from
+      // the previous book does not paint over the reader header during
+      // the window before the new book's `fetch_book_stats` lands.
+      book_stats: None,
       ghost_opacity: defaults.ghost_opacity,
       wpm: defaults.default_wpm,
       paragraph_delay_ms: defaults.default_paragraph_delay_ms,
       page_delay_ms: defaults.default_page_delay_ms,
-    ),
+    )
+  let #(opened, session_effect) = apply_start_session(with_book)
+  #(
+    opened,
     effect.batch([
+      session_effect,
       measure_after_paint(),
       // Symmetric with `apply_go_to_library`: the reset above moves
       // `ghost_opacity` back to the global default, and the CSS
@@ -222,10 +249,15 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
   // closing the reader without locking in is morally equivalent to
   // an implicit `UndoJump`.
   let save_effect = save_reading_state(model)
-  let defaults = model.global_defaults
+  // End the reading session BEFORE clearing `active_book_id` — same
+  // reason as the save guard above. `apply_end_session` blocks when
+  // there is no active book, so building the effect against the
+  // post-clear model would silently drop the closing PUT.
+  let #(ended, session_end_effect) = apply_end_session(model)
+  let defaults = ended.global_defaults
   let cleared =
     Model(
-      ..model,
+      ..ended,
       view: Library,
       text: None,
       flat_paragraphs: [],
@@ -268,6 +300,7 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
     cleared,
     effect.batch([
       save_effect,
+      session_end_effect,
       effect.from(fn(_dispatch) { ffi.clear_word_timer() }),
       // Push the restored `ghost_opacity` into the CSS cascade so the
       // settings panel slider and any visible ghosted prose pick up

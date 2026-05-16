@@ -11,6 +11,7 @@
 //// fetch-error state both surface inside the same `.lib-body`
 //// container so the chrome never reshuffles between states.
 
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -25,12 +26,14 @@ import lustre/event
 
 import client/msg.{
   type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, OpenBook,
-  OpenEditMetadata, ToggleSettings,
+  OpenEditMetadata, ToggleSettings, ToggleStatsView,
 }
 import client/state.{type Model, cover_color_for_title}
 import client/types.{type BookMeta}
 import client/view/library/add_book
 import client/view/library/edit_metadata
+import client/view/stats as stats_view
+import shared/stats.{type BookStats}
 
 /// Render the library view: app bar + scrollable body (hero card,
 /// grid or empty state, error banner) + FAB + add-book sheet.
@@ -58,20 +61,35 @@ fn view_library_appbar() -> Element(Msg) {
         ),
         html.span([], [html.text("Vanishing Ink")]),
       ]),
-      // Settings is reachable from the library so global preferences
-      // (theme, font, dyslexia mode, default pacing) can be tweaked
-      // before any book is open — without this, the gear was only
-      // available once the reader entered a book, hiding a useful
-      // surface behind a navigation step.
-      html.button(
-        [
-          attribute.class("btn-icon"),
-          attribute.aria_label("Open settings"),
-          attribute.type_("button"),
-          event.on_click(ToggleSettings),
-        ],
-        [html.text("⚙")],
-      ),
+      html.div([attribute.class("lib-appbar-actions")], [
+        // Reading-stats overlay sits next to the gear: the two surfaces
+        // are conceptually adjacent (both are reader-wide, both ride
+        // off the same affordance pattern) so co-locating them keeps
+        // the appbar a single "scope: reader-wide" cluster.
+        html.button(
+          [
+            attribute.class("btn-icon"),
+            attribute.aria_label("Open reading stats"),
+            attribute.type_("button"),
+            event.on_click(ToggleStatsView),
+          ],
+          [html.text("📊")],
+        ),
+        // Settings is reachable from the library so global preferences
+        // (theme, font, dyslexia mode, default pacing) can be tweaked
+        // before any book is open — without this, the gear was only
+        // available once the reader entered a book, hiding a useful
+        // surface behind a navigation step.
+        html.button(
+          [
+            attribute.class("btn-icon"),
+            attribute.aria_label("Open settings"),
+            attribute.type_("button"),
+            event.on_click(ToggleSettings),
+          ],
+          [html.text("⚙")],
+        ),
+      ]),
     ]),
   ])
 }
@@ -101,13 +119,15 @@ fn view_library_body(model: Model) -> Element(Msg) {
 
   let hero = case hero_book {
     None -> element.none()
-    Some(book) -> view_hero_card(book, is_deleting(book.id))
+    Some(book) ->
+      view_hero_card(book, is_deleting(book.id), model.library_book_stats)
   }
 
   let body_main = case model.books_loading, model.books {
     True, _ -> view_library_loading()
     False, [] -> view_library_empty()
-    False, _ -> view_library_grid(grid_books, is_deleting)
+    False, _ ->
+      view_library_grid(grid_books, is_deleting, model.library_book_stats)
   }
 
   html.div([attribute.class("lib-body")], [error_banner, hero, body_main])
@@ -259,9 +279,14 @@ fn view_library_empty() -> Element(Msg) {
 /// above the open-book button rather than inside it: nested
 /// `<button>` is invalid HTML and would also collapse the click
 /// targets in the accessibility tree.
-fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
+fn view_hero_card(
+  book: BookMeta,
+  is_deleting: Bool,
+  library_book_stats: Dict(String, BookStats),
+) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
+  let stats_summary = book_stats_summary(library_book_stats, book)
   html.div([attribute.class("hero-card-wrapper")], [
     html.div([attribute.class("section-label")], [
       html.text("Continue Reading"),
@@ -298,6 +323,7 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
           html.div([attribute.class("hero-meta-line")], [
             html.text(format_word_count(book.word_count) <> " words"),
           ]),
+          stats_summary,
           html.div([attribute.class("hero-cta")], [
             html.text("Continue Reading"),
           ]),
@@ -316,6 +342,7 @@ fn view_hero_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
 fn view_library_grid(
   books: List(BookMeta),
   is_deleting: fn(String) -> Bool,
+  library_book_stats: Dict(String, BookStats),
 ) -> Element(Msg) {
   case books {
     [] -> element.none()
@@ -327,16 +354,21 @@ fn view_library_grid(
         html.div(
           [attribute.class("book-grid")],
           list.map(books, fn(book) {
-            view_book_card(book, is_deleting(book.id))
+            view_book_card(book, is_deleting(book.id), library_book_stats)
           }),
         ),
       ])
   }
 }
 
-fn view_book_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
+fn view_book_card(
+  book: BookMeta,
+  is_deleting: Bool,
+  library_book_stats: Dict(String, BookStats),
+) -> Element(Msg) {
   let color = cover_color_for_title(book.title)
   let author = option.unwrap(book.author, "")
+  let stats_summary = book_stats_summary(library_book_stats, book)
   html.div([attribute.class("book-card-wrapper")], [
     html.button(
       [
@@ -361,12 +393,61 @@ fn view_book_card(book: BookMeta, is_deleting: Bool) -> Element(Msg) {
           html.div([attribute.class("book-meta")], [
             html.text(format_word_count(book.word_count) <> " words"),
           ]),
+          stats_summary,
         ]),
       ],
     ),
     view_edit_metadata_badge(book, []),
     view_delete_badge(book, is_deleting, []),
   ])
+}
+
+/// Render the per-book stats summary line that sits below the title
+/// on both the hero card and each grid card. Renders nothing when the
+/// book has no sessions yet — the absence of stats is honest, and a
+/// `0% • 0s` line would clutter a freshly-imported book's card.
+///
+/// Progress is reported as a percentage of `words_read + words_skipped`
+/// against the book's `word_count`; the time component uses the same
+/// formatter as the library-wide stats overlay so the two surfaces
+/// speak in one vocabulary.
+fn book_stats_summary(
+  library_book_stats: Dict(String, BookStats),
+  book: BookMeta,
+) -> Element(Msg) {
+  case dict.get(library_book_stats, book.id) {
+    Error(_) -> element.none()
+    Ok(stats) ->
+      case stats.session_count {
+        0 -> element.none()
+        _ -> {
+          let pct = progress_percentage(stats, book.word_count)
+          let time = stats_view.format_duration(stats.total_duration_seconds)
+          html.div([attribute.class("book-stats-line")], [
+            html.text(int.to_string(pct) <> "% • " <> time),
+          ])
+        }
+      }
+  }
+}
+
+/// Coarse progress percentage. Clamped into `[0, 100]` so a Lock-In
+/// session whose `words_read + words_skipped` exceeds the book's
+/// `word_count` (e.g., the same word counted across multiple
+/// sessions for a re-read) cannot push the bar past 100%.
+fn progress_percentage(stats: BookStats, total_word_count: Int) -> Int {
+  case total_word_count {
+    0 -> 0
+    _ -> {
+      let covered = stats.total_words_read + stats.total_words_skipped
+      let raw = covered * 100 / total_word_count
+      case raw {
+        n if n < 0 -> 0
+        n if n > 100 -> 100
+        n -> n
+      }
+    }
+  }
 }
 
 /// Optional genre tag rendered below the author line. `None` collapses

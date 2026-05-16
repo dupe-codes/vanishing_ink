@@ -16,16 +16,19 @@ import gleam/http
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/string
 import gleeunit
 import server/db
+import server/db_sessions
 import server/router
 import server/types.{
-  type BookSettings, type ReadingState, type UserSettings, BookSettings,
-  ReadingState,
+  type BookSettings, type ReadingSession, type ReadingState, type UserSettings,
+  BookSettings, ReadingSession, ReadingState,
 }
 import server/web
 import shared/segmenter
+import shared/stats.{BookStats}
 import sqlight
 import wisp
 import wisp/simulate
@@ -1112,6 +1115,299 @@ pub fn delete_book_cascades_book_settings_test() {
 }
 
 // ---------------------------------------------------------------------------
+// Reading sessions — HTTP layer
+// ---------------------------------------------------------------------------
+
+pub fn post_session_creates_row_and_returns_201_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let response =
+    http_post_session(ctx, created.book.id, "session-1", "2026-05-12T10:00:00Z")
+  assert response.status == 201
+
+  let decoded = decode_body(response, reading_session_wire_decoder())
+  assert decoded
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: None,
+      words_read: 0,
+      words_skipped: 0,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+
+  // Belt-and-braces: read directly from the DB to confirm the row
+  // landed — without this a future regression that fakes the
+  // response body would still pass the HTTP-level assertion.
+  let assert Ok(Some(row)) =
+    db_sessions.get_reading_session(ctx.db, "session-1")
+  assert row == decoded
+}
+
+pub fn post_session_for_missing_book_is_404_test() {
+  use ctx <- with_context
+  let response =
+    http_post_session(ctx, "no-such-book", "s1", "2026-05-12T10:00:00Z")
+  assert response.status == 404
+}
+
+pub fn post_session_rejects_empty_id_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let response =
+    http_post_session(ctx, created.book.id, "", "2026-05-12T10:00:00Z")
+  assert response.status == 400
+  assert string.contains(simulate.read_body(response), "id")
+}
+
+pub fn post_session_rejects_garbage_started_at_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let response = http_post_session(ctx, created.book.id, "s1", "ZZZZ")
+  assert response.status == 400
+  assert string.contains(simulate.read_body(response), "started_at")
+}
+
+pub fn put_session_round_trips_through_http_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let _ =
+    http_post_session(ctx, created.book.id, "session-1", "2026-05-12T10:00:00Z")
+
+  let body = end_session_body("2026-05-12T10:05:00Z", 120, 30, 4, 300)
+  let response = http_put_session(ctx, created.book.id, "session-1", body)
+  assert response.status == 200
+
+  let decoded = decode_body(response, reading_session_wire_decoder())
+  assert decoded
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: Some("2026-05-12T10:05:00.000Z"),
+      words_read: 120,
+      words_skipped: 30,
+      pages_turned: 4,
+      duration_seconds: 300,
+    )
+}
+
+pub fn put_session_with_mismatched_book_id_is_404_test() {
+  use ctx <- with_context
+  let book_a = http_create_book(ctx, "A", None, sample_text)
+  let book_b = http_create_book(ctx, "B", None, sample_text)
+  let _ =
+    http_post_session(ctx, book_a.book.id, "session-1", "2026-05-12T10:00:00Z")
+
+  let body = end_session_body("2026-05-12T10:05:00Z", 1, 0, 0, 60)
+  // The session belongs to book A, but the URL claims book B —
+  // the row's parent is immutable so the handler must refuse.
+  let response = http_put_session(ctx, book_b.book.id, "session-1", body)
+  assert response.status == 404
+}
+
+pub fn put_session_rejects_negative_counters_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let _ =
+    http_post_session(ctx, created.book.id, "session-1", "2026-05-12T10:00:00Z")
+  let body = end_session_body("2026-05-12T10:05:00Z", -1, 0, 0, 0)
+  let response = http_put_session(ctx, created.book.id, "session-1", body)
+  assert response.status == 400
+  assert string.contains(simulate.read_body(response), "words_read")
+}
+
+pub fn put_session_for_missing_id_is_404_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let body = end_session_body("2026-05-12T10:05:00Z", 1, 0, 0, 60)
+  let response = http_put_session(ctx, created.book.id, "no-such-session", body)
+  assert response.status == 404
+}
+
+pub fn delete_book_cascades_reading_sessions_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "With Sessions", None, sample_text)
+  let id = created.book.id
+  let post_resp =
+    http_post_session(ctx, id, "session-1", "2026-05-12T10:00:00Z")
+  assert post_resp.status == 201
+  let assert Ok(Some(_)) = db_sessions.get_reading_session(ctx.db, "session-1")
+
+  let delete_resp =
+    router.handle_request(
+      simulate.browser_request(http.Delete, "/api/books/" <> id),
+      ctx,
+    )
+  assert delete_resp.status == 204
+
+  let assert Ok(missing) = db_sessions.get_reading_session(ctx.db, "session-1")
+  assert missing == None
+}
+
+// ---------------------------------------------------------------------------
+// Stats — aggregate endpoints
+// ---------------------------------------------------------------------------
+
+pub fn get_book_stats_for_book_with_no_sessions_returns_zero_record_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let response =
+    router.handle_request(
+      simulate.browser_request(
+        http.Get,
+        "/api/books/" <> created.book.id <> "/stats",
+      ),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded = decode_body(response, stats.book_stats_decoder())
+  assert decoded == BookStats(0, 0, 0, 0)
+}
+
+pub fn get_book_stats_for_missing_book_is_404_test() {
+  use ctx <- with_context
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/books/no-such-book/stats"),
+      ctx,
+    )
+  assert response.status == 404
+}
+
+pub fn get_book_stats_aggregates_across_sessions_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let id = created.book.id
+
+  // Two sessions for the same book — the aggregate must SUM their
+  // counter fields and report a session_count of 2.
+  let _ = http_post_session(ctx, id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      id,
+      "s1",
+      end_session_body("2026-05-12T10:30:00Z", 100, 20, 5, 1800),
+    )
+  let _ = http_post_session(ctx, id, "s2", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      id,
+      "s2",
+      end_session_body("2026-05-13T10:15:00Z", 50, 0, 2, 900),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/books/" <> id <> "/stats"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded = decode_body(response, stats.book_stats_decoder())
+  assert decoded
+    == BookStats(
+      total_words_read: 150,
+      total_words_skipped: 20,
+      total_duration_seconds: 2700,
+      session_count: 2,
+    )
+}
+
+pub fn get_library_stats_aggregates_across_books_test() {
+  use ctx <- with_context
+  let book_a = http_create_book(ctx, "A", None, sample_text)
+  let book_b = http_create_book(ctx, "B", None, sample_text)
+
+  let _ = http_post_session(ctx, book_a.book.id, "a1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book_a.book.id,
+      "a1",
+      end_session_body("2026-05-12T10:30:00Z", 5, 0, 2, 1800),
+    )
+  let _ = http_post_session(ctx, book_b.book.id, "b1", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book_b.book.id,
+      "b1",
+      end_session_body("2026-05-13T10:15:00Z", 3, 12, 1, 900),
+    )
+
+  let response =
+    router.handle_request(simulate.browser_request(http.Get, "/api/stats"), ctx)
+  assert response.status == 200
+  let decoded = decode_body(response, stats.library_stats_decoder())
+  // The two books in this test each carry `sample_text` (12 words);
+  // book A's session covers 5 reading + 0 skipped (under 12) and
+  // book B covers 3 + 12 = 15 (>=12). Books completed is therefore 1.
+  // The current_streak_days field is computed against the test
+  // environment's wall clock, so we pin every other field and leave
+  // the streak loose — a hard-coded value would couple this test to
+  // the calendar date the CI machine happens to be running on.
+  assert decoded.total_words_read == 8
+  assert decoded.total_duration_seconds == 2700
+  assert decoded.books_completed == 1
+  assert decoded.current_streak_days >= 0
+}
+
+pub fn get_library_book_stats_returns_per_book_entries_test() {
+  use ctx <- with_context
+  let book_a = http_create_book(ctx, "A", None, sample_text)
+  let book_b = http_create_book(ctx, "B", None, sample_text)
+
+  let _ = http_post_session(ctx, book_a.book.id, "a1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book_a.book.id,
+      "a1",
+      end_session_body("2026-05-12T10:30:00Z", 7, 1, 2, 1800),
+    )
+  let _ = http_post_session(ctx, book_b.book.id, "b1", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book_b.book.id,
+      "b1",
+      end_session_body("2026-05-13T10:15:00Z", 3, 0, 1, 900),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/books"),
+      ctx,
+    )
+  assert response.status == 200
+  let entries =
+    decode_body(response, decode.list(stats.book_stats_entry_decoder()))
+  // Sort by book_id so the assertion does not depend on rowid order
+  // out of SQLite — different schema migrations could shuffle the
+  // GROUP BY's natural ordering.
+  let sorted = list.sort(entries, fn(a, b) { string.compare(a.0, b.0) })
+  let book_a_stats = BookStats(7, 1, 1800, 1)
+  let book_b_stats = BookStats(3, 0, 900, 1)
+  let expected = case string.compare(book_a.book.id, book_b.book.id) {
+    order.Lt -> [
+      #(book_a.book.id, book_a_stats),
+      #(book_b.book.id, book_b_stats),
+    ]
+    _ -> [#(book_b.book.id, book_b_stats), #(book_a.book.id, book_a_stats)]
+  }
+  assert sorted == expected
+}
+
+// The four `compute_current_streak_days_*` tests live in
+// `shared/test/stats_test.gleam` — the function under test is pure
+// shared logic and its tests now live next to the function rather
+// than across the shared / server package boundary.
+
+// ---------------------------------------------------------------------------
 // Books — metadata PATCH
 // ---------------------------------------------------------------------------
 
@@ -1610,6 +1906,73 @@ fn book_settings_to_json(settings: BookSettings) -> json.Json {
     #("page_delay_ms", json.nullable(settings.page_delay_ms, json.int)),
     #("ghost_opacity", json.nullable(settings.ghost_opacity, json.float)),
   ])
+}
+
+fn http_post_session(
+  ctx: web.Context,
+  book_id: String,
+  session_id: String,
+  started_at: String,
+) -> wisp.Response {
+  let body =
+    json.object([
+      #("id", json.string(session_id)),
+      #("started_at", json.string(started_at)),
+    ])
+  simulate.browser_request(http.Post, "/api/books/" <> book_id <> "/sessions")
+  |> simulate.json_body(body)
+  |> router.handle_request(ctx)
+}
+
+fn http_put_session(
+  ctx: web.Context,
+  book_id: String,
+  session_id: String,
+  body: json.Json,
+) -> wisp.Response {
+  simulate.browser_request(
+    http.Put,
+    "/api/books/" <> book_id <> "/sessions/" <> session_id,
+  )
+  |> simulate.json_body(body)
+  |> router.handle_request(ctx)
+}
+
+fn end_session_body(
+  ended_at: String,
+  words_read: Int,
+  words_skipped: Int,
+  pages_turned: Int,
+  duration_seconds: Int,
+) -> json.Json {
+  json.object([
+    #("ended_at", json.string(ended_at)),
+    #("words_read", json.int(words_read)),
+    #("words_skipped", json.int(words_skipped)),
+    #("pages_turned", json.int(pages_turned)),
+    #("duration_seconds", json.int(duration_seconds)),
+  ])
+}
+
+fn reading_session_wire_decoder() -> decode.Decoder(ReadingSession) {
+  use id <- decode.field("id", decode.string)
+  use book_id <- decode.field("book_id", decode.string)
+  use started_at <- decode.field("started_at", decode.string)
+  use ended_at <- decode.field("ended_at", decode.optional(decode.string))
+  use words_read <- decode.field("words_read", decode.int)
+  use words_skipped <- decode.field("words_skipped", decode.int)
+  use pages_turned <- decode.field("pages_turned", decode.int)
+  use duration_seconds <- decode.field("duration_seconds", decode.int)
+  decode.success(ReadingSession(
+    id: id,
+    book_id: book_id,
+    started_at: started_at,
+    ended_at: ended_at,
+    words_read: words_read,
+    words_skipped: words_skipped,
+    pages_turned: pages_turned,
+    duration_seconds: duration_seconds,
+  ))
 }
 
 fn user_settings_to_json(settings: UserSettings) -> json.Json {

@@ -429,6 +429,48 @@ pub type Msg {
   /// attributes are advisory; the reducer is the authority.
   SubmitJumpPage
 
+  /// `POST /api/books/:id/sessions` resolved. Carries the originating
+  /// `book_id` so the reducer can ignore a response that lands after
+  /// the reader has navigated to a different book, and a structured
+  /// result so a transient failure is surfaced to the console without
+  /// stranding the in-flight `active_session_id` field on the model.
+  SessionCreated(book_id: String, result: Result(String, ffi.FetchError))
+
+  /// `PUT /api/books/:id/sessions/:session_id` resolved. Fired after
+  /// the closing PUT lands so the reducer can re-fetch the stats
+  /// surface (which depends on the server-side aggregation reflecting
+  /// the newly-closed session).
+  SessionEnded(result: Result(String, ffi.FetchError))
+
+  /// `document.visibilitychange` fired. Carries the document's new
+  /// `visibilityState === "visible"` flag. The reducer ends the
+  /// in-flight reading session on hide and starts a new one on show
+  /// (subject to `view == Reader` / `active_book_id == Some(_)`).
+  VisibilityChanged(visible: Bool)
+
+  /// `GET /api/books/:id/stats` resolved. The success arm decodes the
+  /// body as `BookStats` and stamps it onto `model.book_stats` for
+  /// the active book; the error arm logs and leaves the prior value
+  /// in place.
+  FetchBookStatsResult(book_id: String, result: Result(String, ffi.FetchError))
+
+  /// `GET /api/stats` resolved. The success arm decodes the body as
+  /// `LibraryStats` and stamps it onto `model.library_stats`; the
+  /// error arm logs and leaves the prior value in place.
+  FetchLibraryStatsResult(result: Result(String, ffi.FetchError))
+
+  /// `GET /api/stats/books` resolved. The success arm decodes the body
+  /// as a list of `(book_id, BookStats)` pairs and stamps it onto
+  /// `model.library_book_stats`; the error arm logs and leaves the
+  /// prior map in place.
+  FetchLibraryBookStatsResult(result: Result(String, ffi.FetchError))
+
+  /// Reader tapped the stats button (open) or the scrim / close button
+  /// on the stats overlay (close). Flips `model.stats_open`. Opening
+  /// also chains a fresh `fetch_library_stats` so the overlay always
+  /// shows the latest aggregate values.
+  ToggleStatsView
+
   /// Reader tapped the edit-metadata affordance on a book card.
   /// Seeds `model.editing_metadata` with the current title / author /
   /// genre values so the form starts pre-filled with what the book

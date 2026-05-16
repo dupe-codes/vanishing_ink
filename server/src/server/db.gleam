@@ -147,6 +147,24 @@ CREATE TABLE IF NOT EXISTS reading_state (
   current_page INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS reading_sessions (
+  -- Mirrors the cascade note above the dependent tables. The `book_id`
+  -- references `books(id)` without `ON DELETE CASCADE`; `db.delete_book`
+  -- purges dependent rows manually so adding a new dependent table is
+  -- a deliberate, audited change rather than a silent surprise.
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL REFERENCES books(id),
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  words_read INTEGER NOT NULL DEFAULT 0,
+  words_skipped INTEGER NOT NULL DEFAULT 0,
+  pages_turned INTEGER NOT NULL DEFAULT 0,
+  duration_seconds INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS reading_sessions_book_id_idx
+  ON reading_sessions(book_id);
 "
 
 fn ensure_default_settings(
@@ -375,6 +393,15 @@ pub fn delete_book(
   id: shared.BookId,
 ) -> Result(Bool, sqlight.Error) {
   use <- transaction(connection)
+  // The `reading_sessions` rows are purged ahead of the parent `books`
+  // row alongside `reading_state` and `book_settings`. Same manual
+  // cascade convention — see the header comment on `schema_sql`.
+  use _ <- result.try(sqlight.query(
+    "DELETE FROM reading_sessions WHERE book_id = ?;",
+    on: connection,
+    with: [sqlight.text(id)],
+    expecting: decode.dynamic,
+  ))
   use _ <- result.try(sqlight.query(
     "DELETE FROM reading_state WHERE book_id = ?;",
     on: connection,
@@ -762,3 +789,10 @@ fn user_settings_decoder() -> decode.Decoder(UserSettings) {
     default_page_delay_ms: default_page_delay_ms,
   ))
 }
+// ---------------------------------------------------------------------------
+// Reading sessions
+// ---------------------------------------------------------------------------
+//
+// The session CRUD + aggregate queries live in `server/db_sessions`.
+// The schema, transaction helper, and `delete_book` cascade owned
+// here continue to manage the `reading_sessions` table itself.
