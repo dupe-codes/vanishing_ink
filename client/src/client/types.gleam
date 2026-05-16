@@ -29,7 +29,6 @@ pub type BookMeta {
     id: String,
     title: String,
     author: Option(String),
-    genre: Option(String),
     word_count: Int,
     sentence_count: Int,
     uploaded_at: String,
@@ -46,7 +45,6 @@ pub fn book_meta_decoder() -> decode.Decoder(BookMeta) {
   use id <- decode.field("id", decode.string)
   use title <- decode.field("title", decode.string)
   use author <- decode.field("author", decode.optional(decode.string))
-  use genre <- decode.field("genre", decode.optional(decode.string))
   use word_count <- decode.field("word_count", decode.int)
   use sentence_count <- decode.field("sentence_count", decode.int)
   use uploaded_at <- decode.field("uploaded_at", decode.string)
@@ -58,7 +56,6 @@ pub fn book_meta_decoder() -> decode.Decoder(BookMeta) {
     id: id,
     title: title,
     author: author,
-    genre: genre,
     word_count: word_count,
     sentence_count: sentence_count,
     uploaded_at: uploaded_at,

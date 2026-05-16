@@ -467,25 +467,6 @@ export function fetch_json_delete(url, on_complete) {
 }
 
 /**
- * PATCH counterpart to `fetch_json_put`. Used by the metadata-edit
- * endpoint which carries a partial-record payload (one or more of
- * `title` / `author` / `genre`); the server's `PATCH /api/books/:id`
- * handler reads each field's three-way state (absent, null, set) to
- * decide whether to preserve, clear, or overwrite that column.
- *
- * @param {string} url Absolute or relative URL.
- * @param {string} body JSON-encoded request body.
- * @param {function(Ok<string>|GleamError): void} on_complete
- */
-export function fetch_json_patch(url, body, on_complete) {
-  do_fetch(
-    url,
-    { method: "PATCH", headers: { "Content-Type": "application/json" }, body },
-    on_complete,
-  );
-}
-
-/**
  * Shared implementation for `fetch_json_get` / `fetch_json_post`. The
  * promise chain has three resolution points and each maps to one
  * `FetchError` variant:

@@ -134,7 +134,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       active_book_id: None,
       paste_title: "",
       paste_text: "",
-      paste_author: None,
       paste_submitting: False,
       paste_error: None,
       paste_warning: None,
@@ -158,7 +157,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       book_stats: None,
       library_stats: None,
       library_book_stats: dict.new(),
-      editing_metadata: None,
       jump_search_query: "",
       jump_search_results: [],
     )

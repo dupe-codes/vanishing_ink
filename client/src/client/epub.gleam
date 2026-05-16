@@ -27,7 +27,6 @@
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
-import gleam/option.{type Option}
 import lustre/attribute.{type Attribute}
 import lustre/event
 
@@ -42,13 +41,10 @@ import lustre/event
 /// `title` comes from the ePub package metadata (the OPF's
 /// `<dc:title>` element via foliate-js) and defaults to an empty
 /// string when the metadata is missing — the reducer treats empty as
-/// "ask the reader to fill in the title."
-///
-/// `author` mirrors `title` against the OPF's `<dc:creator>` element.
-/// `None` when the ePub omits creator metadata; `Some(value)` when
-/// foliate-js surfaces a non-empty trimmed string. The reducer
-/// threads this into the create-book POST so a freshly-imported
-/// book lands in the library with its author pre-populated.
+/// "ask the reader to fill in the title." Author / creator metadata
+/// is not surfaced because the create-book wire (`POST /api/books`)
+/// only carries `{ title, text }`; threading a `_author` field
+/// through the reducer to drop it on the floor would be dead code.
 ///
 /// `sections_skipped` is the count of spine sections the FFI could
 /// not parse (malformed XHTML, `createDocument` threw). The reducer
@@ -56,12 +52,7 @@ import lustre/event
 /// non-zero so the reader can distinguish "imported every chapter"
 /// from "imported but some chapters silently fell off the wire."
 pub type EpubExtract {
-  EpubExtract(
-    title: String,
-    author: Option(String),
-    text: String,
-    sections_skipped: Int,
-  )
+  EpubExtract(title: String, text: String, sections_skipped: Int)
 }
 
 /// Failure modes the import surface can produce. Each variant maps to

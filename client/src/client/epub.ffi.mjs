@@ -24,7 +24,6 @@
  */
 
 import { Ok, Error as GleamError } from "../gleam.mjs";
-import { None, Some } from "../../gleam_stdlib/gleam/option.mjs";
 import {
   EpubExtract,
   UnsupportedFormat,
@@ -114,28 +113,9 @@ function makeLoader(entries) {
 // a bare string per entry, EPUB 3 wraps it in `{ value: "..." }`, so
 // we handle both shapes.
 function readTitle(metadata) {
-  return readFirstString(metadata?.title);
-}
-
-// Read the OPF's `<dc:creator>` entries (foliate-js exposes them as
-// `metadata.author`). Same shape as `<dc:title>`: EPUB 2 hands us a
-// bare string per entry, EPUB 3 wraps it in `{ value, role, fileAs }`.
-// Returns a Gleam `Some(value)` when the first author entry trims to
-// a non-empty string and `None` otherwise — so the reducer sees a
-// crisp `Option(String)` rather than a sentinel empty string.
-function readAuthor(metadata) {
-  const value = readFirstString(metadata?.author);
-  return value.length === 0 ? new None() : new Some(value);
-}
-
-// Shared shape-tolerant reader for OPF-array metadata. Reduces the
-// first entry to a trimmed string regardless of whether it landed as
-// a bare string (EPUB 2) or an object wrapper (EPUB 3). Empty / missing
-// inputs return `""` so each caller can apply its own "convert empty
-// to `None`" rule.
-function readFirstString(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return "";
-  const first = entries[0];
+  const titles = metadata?.title;
+  if (!Array.isArray(titles) || titles.length === 0) return "";
+  const first = titles[0];
   if (typeof first === "string") return first.trim();
   if (first && typeof first === "object" && typeof first.value === "string") {
     return first.value.trim();
@@ -443,12 +423,7 @@ async function parseEpub(file) {
     throw new EmptyTextMarker();
   }
 
-  return new EpubExtract(
-    readTitle(book.metadata),
-    readAuthor(book.metadata),
-    text,
-    sectionsSkipped,
-  );
+  return new EpubExtract(readTitle(book.metadata), text, sectionsSkipped);
 }
 
 // Marker classes carry the error shape from the inner parser to the
