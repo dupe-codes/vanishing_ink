@@ -38,8 +38,8 @@ import lustre/event
 
 import client/gestures
 import client/msg.{
-  type Msg, EraseSentence, GoToLibrary, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart,
+  type Msg, EraseSentence, GoToLibrary, ToggleReaderStats, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart,
 }
 import client/pagination.{type Page, type PageParagraph}
 import client/state.{
@@ -47,7 +47,9 @@ import client/state.{
   measurement_id, page_content_id, reading_area_id,
 }
 import client/state/helpers.{erased_opacity_value, progress_percentage}
+import client/types.{type BookMeta}
 import client/view/reader/bottom_bar
+import client/view/stats_helpers
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
 
 /// Reader-view body. Renders a loading placeholder until a
@@ -178,7 +180,20 @@ fn view_reader_header(model: Model) -> Element(Msg) {
         ],
         [html.text("←")],
       ),
-      html.div([attribute.class("reader-title")], [html.text(title)]),
+      view_title_slot(model, title),
+      // Per-book stats glyph sits next to the gear so the two
+      // chrome actions (stats + settings) cluster on the right of
+      // the header. Mirrors the library appbar's stats button
+      // placement so the affordance reads the same in both views.
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Open book stats"),
+          attribute.type_("button"),
+          event.on_click(ToggleReaderStats),
+        ],
+        [html.text("📊")],
+      ),
       html.button(
         [
           attribute.class("btn-icon"),
@@ -195,28 +210,87 @@ fn view_reader_header(model: Model) -> Element(Msg) {
   ])
 }
 
-/// Resolve the title of the active book — the `BookMeta` in
-/// `model.books` whose `id` matches `model.active_book_id`. Used
-/// by the reader header as a fallback when the visible chapter
-/// carries no title of its own (every chapter in the bundled
-/// Tell-Tale Heart fixture, for instance, has `title: None`, so
-/// the reader header would otherwise show an empty centre slot).
+/// Render the centre slot of the reader header. The slot stacks the
+/// chapter / book title above a muted progress + ETA line so the
+/// reader always sees where they are in the book without opening the
+/// stats overlay. The meta line collapses to a single `"42%"` when
+/// the book has no aggregated stats yet (the ETA helper returns
+/// `None` for a fresh book with no recorded sessions) and to empty
+/// markup when pagination hasn't produced any pages yet
+/// (`total_pages == 0` → `progress_percentage` is `0.0`).
+fn view_title_slot(model: Model, title: String) -> Element(Msg) {
+  html.div([attribute.class("reader-title")], [
+    html.div([attribute.class("reader-title-name")], [html.text(title)]),
+    view_progress_meta(model),
+  ])
+}
+
+/// Render the muted progress + ETA line that rides below the title.
+/// Reads `progress_percentage` from the model (already cached on the
+/// pagination path) and the ETA from `stats_helpers.estimate_remaining`
+/// against the active book's `word_count`.
 ///
-/// Falls through to `""` when there is no active book id (the
-/// test-only `TextLoaded` entry point never stamps it) or when
-/// the book is not in `model.books` (a path that does not occur
-/// in production today — `BookCreated` prepends and `BooksLoaded`
-/// supplies the meta before `OpenBook` fires — but the helper
-/// stays total so a future direct-load entry point cannot crash
-/// the header).
-fn active_book_title(model: Model) -> String {
+/// Rendering rules:
+///
+///   * `total_pages == 0` (pagination pending) — render nothing while
+///     pagination has not yet produced pages. Once paginated, the
+///     guard releases and the meta line paints whatever percentage
+///     the model resolves to, including a legitimate "0%" when the
+///     reader is on page 1 of a freshly-loaded book.
+///   * `book_stats` is `None` or ETA cannot be computed — render the
+///     percentage alone (`"42%"`).
+///   * Both available — render the joined line (`"42% • ~12m left"`).
+fn view_progress_meta(model: Model) -> Element(Msg) {
+  case model.total_pages {
+    0 -> element.none()
+    _ -> {
+      let pct = progress_percentage(model)
+      let pct_text = int.to_string(float.round(pct)) <> "%"
+      let label = case active_book_meta(model), model.book_stats {
+        Some(meta), Some(stats) ->
+          case stats_helpers.estimate_remaining(stats, meta.word_count) {
+            Some(eta) -> pct_text <> " • " <> eta
+            None -> pct_text
+          }
+        _, _ -> pct_text
+      }
+      html.div([attribute.class("reader-title-meta")], [html.text(label)])
+    }
+  }
+}
+
+/// Resolve the `BookMeta` for the currently-active book — the entry
+/// in `model.books` whose `id` matches `model.active_book_id`.
+/// Returns `None` when there is no active book id (the test-only
+/// `TextLoaded` entry point never stamps it) or when the id is not
+/// in `model.books` (a path that does not occur in production today
+/// — `BookCreated` prepends and `BooksLoaded` supplies the meta
+/// before `OpenBook` fires — but the helper stays total so a
+/// future direct-load entry point cannot crash the header).
+///
+/// Centralised so both the header title fallback and the ETA
+/// computation walk the same `active_book_id → list.find` path; an
+/// earlier revision had two near-identical helpers that read
+/// different fields off the resolved meta.
+fn active_book_meta(model: Model) -> Option(BookMeta) {
   case model.active_book_id {
-    None -> ""
+    None -> None
     Some(id) ->
       case list.find(model.books, fn(meta) { meta.id == id }) {
-        Ok(meta) -> meta.title
-        Error(_) -> ""
+        Ok(meta) -> Some(meta)
+        Error(_) -> None
       }
+  }
+}
+
+/// Title of the active book, or `""` when no active book is
+/// resolvable. The empty fallback paints as a blank centre slot
+/// rather than as an error — every callsite already has a primary
+/// title path (the chapter title) that this only backs.
+fn active_book_title(model: Model) -> String {
+  case active_book_meta(model) {
+    None -> ""
+    Some(meta) -> meta.title
   }
 }
 

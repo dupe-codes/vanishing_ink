@@ -10,7 +10,6 @@
 //// response lands. Close dispatches `CloseEditMetadata` and discards
 //// the in-progress draft.
 
-import gleam/dynamic/decode
 import gleam/option.{None, Some}
 import gleam/string
 import lustre/attribute
@@ -20,9 +19,10 @@ import lustre/event
 
 import client/msg.{
   type Msg, CloseEditMetadata, SetEditMetadataAuthor, SetEditMetadataGenre,
-  SetEditMetadataTitle, SubmitEditMetadata, ToggleSettings,
+  SetEditMetadataTitle, SubmitEditMetadata,
 }
 import client/state.{type MetadataEdit, type Model}
+import client/view/overlay_helpers.{stop_click_propagation}
 
 /// Top-level entry point. Returns `element.none()` when no edit is in
 /// flight so the overlay never sits hidden in the DOM — keeps the
@@ -129,18 +129,4 @@ fn view_save_button(submitting: Bool, disabled: Bool) -> Element(Msg) {
     ],
     [html.text(label)],
   )
-}
-
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Used by the inner sheet markup to keep taps inside the
-/// surface from bubbling up to the scrim's close handler.
-///
-/// Duplicated in `client/view/library.gleam`,
-/// `client/view/library/add_book.gleam`, and
-/// `client/view/settings.gleam` rather than imported across sibling
-/// view modules so the view-layer dependency graph stays a fan-in
-/// pattern (each view module is a leaf under `client/view.gleam`).
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
-  |> event.stop_propagation
 }

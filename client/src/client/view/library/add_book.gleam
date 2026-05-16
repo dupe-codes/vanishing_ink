@@ -10,7 +10,6 @@
 //// reverse, so the view-layer dependency graph stays a fan-in pattern
 //// (sibling library modules → `library.gleam` → `view.gleam`).
 
-import gleam/dynamic/decode
 import gleam/option.{None, Some}
 import gleam/string
 import lustre/attribute
@@ -21,9 +20,10 @@ import lustre/event
 import client/epub
 import client/msg.{
   type Msg, EpubFileSelected, SetPasteText, SetPasteTitle, SubmitPaste,
-  ToggleAddBook, ToggleSettings,
+  ToggleAddBook,
 }
 import client/state.{type Model}
+import client/view/overlay_helpers.{stop_click_propagation}
 
 /// Floating action button anchored to the bottom-right of the library
 /// surface. Taps toggle the add-book sheet.
@@ -183,17 +183,4 @@ fn view_epub_import_row(model: Model) -> Element(Msg) {
     ]),
     html.span([attribute.class("epub-import-label")], [html.text(label_text)]),
   ])
-}
-
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Used by the inner sheet markup to keep taps inside the
-/// surface from bubbling up to the scrim's close handler.
-///
-/// Duplicated in `client/view/library.gleam` and
-/// `client/view/settings.gleam` rather than imported across sibling
-/// view modules so the view-layer dependency graph stays a fan-in
-/// pattern (each view module is a leaf under `client/view.gleam`).
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
-  |> event.stop_propagation
 }

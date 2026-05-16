@@ -19,6 +19,7 @@ import client/msg.{type Msg}
 import client/state.{type Model, Library, Reader}
 import client/view/library as library_view
 import client/view/reader as reader_view
+import client/view/reader/book_stats as reader_book_stats
 import client/view/reader/jump_menu
 import client/view/settings as settings_view
 import client/view/stats as stats_view
@@ -49,10 +50,22 @@ pub fn view(model: Model) -> Element(Msg) {
     False -> element.none()
   }
 
+  // The per-book stats overlay overlays the reader only — there is no
+  // per-book context to scope it to in the library, where the
+  // library-wide `stats_overlay` already provides the cross-book
+  // surface. Gated on `view == Reader` even though `reader_stats_open`
+  // is a `Bool` independent of `view`, so a stray flag flip outside
+  // the reader cannot paint the overlay against an empty book scope.
+  let reader_stats_overlay = case model.view {
+    Reader -> reader_book_stats.view(model)
+    Library -> element.none()
+  }
+
   html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
     body,
     overlay,
     jump_overlay,
     stats_overlay,
+    reader_stats_overlay,
   ])
 }

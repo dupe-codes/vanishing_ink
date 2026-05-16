@@ -777,6 +777,16 @@ pub type Model {
     /// `fetch_library_stats` so the overlay shows the latest
     /// aggregate values rather than a stale snapshot from boot.
     stats_open: Bool,
+    /// `True` while the per-book stats overlay is visible in the
+    /// reader. Flipped by `ToggleReaderStats`; opening also chains a
+    /// fresh `fetch_book_stats(active_book_id)` plus
+    /// `fetch_speed_trend` so the overlay shows the latest
+    /// per-book aggregates and sparkline rather than a stale snapshot
+    /// from session boot. Distinct from `stats_open` (the library-wide
+    /// overlay) so the two surfaces can coexist on the model without
+    /// stomping each other — only one ever renders at a time because
+    /// the per-book overlay is gated on `view == Reader`.
+    reader_stats_open: Bool,
     /// Cached `BookStats` for the active book — `None` between
     /// library and reader views, or while the fetch is in flight.
     /// Populated by `apply_book_loaded`'s follow-up GET; refreshed

@@ -38,6 +38,7 @@ import client/msg.{
 }
 import client/search.{type SearchResult}
 import client/state.{type ChapterEntry, type Model}
+import client/view/overlay_helpers.{stop_click_propagation}
 
 /// Render the Jump Ahead overlay when `model.jump_menu_open` is true.
 /// Returns `element.none()` otherwise — the markup is entirely absent
@@ -330,14 +331,4 @@ fn enter_key_decoder() -> decode.Decoder(Msg) {
     "Enter" -> decode.success(SubmitJumpPage)
     _ -> decode.failure(NoOp, "non-enter-key")
   }
-}
-
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Mirrors the helpers in `settings.gleam` and
-/// `library/add_book.gleam` — duplicated locally rather than imported
-/// so the view-layer dependency graph stays a fan-in pattern (each
-/// view module is a leaf under `client/view.gleam`).
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(NoOp, "stop-propagation"))
-  |> event.stop_propagation
 }

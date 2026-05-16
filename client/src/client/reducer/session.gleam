@@ -223,6 +223,55 @@ pub fn apply_toggle_stats_view(model: Model) -> #(Model, Effect(Msg)) {
   #(Model(..model, stats_open: opening), effect)
 }
 
+/// Classify the fetch outcome of a `ToggleReaderStats` dispatch
+/// against the current model. Pulled out of `apply_toggle_reader_stats`
+/// so tests can pin the asymmetric branch — `Closing` (no effect),
+/// `OpeningWithBook(id)` (batch fetch of book stats + speed trend), or
+/// `OpeningWithoutBook` (speed trend alone) — without poking at
+/// Lustre's opaque `Effect` value. The reducer arm calls this and
+/// translates each variant into the matching `Effect(Msg)`.
+pub type ReaderStatsToggleFetch {
+  ReaderStatsClosing
+  ReaderStatsOpeningWithBook(book_id: String)
+  ReaderStatsOpeningWithoutBook
+}
+
+/// Pure classifier for the `ToggleReaderStats` fetch shape. Returns
+/// the three-way enum above without producing an `Effect`. The reducer
+/// composes this with `effect.batch` / `fetch_*` calls, and tests
+/// dispatch against the enum directly.
+pub fn classify_reader_stats_toggle(model: Model) -> ReaderStatsToggleFetch {
+  case !model.reader_stats_open {
+    False -> ReaderStatsClosing
+    True ->
+      case model.active_book_id {
+        Some(book_id) -> ReaderStatsOpeningWithBook(book_id)
+        None -> ReaderStatsOpeningWithoutBook
+      }
+  }
+}
+
+/// Flip `model.reader_stats_open`. Opening chains
+/// `fetch_book_stats(active_book_id)` plus `fetch_speed_trend` so the
+/// per-book overlay paints with the latest aggregates and sparkline
+/// rather than a stale snapshot. Closing has no side effect. A toggle
+/// fires with no active book is harmless — the flag flips, but the
+/// modal renders nothing useful and `fetch_book_stats` would have
+/// nothing to attach to, so the open path skips the book-stats fetch
+/// when `active_book_id` is `None`. The speed-trend fetch is
+/// book-independent and fires either way so the sparkline reflects the
+/// reader's overall pace whenever the surface opens.
+pub fn apply_toggle_reader_stats(model: Model) -> #(Model, Effect(Msg)) {
+  let opening = !model.reader_stats_open
+  let effect = case classify_reader_stats_toggle(model) {
+    ReaderStatsClosing -> effect.none()
+    ReaderStatsOpeningWithBook(book_id) ->
+      effect.batch([fetch_book_stats(book_id), fetch_speed_trend()])
+    ReaderStatsOpeningWithoutBook -> fetch_speed_trend()
+  }
+  #(Model(..model, reader_stats_open: opening), effect)
+}
+
 // ---------------------------------------------------------------------------
 // Stats fetch results
 // ---------------------------------------------------------------------------
