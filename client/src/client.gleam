@@ -225,6 +225,14 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
         dispatch(VisibilityChanged(visible))
       })
     })
+  // `pagehide` is the durability backstop for the cases
+  // `visibilitychange` cannot catch — tab close, navigation away,
+  // mobile-Safari swipe-back. The listener flushes whatever session
+  // snapshot the reducer most recently stamped via `sendBeacon`, a
+  // delivery channel the browser keeps alive past document unload
+  // (unlike `fetch`, which is typically cancelled).
+  let pagehide_listener =
+    effect.from(fn(_dispatch) { ffi.add_pagehide_listener() })
 
   #(
     model,
@@ -240,6 +248,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       undo_listener,
       vim_listener,
       visibility_listener,
+      pagehide_listener,
     ]),
   )
 }

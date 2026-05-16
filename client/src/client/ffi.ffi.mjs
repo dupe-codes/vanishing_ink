@@ -601,6 +601,64 @@ export function add_visibility_listener(callback) {
 }
 
 /**
+ * Module-level slot for the most recent session-update snapshot. The
+ * Gleam reducer stamps this from every arm that mutates session
+ * counters (open, page turn, word erase, lock-in, close). On
+ * `pagehide` the listener below flushes whatever is currently in the
+ * slot via `navigator.sendBeacon` — a reliable best-effort PUT that
+ * the browser delivers even after the document unloads, unlike
+ * `fetch()` which often gets cancelled on unload paths.
+ *
+ * Cleared to `null` by `set_session_snapshot("", "")` so a clean close
+ * does not double-fire the PUT alongside the `pagehide` event.
+ */
+let session_snapshot = null;
+
+/**
+ * Stamp or clear the session snapshot slot. An empty `url` clears the
+ * slot so the next `pagehide` is a no-op — used by
+ * `apply_end_session` after the normal-close PUT has been queued
+ * through the regular fetch path.
+ *
+ * @param {string} url
+ * @param {string} body
+ */
+export function set_session_snapshot(url, body) {
+  if (url === "" || body === "") {
+    session_snapshot = null;
+    return;
+  }
+  session_snapshot = { url, body };
+}
+
+/**
+ * Installs a `pagehide` listener that flushes the in-slot snapshot
+ * via `sendBeacon`. The spec routes `sendBeacon` through a dedicated
+ * delivery queue the browser can keep alive past unload — the typical
+ * failure mode of `fetch()` during unload (cancelled request, lost
+ * data) is avoided.
+ *
+ * The Blob carries the canonical `application/json` content-type so
+ * the server's existing `application/json` PUT handler accepts it
+ * without a separate body parser branch.
+ *
+ * The listener clears the slot after delivery so a subsequent
+ * `pagehide` (modern browsers can fire it more than once per
+ * navigation) does not re-flush stale data.
+ */
+export function add_pagehide_listener() {
+  window.addEventListener("pagehide", () => {
+    if (session_snapshot !== null) {
+      const blob = new Blob([session_snapshot.body], {
+        type: "application/json",
+      });
+      navigator.sendBeacon(session_snapshot.url, blob);
+      session_snapshot = null;
+    }
+  });
+}
+
+/**
  * Wall-clock now as integer milliseconds since the Unix epoch. Used by
  * the reading-session reducer to compute the duration of a session
  * locally; the canonical ISO-8601 stamp goes over the wire via

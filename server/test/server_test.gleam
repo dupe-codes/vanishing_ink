@@ -1402,6 +1402,83 @@ pub fn get_library_book_stats_returns_per_book_entries_test() {
   assert sorted == expected
 }
 
+pub fn get_speed_trend_returns_recent_session_speeds_test() {
+  // The endpoint returns the most recent N session speeds with
+  // non-zero `words_read` and `duration_seconds`. WPM is computed
+  // server-side as `words_read * 60 / duration_seconds` — for the
+  // first session below (5 words / 60 seconds = 5 wpm), and for the
+  // second (60 words / 60 seconds = 60 wpm). The endpoint returns
+  // the most-recent session first.
+  use ctx <- with_context
+  let book = http_create_book(ctx, "A", None, sample_text)
+  let _ = http_post_session(ctx, book.book.id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s1",
+      end_session_body("2026-05-12T10:01:00Z", 5, 0, 1, 60),
+    )
+  let _ = http_post_session(ctx, book.book.id, "s2", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s2",
+      end_session_body("2026-05-13T10:01:00Z", 60, 0, 1, 60),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/speed"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded =
+    decode_body(response, decode.list(stats.session_speed_decoder()))
+  // Most-recent first — `s2` (60 wpm) leads, `s1` (5 wpm) follows.
+  // The dates round-trip through the server's
+  // canonicalisation pass and come back with millisecond precision.
+  let wpms = list.map(decoded, fn(s) { s.wpm })
+  assert wpms == [60, 5]
+}
+
+pub fn get_speed_trend_skips_zero_duration_sessions_test() {
+  // A session with `duration_seconds == 0` cannot produce a
+  // meaningful WPM (division by zero), and a session with
+  // `words_read == 0` would always be 0 wpm regardless of duration.
+  // Both are filtered out at the SQL level so the rendered sparkline
+  // only shows sessions with actual engagement.
+  use ctx <- with_context
+  let book = http_create_book(ctx, "A", None, sample_text)
+  let _ = http_post_session(ctx, book.book.id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s1",
+      end_session_body("2026-05-12T10:00:00Z", 5, 0, 0, 0),
+    )
+  let _ = http_post_session(ctx, book.book.id, "s2", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s2",
+      end_session_body("2026-05-13T10:01:00Z", 0, 0, 0, 60),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/speed"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded =
+    decode_body(response, decode.list(stats.session_speed_decoder()))
+  assert decoded == []
+}
+
 // The four `compute_current_streak_days_*` tests live in
 // `shared/test/stats_test.gleam` — the function under test is pure
 // shared logic and its tests now live next to the function rather

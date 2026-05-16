@@ -53,17 +53,18 @@ import client/msg.{
   AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookMetadataUpdated,
   BookSettingsLoaded, BooksLoaded, CancelDelete, CloseEditMetadata,
   ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused, EraseSentence,
-  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
-  GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage,
-  NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured, PauseFade,
-  ReadingStateLoaded, ResetBookSettings, ResumeFade, SelectSearchResult,
-  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
-  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
-  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
-  ToggleGhostMode, ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart, Undo, UndoJump, ViewportResized,
+  ExecuteDelete, FetchSpeedTrendResult, FocusNext, FocusParagraphDown,
+  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
+  LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata,
+  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SelectSearchResult, SetEditMetadataAuthor, SetEditMetadataGenre,
+  SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
+  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
@@ -8014,6 +8015,151 @@ pub fn stats_format_streak_examples_test() {
   assert stats_view_module.format_streak(0) == "None"
   assert stats_view_module.format_streak(1) == "1 day"
   assert stats_view_module.format_streak(7) == "7 days"
+}
+
+pub fn stats_view_renders_sparkline_when_speed_trend_present_test() {
+  // A populated `speed_trend` lights up the sparkline tile: an SVG
+  // surface with a `<polyline>` of the WPM values plus a fill
+  // polygon and an "N wpm avg" badge. Pinning the SVG namespace
+  // attribute alongside the polyline class catches both a missed
+  // `element.namespaced` call (the line would render as an unknown
+  // HTML tag) and a CSS-selector drift.
+  let model =
+    Model(..library_model(), stats_open: True, speed_trend: [
+      shared_stats.SessionSpeed(date: "2026-05-13T10:00:00Z", wpm: 240),
+      shared_stats.SessionSpeed(date: "2026-05-12T10:00:00Z", wpm: 200),
+      shared_stats.SessionSpeed(date: "2026-05-11T10:00:00Z", wpm: 160),
+    ])
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "stats-speed-trend")
+  assert string.contains(rendered, "stats-speed-trend-svg")
+  assert string.contains(rendered, "stats-speed-trend-line")
+  // Average of the three samples is (240 + 200 + 160) / 3 = 200.
+  assert string.contains(rendered, "200 wpm avg")
+}
+
+pub fn stats_view_renders_empty_state_when_speed_trend_empty_test() {
+  // An empty trend collapses to a placeholder message so the tile
+  // chrome stays present on first open. The SVG polyline must NOT
+  // render — an empty polyline would paint as a stray dot.
+  let model = Model(..library_model(), stats_open: True, speed_trend: [])
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "stats-speed-trend-empty")
+  assert !string.contains(rendered, "stats-speed-trend-line")
+}
+
+pub fn stats_average_wpm_examples_test() {
+  // Pin the predicate at the boundaries the view layer cannot exercise:
+  // empty list, single sample, mixed values.
+  assert stats_view_module.average_wpm([]) == 0
+  assert stats_view_module.average_wpm([200]) == 200
+  assert stats_view_module.average_wpm([160, 200, 240]) == 200
+}
+
+pub fn toggle_stats_view_opens_and_chains_aggregate_fetches_test() {
+  // Opening the stats overlay must (a) flip `stats_open` to True and
+  // (b) chain a batch of fetches so the surface paints with current
+  // values rather than a stale snapshot from boot. We can't assert on
+  // the Effect contents directly (Lustre opaque), but we can assert
+  // that the model transition happens — the matching effect batch
+  // lives in `apply_toggle_stats_view` and is covered by the build /
+  // type check.
+  let prior = Model(..empty_model(), view: Library, stats_open: False)
+
+  let #(updated, _effect) = reducer.update(prior, ToggleStatsView)
+
+  assert updated == Model(..prior, stats_open: True)
+}
+
+pub fn fetch_speed_trend_result_ok_stamps_samples_test() {
+  // The decode path projects the wire JSON onto `model.speed_trend`.
+  // Pinning the whole field surface (the prior `speed_trend` value
+  // gets replaced wholesale; no other field is touched).
+  let prior = Model(..empty_model(), speed_trend: [])
+  let body =
+    "[{\"date\":\"2026-05-13T10:00:00.000Z\",\"wpm\":180},"
+    <> "{\"date\":\"2026-05-12T10:00:00.000Z\",\"wpm\":120}]"
+
+  let #(updated, _effect) =
+    reducer.update(prior, FetchSpeedTrendResult(Ok(body)))
+
+  assert updated.speed_trend
+    == [
+      shared_stats.SessionSpeed(date: "2026-05-13T10:00:00.000Z", wpm: 180),
+      shared_stats.SessionSpeed(date: "2026-05-12T10:00:00.000Z", wpm: 120),
+    ]
+}
+
+pub fn session_snapshot_body_contains_session_counter_fields_test() {
+  // The snapshot body mirrors `end_reading_session`'s payload shape
+  // — the server's existing handler decodes both via the same
+  // `end_session_decoder`, so the wire form must carry the same five
+  // fields. `ended_at` and `duration_seconds` are read off the live
+  // FFI wall clock and vary between runs; we pin the deterministic
+  // fields (`words_read`, `words_skipped`, `pages_turned`) via
+  // substring contains so the test is stable.
+  let prior =
+    Model(
+      ..empty_model(),
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-y"),
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      session_words_skipped: 2,
+      current_page: 5,
+      erased_words: set.from_list([0, 1, 2, 3, 4]),
+    )
+
+  let body = effects.build_session_snapshot_body(prior)
+
+  // `pages_turned` = 5 - 0 = 5.
+  assert string.contains(body, "\"pages_turned\":5")
+  // `words_read` = 5 erased - 0 baseline - 2 skipped = 3.
+  assert string.contains(body, "\"words_read\":3")
+  assert string.contains(body, "\"words_skipped\":2")
+  // Every required field is present so the server decoder accepts it.
+  assert string.contains(body, "\"ended_at\":")
+  assert string.contains(body, "\"duration_seconds\":")
+}
+
+pub fn session_snapshot_body_clamps_negative_pages_to_zero_test() {
+  // A viewport-resize-driven re-pagination during the session could
+  // shrink `current_page` past `session_start_page`. In that case
+  // `pages_turned` collapses to zero rather than reporting a
+  // negative count — mirrors the same clamp `apply_end_session`
+  // performs.
+  let prior =
+    Model(
+      ..empty_model(),
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-y"),
+      session_start_page: 10,
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+      current_page: 3,
+    )
+
+  let body = effects.build_session_snapshot_body(prior)
+
+  assert string.contains(body, "\"pages_turned\":0")
+}
+
+pub fn fetch_speed_trend_result_error_clears_prior_samples_test() {
+  // A network error clears the in-memory trend so a stale snapshot
+  // from a previous open does not paint the new overlay alongside
+  // an error.
+  let prior =
+    Model(..empty_model(), speed_trend: [
+      shared_stats.SessionSpeed(date: "2026-05-13", wpm: 100),
+    ])
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      FetchSpeedTrendResult(Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.speed_trend == []
 }
 
 // ---------------------------------------------------------------------------

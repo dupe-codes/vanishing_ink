@@ -7,6 +7,7 @@
 //// `shared/stats.gleam` finds its tests without crossing the
 //// shared / server package boundary.
 
+import gleam/json as gleam_json
 import gleeunit
 import shared/stats
 
@@ -70,4 +71,18 @@ pub fn compute_current_streak_days_empty_list_is_zero_test() {
       is_next_day: is_next_day,
     )
     == 0
+}
+
+pub fn session_speed_codec_round_trips_test() {
+  // The encoder and decoder are symmetric: a record encoded to JSON
+  // and then decoded back must equal the input. Pinning the wire form
+  // alongside the round-trip catches a field-name drift on either
+  // side — the test would surface as a decode failure rather than as
+  // a silent shape mismatch at runtime.
+  let sample = stats.SessionSpeed(date: "2026-05-13T10:00:00.000Z", wpm: 180)
+  let encoded = stats.session_speed_to_json(sample) |> gleam_json.to_string
+  assert encoded == "{\"date\":\"2026-05-13T10:00:00.000Z\",\"wpm\":180}"
+  let assert Ok(decoded) =
+    gleam_json.parse(encoded, stats.session_speed_decoder())
+  assert decoded == sample
 }

@@ -29,8 +29,8 @@ import client/msg.{
   type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, EpubParsed,
   FetchBookStatsResult, FetchLibraryBookStatsResult, FetchLibraryStatsResult,
-  LinesMeasured, ParagraphsMeasured, ReadingStateLoaded, SessionCreated,
-  SessionEnded, SettingsLoaded, ViewportResized,
+  FetchSpeedTrendResult, LinesMeasured, ParagraphsMeasured, ReadingStateLoaded,
+  SessionCreated, SessionEnded, SettingsLoaded, ViewportResized,
 }
 import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
@@ -186,6 +186,14 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// dispatches and mid-preview dispatches collapse to `effect.none()`
 /// for free.
 ///
+/// Side-effect: refreshes the `pagehide` snapshot via
+/// `refresh_session_snapshot(model)` so the beacon body stays within
+/// one tick of the most recent counter mutation. The snapshot refresh
+/// fires synchronously here (not inside the returned effect) so that
+/// a tab close racing the effect dispatch still flushes the correct
+/// payload — by the time Lustre runs the effect, the unload event
+/// would already have been delivered.
+///
 /// ORDERING — same caveat as `save_book_settings`: rapid erases /
 /// page turns fire one PUT per dispatch with no debounce and no
 /// sequence number. The server's last-write-wins guard rejects
@@ -193,6 +201,7 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// PUT that arrives after a newer one is silently dropped on the
 /// server side rather than clobbering the latest state.
 pub fn save_reading_state(model: Model) -> Effect(Msg) {
+  refresh_session_snapshot(model)
   case should_save_reading_state(model), model.active_book_id {
     True, Some(id) -> {
       let mode_value = case model.mode {
@@ -232,6 +241,75 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
     }
     _, _ -> effect.none()
   }
+}
+
+/// Stamp the latest closing-PUT body into the FFI snapshot slot the
+/// `pagehide` listener flushes. Pulled out so every reducer arm that
+/// mutates session counters (open, page turn, word erase, lock-in)
+/// reuses one builder rather than re-rolling the body — drift between
+/// the snapshot body and the canonical `end_reading_session` PUT
+/// would otherwise produce a beacon payload the server's
+/// `put_session_handler` could not accept.
+///
+/// Lives in `effects` (rather than `reducer/session`) so
+/// `save_reading_state` can call it without forming an
+/// `effects → reducer/session → effects` import cycle. Side-effecting
+/// directly (no `Effect` wrapper) because the snapshot must be in
+/// place before the next paint — by the time Lustre runs a deferred
+/// effect, the `pagehide` event could already have been delivered.
+///
+/// A no-op when no session is in flight; the slot stays cleared by
+/// `apply_end_session` and remains empty until the next
+/// `apply_start_session`.
+pub fn refresh_session_snapshot(model: Model) -> Nil {
+  case model.active_book_id, model.active_session_id {
+    Some(book_id), Some(session_id) -> {
+      let url = "/api/books/" <> book_id <> "/sessions/" <> session_id
+      let body = build_session_snapshot_body(model)
+      ffi.set_session_snapshot(url, body)
+    }
+    _, _ -> ffi.set_session_snapshot("", "")
+  }
+}
+
+/// Compute the JSON body the `pagehide` beacon should flush. Mirrors
+/// `end_reading_session`'s payload shape exactly — same field names,
+/// same compute-the-delta math — so the server's existing handler can
+/// process it with no special-case branch.
+///
+/// Exposed for tests that pin the wire shape — the FFI snapshot slot
+/// is module-level JS state and not observable from Gleam, so the
+/// derivation has to be testable in isolation. `ended_at` and the
+/// elapsed-millisecond delta read live FFI values, which surface as
+/// Node's wall clock in unit tests — tests that pin those fields
+/// should normalise them out.
+pub fn build_session_snapshot_body(model: Model) -> String {
+  let now_ms = ffi.now_ms()
+  let duration_seconds = case now_ms - model.session_started_at_ms {
+    ms if ms < 0 -> 0
+    ms -> ms / 1000
+  }
+  let pages_turned = case model.current_page - model.session_start_page {
+    delta if delta < 0 -> 0
+    delta -> delta
+  }
+  let current_erased = set.size(model.erased_words)
+  let words_read = case
+    current_erased
+    - model.session_start_erased_count
+    - model.session_words_skipped
+  {
+    delta if delta < 0 -> 0
+    delta -> delta
+  }
+  json.object([
+    #("ended_at", json.string(ffi.now_iso8601())),
+    #("words_read", json.int(words_read)),
+    #("words_skipped", json.int(model.session_words_skipped)),
+    #("pages_turned", json.int(pages_turned)),
+    #("duration_seconds", json.int(duration_seconds)),
+  ])
+  |> json.to_string
 }
 
 /// Predicate gating `save_reading_state`. Returns `True` when a save
@@ -347,6 +425,19 @@ pub fn fetch_library_book_stats() -> Effect(Msg) {
   effect.from(fn(dispatch) {
     ffi.fetch_json_get("/api/stats/books", fn(result) {
       dispatch(FetchLibraryBookStatsResult(result))
+    })
+  })
+}
+
+/// `GET /api/stats/speed` and dispatch `FetchSpeedTrendResult`. The
+/// raw response body is forwarded so the reducer branches on the
+/// decode result inline. Chained off `apply_toggle_stats_view` so the
+/// overlay always opens with a fresh trend rather than a snapshot
+/// from boot.
+pub fn fetch_speed_trend() -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    ffi.fetch_json_get("/api/stats/speed", fn(result) {
+      dispatch(FetchSpeedTrendResult(result))
     })
   })
 }

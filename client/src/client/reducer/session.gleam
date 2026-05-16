@@ -28,12 +28,14 @@ import lustre/effect.{type Effect}
 import client/effects.{
   create_reading_session, describe_fetch_error, end_reading_session,
   fetch_book_stats, fetch_library_book_stats, fetch_library_stats,
+  fetch_speed_trend, refresh_session_snapshot,
 }
 import client/ffi
 import client/msg.{type Msg}
 import client/state.{type Model, Model, Reader}
 import shared/stats.{
   book_stats_decoder, book_stats_entry_decoder, library_stats_decoder,
+  session_speed_decoder,
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,15 @@ import shared/stats.{
 /// already-active session means the dispatch site missed the end
 /// hook; defaulting to "ignore the duplicate open" is safer than
 /// abandoning the live row.
+///
+/// Stamps the FFI session snapshot via `set_session_snapshot` so the
+/// `pagehide` listener has a payload to flush if the reader closes
+/// the tab before the session ends normally. The snapshot reads back
+/// the same closing-PUT body that `apply_end_session` would write,
+/// just with the deltas frozen at "session open" (zero everywhere
+/// except `ended_at`, which the beacon path stamps fresh from the
+/// browser at flush time — or rather, the reducer stamps the latest
+/// wall-clock value into the snapshot whenever it refreshes).
 pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
   case model.active_book_id, model.active_session_id {
     Some(book_id), None -> {
@@ -69,6 +80,7 @@ pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
           session_started_at: Some(started_at),
           session_started_at_ms: started_at_ms,
         )
+      refresh_session_snapshot(opened)
       #(
         opened,
         effect.batch([
@@ -80,6 +92,11 @@ pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
     _, _ -> #(model, effect.none())
   }
 }
+
+// The session-snapshot helper used to live here; it has been moved
+// into `client/effects` so `save_reading_state` can call it inline
+// without forming a `effects → reducer/session → effects` import
+// cycle. The exported name (`refresh_session_snapshot`) is unchanged.
 
 // ---------------------------------------------------------------------------
 // Close
@@ -131,6 +148,14 @@ pub fn apply_end_session(model: Model) -> #(Model, Effect(Msg)) {
           session_start_erased_count: 0,
           session_words_skipped: 0,
         )
+      // Clear the FFI snapshot slot so the next `pagehide` does not
+      // re-flush the just-closed session's body alongside the normal
+      // PUT this arm queued — the server would otherwise see two
+      // identical writes against the same row, the second arriving
+      // after the in-flight aggregate refresh. The clear goes through
+      // `effects.refresh_session_snapshot` against the post-clear
+      // model so the same helper handles both stamp and clear paths.
+      refresh_session_snapshot(closed)
       let put_effect =
         end_reading_session(
           book_id: book_id,
@@ -180,14 +205,15 @@ pub fn apply_visibility_changed(
 // Stats overlay
 // ---------------------------------------------------------------------------
 
-/// Flip `model.stats_open`. Opening chains a fresh
-/// `fetch_library_stats` so the overlay shows the latest aggregate
-/// values rather than a stale snapshot from boot. Closing has no
-/// side effect.
+/// Flip `model.stats_open`. Opening chains fresh aggregate fetches —
+/// `fetch_library_stats` for the tile values plus `fetch_speed_trend`
+/// for the sparkline — so the overlay always paints with the latest
+/// data rather than a stale snapshot from boot. Closing has no side
+/// effect.
 pub fn apply_toggle_stats_view(model: Model) -> #(Model, Effect(Msg)) {
   let opening = !model.stats_open
   let effect = case opening {
-    True -> fetch_library_stats()
+    True -> effect.batch([fetch_library_stats(), fetch_speed_trend()])
     False -> effect.none()
   }
   #(Model(..model, stats_open: opening), effect)
@@ -284,6 +310,39 @@ pub fn apply_fetch_library_book_stats_result(
           Model(..model, library_book_stats: dict.from_list(entries)),
           effect.none(),
         )
+      }
+  }
+}
+
+/// Apply a `FetchSpeedTrendResult` dispatch. The wire shape is a JSON
+/// array of `{date, wpm}` samples in reverse-chronological order; we
+/// decode it as-is and stamp it onto `model.speed_trend`. The view
+/// layer reverses the list when rendering so the polyline reads
+/// left-to-right in chronological order — keeping the on-model order
+/// the same as the wire order means the reducer stays a pure
+/// projection of the response.
+///
+/// A decode failure or network error clears `speed_trend` so a stale
+/// snapshot from the previous open does not paint the new overlay
+/// alongside an error. The console log carries the diagnostic so a
+/// future operator session can investigate without a UI banner that
+/// would compete with the rest of the stats surface.
+pub fn apply_fetch_speed_trend_result(
+  model: Model,
+  result: Result(String, ffi.FetchError),
+) -> #(Model, Effect(Msg)) {
+  case result {
+    Error(error) -> {
+      io.println("Failed to load speed trend: " <> describe_fetch_error(error))
+      #(Model(..model, speed_trend: []), effect.none())
+    }
+    Ok(body) ->
+      case json.parse(body, decode.list(session_speed_decoder())) {
+        Error(_) -> {
+          io.println("Failed to decode /api/stats/speed response")
+          #(Model(..model, speed_trend: []), effect.none())
+        }
+        Ok(samples) -> #(Model(..model, speed_trend: samples), effect.none())
       }
   }
 }

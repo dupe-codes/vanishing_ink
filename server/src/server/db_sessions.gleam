@@ -16,7 +16,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import server/types.{type ReadingSession, ReadingSession}
 import shared
-import shared/stats.{type BookStats, type LibraryStats, BookStats, LibraryStats}
+import shared/stats.{
+  type BookStats, type LibraryStats, type SessionSpeed, BookStats, LibraryStats,
+  SessionSpeed,
+}
 import sqlight
 
 /// Insert a fresh `reading_sessions` row. The id is supplied by the
@@ -239,6 +242,45 @@ pub fn get_all_book_stats(
     ))
   }
   sqlight.query(sql, on: connection, with: [], expecting: decoder)
+}
+
+/// Recent sessions with non-zero counters, ordered most-recent first.
+/// Returns at most `limit` entries — the client renders this list as
+/// an SVG sparkline of effective WPM, so unbounded result sets would
+/// drag the wire payload alongside a 200×40 line that cannot resolve
+/// more than a few dozen samples anyway.
+///
+/// Sessions with `words_read == 0` or `duration_seconds == 0` are
+/// filtered out at the SQL level: dividing into a zero numerator
+/// produces a meaningless `0 wpm` sample, and dividing by zero
+/// duration is undefined. Excluding them keeps the rendered polyline
+/// honest about which sessions actually had measurable engagement.
+///
+/// WPM is computed server-side as `words_read * 60 / duration_seconds`
+/// so the client never has to re-derive the rate from raw counters.
+pub fn get_recent_session_speeds(
+  connection: sqlight.Connection,
+  limit: Int,
+) -> Result(List(SessionSpeed), sqlight.Error) {
+  let sql =
+    "SELECT started_at,
+            words_read * 60 / duration_seconds AS wpm
+       FROM reading_sessions
+      WHERE words_read > 0
+        AND duration_seconds > 0
+      ORDER BY started_at DESC
+      LIMIT ?;"
+  let decoder = {
+    use date <- decode.field(0, decode.string)
+    use wpm <- decode.field(1, decode.int)
+    decode.success(SessionSpeed(date: date, wpm: wpm))
+  }
+  sqlight.query(
+    sql,
+    on: connection,
+    with: [sqlight.int(limit)],
+    expecting: decoder,
+  )
 }
 
 /// Distinct YYYY-MM-DD strings of every started session, descending.

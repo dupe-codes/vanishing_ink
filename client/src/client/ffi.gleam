@@ -299,6 +299,41 @@ pub fn generate_uuid() -> String
 @external(javascript, "./ffi.ffi.mjs", "add_visibility_listener")
 pub fn add_visibility_listener(callback: fn(Bool) -> Nil) -> Nil
 
+/// Install a `pagehide` listener that flushes the most recently
+/// stamped session snapshot via `navigator.sendBeacon`. `pagehide`
+/// fires when the document is being unloaded — tab close, navigation
+/// to another origin, mobile-Safari swipe-back — events the
+/// `visibilitychange` listener cannot intercept reliably because
+/// `fetch()` requests issued from a `visibilitychange` hidden handler
+/// often get cancelled by the browser before the network layer can
+/// forward them. `sendBeacon` is the spec-defined hook for guaranteed
+/// best-effort delivery during unload.
+///
+/// The snapshot itself is maintained by `set_session_snapshot` —
+/// every session-lifecycle reducer arm stamps the current counters
+/// into the slot, so the `pagehide` callback always reads the latest
+/// session state without having to walk Gleam-side state from JS.
+@external(javascript, "./ffi.ffi.mjs", "add_pagehide_listener")
+pub fn add_pagehide_listener() -> Nil
+
+/// Stamp the current closing-PUT body into the module-level snapshot
+/// slot the `pagehide` listener flushes. `url` is the endpoint the
+/// flush should target (`/api/books/:id/sessions/:session_id`) and
+/// `body` is the JSON-encoded payload — exactly what
+/// `end_reading_session` would have PUT.
+///
+/// Called from `apply_start_session` (first stamp), every reducer arm
+/// that mutates session counters (page turns, word erases, lock-in
+/// jumps), and `apply_end_session` (final clear-to-empty so the
+/// `pagehide` listener does not flush a stale snapshot after the
+/// session has closed normally).
+///
+/// Pass an empty `url` and empty `body` to clear the slot — the
+/// listener short-circuits on the empty URL so a clean close does
+/// not double-fire the PUT alongside `pagehide`.
+@external(javascript, "./ffi.ffi.mjs", "set_session_snapshot")
+pub fn set_session_snapshot(url: String, body: String) -> Nil
+
 /// Wall-clock now as Unix epoch milliseconds. Pulled out of `Date.now()`
 /// so the reducer can compute session duration deltas locally — the
 /// `now_iso8601()` string above is canonical for transport, but
