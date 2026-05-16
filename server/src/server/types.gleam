@@ -112,13 +112,15 @@ pub type ReadingState {
     sentence_bitset: Option(BitArray),
     word_bitset: Option(BitArray),
     current_page: Int,
-    /// Viewport-agnostic page-based progress percentage. Computed
-    /// client-side as `(current_page + 1) / total_pages * 100` and
-    /// echoed verbatim on the wire so the library card can display
-    /// the same number the reader sees in the progress bar. Stored
-    /// as a `REAL` in `reading_state.percent_progress`, defaulting
-    /// to `0.0` for rows created before the page-based-progress
-    /// quest.
+    /// Page-based progress percentage. Computed client-side as
+    /// `(current_page + 1) / total_pages * 100` and echoed verbatim
+    /// on the wire so the library card can display the same number
+    /// the reader sees in the progress bar. Stored as a `REAL` in
+    /// `reading_state.percent_progress`, defaulting to `0.0` for
+    /// rows created before the page-based-progress quest. The
+    /// persisted number is *viewport-of-last-save* — whatever
+    /// pagination the client's viewport produced at PUT time — not
+    /// viewport-agnostic.
     percent_progress: Float,
     updated_at: Option(String),
   )

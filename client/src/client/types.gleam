@@ -205,11 +205,15 @@ pub type ReadingState {
     sentence_bitset: Option(String),
     word_bitset: Option(String),
     current_page: Int,
-    /// Viewport-agnostic page-based progress percentage in `[0, 100]`.
-    /// The server stores the value the client last PUT (computed as
-    /// `(current_page + 1) / total_pages * 100`) and echoes it back
-    /// on the read; the GET handler stays a pure mirror of the on-
-    /// disk row, no derivation.
+    /// Page-based progress percentage in `[0, 100]`. The server stores
+    /// the value the client last PUT (computed as
+    /// `(current_page + 1) / total_pages * 100`) and echoes it back on
+    /// the read; the GET handler stays a pure mirror of the on-disk
+    /// row, no derivation. The persisted number is
+    /// *viewport-of-last-save* — whatever pagination the saving
+    /// viewport happened to produce — not viewport-agnostic; see
+    /// `state/helpers.gleam:percent_progress` for the helper-purity
+    /// vs system-purity distinction.
     percent_progress: Float,
     updated_at: Option(String),
   )
