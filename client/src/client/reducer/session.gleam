@@ -371,18 +371,27 @@ pub fn apply_session_created(
       // the failed POST's book — a fresh session may have already
       // opened against a different book by the time this lands.
       case model.active_book_id == Some(book_id) {
-        True -> #(
-          Model(
-            ..model,
-            active_session_id: None,
-            session_started_at: None,
-            session_started_at_ms: 0,
-            session_start_page: 0,
-            session_start_erased_count: 0,
-            session_words_skipped: 0,
-          ),
-          effect.none(),
-        )
+        True -> {
+          let cleared =
+            Model(
+              ..model,
+              active_session_id: None,
+              session_started_at: None,
+              session_started_at_ms: 0,
+              session_start_page: 0,
+              session_start_erased_count: 0,
+              session_words_skipped: 0,
+            )
+          // Funnel through the snapshot helper so the FFI slot follows
+          // the cleared model — `apply_session_opened`'s prior stamp
+          // pointed at a session_id the server refused, and a
+          // subsequent `pagehide` would beacon a `POST` for a row
+          // that does not exist. The helper's "no active session"
+          // arm zeroes the slot. Mirrors the success-path funnelling
+          // of `apply_session_ended`.
+          refresh_session_snapshot(cleared)
+          #(cleared, effect.none())
+        }
         False -> #(model, effect.none())
       }
     }
