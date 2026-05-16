@@ -138,6 +138,18 @@ pub fn apply_end_session(model: Model) -> #(Model, Effect(Msg)) {
         delta if delta < 0 -> 0
         delta -> delta
       }
+      // Stamp the snapshot one last time from the pre-clear model so
+      // the slot carries the closing payload — same five fields the
+      // PUT below queues. Browsers commonly cancel in-flight `fetch()`
+      // on the unload path, so if a tab close fires `pagehide`
+      // between Lustre dispatching `put_effect` and the request
+      // landing, the beacon needs a body to flush. A duplicate write
+      // (PUT lands AND beacon lands) is benign — the server is
+      // last-write-wins and both payloads are identical at the
+      // millisecond level — but a lost write (PUT cancelled, beacon
+      // sees an empty slot) is not. `apply_session_ended` clears the
+      // snapshot after the PUT confirms.
+      refresh_session_snapshot(model)
       let closed =
         Model(
           ..model,
@@ -148,14 +160,6 @@ pub fn apply_end_session(model: Model) -> #(Model, Effect(Msg)) {
           session_start_erased_count: 0,
           session_words_skipped: 0,
         )
-      // Clear the FFI snapshot slot so the next `pagehide` does not
-      // re-flush the just-closed session's body alongside the normal
-      // PUT this arm queued — the server would otherwise see two
-      // identical writes against the same row, the second arriving
-      // after the in-flight aggregate refresh. The clear goes through
-      // `effects.refresh_session_snapshot` against the post-clear
-      // model so the same helper handles both stamp and clear paths.
-      refresh_session_snapshot(closed)
       let put_effect =
         end_reading_session(
           book_id: book_id,
@@ -391,12 +395,26 @@ pub fn apply_session_created(
 /// beyond what `apply_end_session` already wrote; the error arm logs
 /// and continues (the row was never closed; the next session-end
 /// retries will write fresher counters).
+///
+/// On success, clears the FFI snapshot slot — the closing PUT
+/// confirmed and the row is durable, so a subsequent `pagehide`
+/// must not re-flush the same payload. On failure, the snapshot
+/// stays in place so a `pagehide` racing the failed PUT can deliver
+/// the closing counters via `sendBeacon` as a fallback. The slot is
+/// cleared by going through `refresh_session_snapshot(model)`: the
+/// caller already cleared `active_session_id` in `apply_end_session`,
+/// so the helper's "no active session" arm fires and zeroes the
+/// slot — keeps both stamp and clear paths funnelling through one
+/// helper.
 pub fn apply_session_ended(
   model: Model,
   result: Result(String, ffi.FetchError),
 ) -> #(Model, Effect(Msg)) {
   let log_effect = case result {
-    Ok(_) -> effect.none()
+    Ok(_) -> {
+      refresh_session_snapshot(model)
+      effect.none()
+    }
     Error(error) ->
       effect.from(fn(_dispatch) {
         io.println(
