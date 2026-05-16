@@ -568,19 +568,36 @@ export function pack_indices_to_base64(indices) {
 }
 
 /**
- * Returns a fresh RFC 4122 v4 UUID via `crypto.randomUUID()`. Used to
- * stamp reading-session ids before the POST hits the server so the
- * follow-up PUT (and the visibilitychange-triggered end PUT) can
- * target the same row without waiting for the response.
+ * Returns a fresh RFC 4122 v4 UUID. Prefers `crypto.randomUUID()` when
+ * available (secure contexts: HTTPS or localhost). Falls back to a
+ * `crypto.getRandomValues`-based implementation for non-secure contexts
+ * (e.g., mobile browsers hitting a LAN dev server over plain HTTP).
  *
- * `crypto.randomUUID()` is universal on modern browsers and Node 19+;
- * a polyfill fallback is intentionally omitted because the rest of
- * the FFI assumes the same modern browser surface.
+ * Used to stamp reading-session ids before the POST hits the server so
+ * the follow-up PUT (and the visibilitychange-triggered end PUT) can
+ * target the same row without waiting for the response.
  *
  * @returns {string}
  */
 export function generate_uuid() {
-  return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  // Fallback: RFC 4122 v4 UUID from crypto.getRandomValues (available
+  // in all modern browsers regardless of secure context).
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  // Set version (4) and variant (10xx) bits per RFC 4122.
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return (
+    hex.slice(0, 8) + "-" +
+    hex.slice(8, 12) + "-" +
+    hex.slice(12, 16) + "-" +
+    hex.slice(16, 20) + "-" +
+    hex.slice(20, 32)
+  );
 }
 
 /**

@@ -2121,13 +2121,14 @@ body.vi-reduced-motion .jump-search-result-item {
 .book-stats-line {
   font-family: system-ui, sans-serif;
   font-size: 12px;
-  color: var(--vi-accent);
+  color: var(--vi-fg-muted);
   letter-spacing: 0.02em;
   margin-top: 4px;
 }
 
 .hero-meta .book-stats-line {
   margin-top: 2px;
+  margin-bottom: 8px;
   font-size: 13px;
 }
 
