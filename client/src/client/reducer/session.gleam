@@ -223,6 +223,30 @@ pub fn apply_toggle_stats_view(model: Model) -> #(Model, Effect(Msg)) {
   #(Model(..model, stats_open: opening), effect)
 }
 
+/// Flip `model.reader_stats_open`. Opening chains
+/// `fetch_book_stats(active_book_id)` plus `fetch_speed_trend` so the
+/// per-book overlay paints with the latest aggregates and sparkline
+/// rather than a stale snapshot. Closing has no side effect. A toggle
+/// fires with no active book is harmless — the flag flips, but the
+/// modal renders nothing useful and `fetch_book_stats` would have
+/// nothing to attach to, so the open path skips the book-stats fetch
+/// when `active_book_id` is `None`. The speed-trend fetch is
+/// book-independent and fires either way so the sparkline reflects the
+/// reader's overall pace whenever the surface opens.
+pub fn apply_toggle_reader_stats(model: Model) -> #(Model, Effect(Msg)) {
+  let opening = !model.reader_stats_open
+  let effect = case opening {
+    True ->
+      case model.active_book_id {
+        Some(book_id) ->
+          effect.batch([fetch_book_stats(book_id), fetch_speed_trend()])
+        None -> fetch_speed_trend()
+      }
+    False -> effect.none()
+  }
+  #(Model(..model, reader_stats_open: opening), effect)
+}
+
 // ---------------------------------------------------------------------------
 // Stats fetch results
 // ---------------------------------------------------------------------------

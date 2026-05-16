@@ -478,6 +478,15 @@ pub type Msg {
   /// shows the latest aggregate values.
   ToggleStatsView
 
+  /// Reader tapped the per-book stats button in the reader header
+  /// (open) or the scrim / close button on the per-book stats overlay
+  /// (close). Flips `model.reader_stats_open`. Opening chains fresh
+  /// `fetch_book_stats(active_book_id)` plus `fetch_speed_trend` so the
+  /// overlay shows the latest aggregates rather than a stale snapshot.
+  /// A no-op for the open path when no book is active — the modal has
+  /// nothing to attach to.
+  ToggleReaderStats
+
   /// Reader tapped the edit-metadata affordance on a book card.
   /// Seeds `model.editing_metadata` with the current title / author /
   /// genre values so the form starts pre-filled with what the book

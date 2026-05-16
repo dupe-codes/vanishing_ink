@@ -155,6 +155,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       session_started_at: None,
       session_started_at_ms: 0,
       stats_open: False,
+      reader_stats_open: False,
       book_stats: None,
       library_stats: None,
       library_book_stats: dict.new(),

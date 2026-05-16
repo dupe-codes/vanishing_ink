@@ -257,15 +257,48 @@ body.vi-dyslexia-font .settings-panel {
 }
 
 .reader-title {
-  /* Centred chrome label — chapter/book/author for the current
-   * read. Truncates with ellipsis so a long title cannot push the
-   * gear icon off-screen on a narrow phone. */
+  /* Centred chrome slot — wraps the chapter / book title plus a
+   * muted progress + ETA meta line. The slot itself stays a flex
+   * column so the title sits above the meta with a 1px gap; both
+   * children carry their own ellipsis handling so a long title or
+   * a long ETA cannot push the chrome buttons off-screen. */
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+.reader-title-name {
+  /* Chapter/book title — the visible heading the reader sees as
+   * the centre slot's primary label. Truncates with ellipsis so a
+   * long title cannot push the gear icon off-screen on a narrow
+   * phone. */
+  max-width: 100%;
   text-align: center;
   font-family: system-ui, sans-serif;
   font-size: 12px;
   color: var(--vi-fg-muted);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reader-title-meta {
+  /* Muted progress + ETA line that rides below the title. Reads as
+   * "42% • ~12m left" once the book has aggregated stats; a
+   * still-pending book renders only the percentage. Smaller and
+   * dimmer than the title so the eye anchors on the heading first
+   * and treats the meta as supplementary context. */
+  max-width: 100%;
+  text-align: center;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  color: var(--vi-fg-muted);
+  opacity: 0.75;
   letter-spacing: 0.03em;
   white-space: nowrap;
   overflow: hidden;

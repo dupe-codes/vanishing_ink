@@ -38,8 +38,8 @@ import lustre/event
 
 import client/gestures
 import client/msg.{
-  type Msg, EraseSentence, GoToLibrary, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart,
+  type Msg, EraseSentence, GoToLibrary, ToggleReaderStats, ToggleSettings,
+  TouchCancel, TouchEnd, TouchStart,
 }
 import client/pagination.{type Page, type PageParagraph}
 import client/state.{
@@ -47,6 +47,7 @@ import client/state.{
   measurement_id, page_content_id, reading_area_id,
 }
 import client/state/helpers.{erased_opacity_value, progress_percentage}
+import client/view/library as library_view
 import client/view/reader/bottom_bar
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
 
@@ -178,7 +179,20 @@ fn view_reader_header(model: Model) -> Element(Msg) {
         ],
         [html.text("←")],
       ),
-      html.div([attribute.class("reader-title")], [html.text(title)]),
+      view_title_slot(model, title),
+      // Per-book stats glyph sits next to the gear so the two
+      // chrome actions (stats + settings) cluster on the right of
+      // the header. Mirrors the library appbar's stats button
+      // placement so the affordance reads the same in both views.
+      html.button(
+        [
+          attribute.class("btn-icon"),
+          attribute.aria_label("Open book stats"),
+          attribute.type_("button"),
+          event.on_click(ToggleReaderStats),
+        ],
+        [html.text("📊")],
+      ),
       html.button(
         [
           attribute.class("btn-icon"),
@@ -193,6 +207,70 @@ fn view_reader_header(model: Model) -> Element(Msg) {
       ),
     ]),
   ])
+}
+
+/// Render the centre slot of the reader header. The slot stacks the
+/// chapter / book title above a muted progress + ETA line so the
+/// reader always sees where they are in the book without opening the
+/// stats overlay. The meta line collapses to a single `"42%"` when
+/// the book has no aggregated stats yet (the ETA helper returns
+/// `None` for a fresh book with no recorded sessions) and to empty
+/// markup when pagination hasn't produced any pages yet
+/// (`total_pages == 0` → `progress_percentage` is `0.0`).
+fn view_title_slot(model: Model, title: String) -> Element(Msg) {
+  html.div([attribute.class("reader-title")], [
+    html.div([attribute.class("reader-title-name")], [html.text(title)]),
+    view_progress_meta(model),
+  ])
+}
+
+/// Render the muted progress + ETA line that rides below the title.
+/// Reads `progress_percentage` from the model (already cached on the
+/// pagination path) and the ETA from `library_view.estimate_remaining`
+/// against the active book's `word_count`.
+///
+/// Rendering rules:
+///
+///   * `total_pages == 0` (pagination pending) — render nothing so
+///     the meta line doesn't paint a stale "0%" before the first
+///     `ParagraphsMeasured` lands.
+///   * `book_stats` is `None` or ETA cannot be computed — render the
+///     percentage alone (`"42%"`).
+///   * Both available — render the joined line (`"42% • ~12m left"`).
+fn view_progress_meta(model: Model) -> Element(Msg) {
+  case model.total_pages {
+    0 -> element.none()
+    _ -> {
+      let pct = progress_percentage(model)
+      let pct_text = int.to_string(float.round(pct)) <> "%"
+      let label = case lookup_active_word_count(model), model.book_stats {
+        Some(word_count), Some(stats) ->
+          case library_view.estimate_remaining(stats, word_count) {
+            Some(eta) -> pct_text <> " • " <> eta
+            None -> pct_text
+          }
+        _, _ -> pct_text
+      }
+      html.div([attribute.class("reader-title-meta")], [html.text(label)])
+    }
+  }
+}
+
+/// Resolve the `word_count` of the currently-active book. Returns
+/// `None` when there is no active book id (the test-only `TextLoaded`
+/// entry point) or when the id is not in `model.books` (a path that
+/// does not occur in production today). Pulled out so `view_progress_meta`
+/// stays focused on the rendering decision rather than the lookup
+/// plumbing.
+fn lookup_active_word_count(model: Model) -> option.Option(Int) {
+  case model.active_book_id {
+    None -> None
+    Some(id) ->
+      case list.find(model.books, fn(meta) { meta.id == id }) {
+        Ok(meta) -> Some(meta.word_count)
+        Error(_) -> None
+      }
+  }
 }
 
 /// Resolve the title of the active book — the `BookMeta` in

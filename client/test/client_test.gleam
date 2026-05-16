@@ -64,8 +64,8 @@ import client/msg.{
   SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
   ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
-  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, Undo,
-  UndoJump, ViewportResized,
+  ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
+  TouchStart, Undo, UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
@@ -190,6 +190,7 @@ fn empty_model() -> Model {
     session_started_at: None,
     session_started_at_ms: 0,
     stats_open: False,
+    reader_stats_open: False,
     book_stats: None,
     library_stats: None,
     library_book_stats: dict.new(),
@@ -4679,9 +4680,11 @@ pub fn view_reader_header_carries_back_title_and_settings_gear_test() {
   assert string.contains(rendered, "aria-label=\"Back to library\"")
   assert string.contains(rendered, ">←</button>")
   // Chapter 0 has no title; with `active_book_id: None` and empty
-  // `books`, the fallback also resolves to "" and the slot renders
-  // bare.
-  assert string.contains(rendered, "<div class=\"reader-title\"></div>")
+  // `books`, the fallback also resolves to "" and the inner title
+  // slot renders bare. The outer `.reader-title` wraps the title
+  // span plus the muted progress / ETA meta line — the bare inner
+  // `.reader-title-name` is what pins the "no title" case here.
+  assert string.contains(rendered, "<div class=\"reader-title-name\"></div>")
   // The previous "Pride and Prejudice · Austen" placeholder is
   // gone — the header must not render a hardcoded book title.
   assert !string.contains(rendered, "Pride and Prejudice")
@@ -4718,7 +4721,7 @@ pub fn view_reader_header_falls_back_to_book_title_when_chapter_untitled_test() 
 
   assert string.contains(
     rendered,
-    "<div class=\"reader-title\">The Tell-Tale Heart</div>",
+    "<div class=\"reader-title-name\">The Tell-Tale Heart</div>",
   )
 }
 
@@ -4744,7 +4747,7 @@ pub fn view_reader_header_prefers_chapter_title_over_book_title_test() {
 
   let rendered = view.view(model) |> element.to_string
 
-  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
+  assert string.contains(rendered, "<div class=\"reader-title-name\">Two</div>")
   assert !string.contains(rendered, "The Tell-Tale Heart")
 }
 
@@ -4777,7 +4780,7 @@ pub fn view_reader_header_renders_chapter_title_when_present_test() {
 
   let rendered = view.view(model) |> element.to_string
 
-  assert string.contains(rendered, "<div class=\"reader-title\">Two</div>")
+  assert string.contains(rendered, "<div class=\"reader-title-name\">Two</div>")
 }
 
 pub fn view_progress_bar_is_zero_when_no_pages_paginated_test() {
@@ -9528,6 +9531,250 @@ pub fn search_forward_preserves_original_case_in_snippet_test() {
 // `page.index` matter to the algorithm. Used by the
 // `search_forward_*` tests above to fabricate deterministic haystacks
 // with hand-computed expected snippets.
+// ---------------------------------------------------------------------------
+// Reader per-book stats overlay
+// ---------------------------------------------------------------------------
+
+/// Build a minimally-populated reader-view model for the per-book
+/// stats overlay tests. Mirrors the `library_model` fixture's shape
+/// — a default `empty_model()` with one paginated page so the reader
+/// surface renders past the placeholder branch — and stamps an
+/// `active_book_id` plus a matching `BookMeta` so the overlay can
+/// look up the book's `word_count` for the ETA helper.
+fn reader_stats_model() -> Model {
+  let book = sample_book("a", "Alpha", None)
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  Model(
+    ..empty_model(),
+    text: Some(text),
+    flat_paragraphs: flat,
+    pages: pages,
+    total_pages: list.length(pages),
+    current_page: 0,
+    active_book_id: Some("a"),
+    books: [book],
+  )
+}
+
+pub fn reader_header_carries_stats_button_test() {
+  // The reader header carries a per-book stats button alongside the
+  // settings gear. The aria label pins the affordance and the
+  // 📊 glyph matches the library appbar's stats icon for
+  // visual consistency across the two surfaces.
+  let rendered = view.view(reader_stats_model()) |> element.to_string
+  assert string.contains(rendered, "aria-label=\"Open book stats\"")
+  assert string.contains(rendered, "📊")
+}
+
+pub fn reader_stats_overlay_hidden_when_closed_test() {
+  // `reader_stats_open: False` is the default; the overlay markup
+  // must not appear in the rendered HTML so the reader sees only the
+  // chrome until they tap the affordance.
+  let rendered = view.view(reader_stats_model()) |> element.to_string
+  assert !string.contains(
+    rendered,
+    "class=\"stats-overlay reader-book-stats-overlay",
+  )
+  assert !string.contains(rendered, "Book stats")
+}
+
+pub fn reader_stats_overlay_renders_when_open_test() {
+  // Opening the overlay paints the scrim + panel chrome. The panel
+  // title ("Book stats") pins the surface identity; the
+  // `reader-book-stats-overlay` modifier class pins the per-book
+  // overlay distinct from the library-wide `stats-overlay` (both
+  // share the base `stats-overlay` class for the scrim).
+  let model = Model(..reader_stats_model(), reader_stats_open: True)
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "reader-book-stats-overlay")
+  assert string.contains(rendered, "Book stats")
+  assert string.contains(rendered, "aria-label=\"Close book stats\"")
+}
+
+pub fn reader_stats_overlay_renders_empty_state_when_no_stats_test() {
+  // A reader who has never opened a session for this book sees the
+  // empty-state copy rather than three zero tiles, which would read
+  // as a degenerate snapshot instead of an honest "no data" surface.
+  let model = Model(..reader_stats_model(), reader_stats_open: True)
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(
+    rendered,
+    "No reading stats recorded for this book yet.",
+  )
+  // None of the tile-value chrome paints in the empty branch.
+  assert !string.contains(rendered, "class=\"stats-grid\"")
+}
+
+pub fn reader_stats_overlay_renders_tile_values_when_book_stats_present_test() {
+  // With session aggregates on the model, the overlay paints three
+  // tiles: words read (formatted with thousands separator), reading
+  // time (formatted as "Xh Ym" / "Ym" / "Xs"), and session count
+  // (bare integer — the label "Sessions" carries the noun).
+  let model =
+    Model(
+      ..reader_stats_model(),
+      reader_stats_open: True,
+      book_stats: Some(shared_stats.BookStats(
+        total_words_read: 12_345,
+        total_words_skipped: 0,
+        total_duration_seconds: 3700,
+        session_count: 4,
+        percent_progress: 50.0,
+      )),
+    )
+  let rendered = view.view(model) |> element.to_string
+  // Total words read formatted with thousands separator.
+  assert string.contains(rendered, "12,345")
+  // 3700 seconds → 1h 1m.
+  assert string.contains(rendered, "1h 1m")
+  // Session count rides on its own tile.
+  assert string.contains(rendered, "Sessions")
+  // Tile chrome paints (grid replaces the empty state).
+  assert string.contains(rendered, "class=\"stats-grid\"")
+  assert !string.contains(
+    rendered,
+    "No reading stats recorded for this book yet.",
+  )
+}
+
+pub fn reader_stats_overlay_renders_speed_trend_when_samples_present_test() {
+  // The library-wide speed trend tile rides under the per-book tiles
+  // — same SVG sparkline as the library stats overlay. Pinning the
+  // class names ensures the reused tile actually paints when samples
+  // are present.
+  let model =
+    Model(..reader_stats_model(), reader_stats_open: True, speed_trend: [
+      shared_stats.SessionSpeed(date: "2026-05-13T10:00:00Z", wpm: 240),
+      shared_stats.SessionSpeed(date: "2026-05-12T10:00:00Z", wpm: 200),
+    ])
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "stats-speed-trend")
+  assert string.contains(rendered, "stats-speed-trend-svg")
+  assert string.contains(rendered, "stats-speed-trend-line")
+}
+
+pub fn reader_stats_overlay_hidden_outside_reader_view_test() {
+  // The per-book overlay is scoped to the reader view; opening the
+  // flag while in the library must not paint the panel. The library
+  // view has its own cross-book stats overlay (`stats_open`) for the
+  // wider scope, so this scoping prevents the two surfaces from ever
+  // stacking on top of each other.
+  let model = Model(..library_model(), reader_stats_open: True)
+  let rendered = view.view(model) |> element.to_string
+  assert !string.contains(rendered, "reader-book-stats-overlay")
+  assert !string.contains(rendered, "Book stats")
+}
+
+pub fn toggle_reader_stats_flips_open_flag_test() {
+  let prior = reader_stats_model()
+  let #(opened, _e1) = reducer.update(prior, ToggleReaderStats)
+  assert opened.reader_stats_open == True
+  let #(closed, _e2) = reducer.update(opened, ToggleReaderStats)
+  assert closed.reader_stats_open == False
+}
+
+pub fn toggle_reader_stats_opens_even_without_active_book_test() {
+  // A toggle without an active book still flips the flag — the
+  // overlay paints the empty state rather than disappearing
+  // silently. The fetch effect skips the book-stats GET (no id to
+  // attach to) but still chains the speed-trend fetch so the
+  // sparkline reflects the library-wide pace.
+  let prior = Model(..empty_model(), view: Reader, active_book_id: None)
+  let #(updated, _effect) = reducer.update(prior, ToggleReaderStats)
+  assert updated.reader_stats_open == True
+}
+
+// ---------------------------------------------------------------------------
+// Reader header — inline progress + ETA
+// ---------------------------------------------------------------------------
+
+pub fn reader_header_renders_progress_meta_when_paginated_test() {
+  // With pagination produced (`total_pages > 0`), the muted progress
+  // meta line paints below the title. The percentage rides as a
+  // rounded integer ("33%" for 33.333...% from 1/3 page progress)
+  // because the meta line trades the progress-bar's float precision
+  // for a compact textual representation.
+  let model = reader_stats_model()
+  let rendered = view.view(model) |> element.to_string
+  // The `two_chapter_text` fixture flattens to three paragraphs, so
+  // `pages` is three long with `current_page: 0` → (0+1)/3 = 33.3%,
+  // which rounds to 33 for the textual meta line.
+  assert string.contains(rendered, "class=\"reader-title-meta\"")
+  assert string.contains(rendered, "33%")
+}
+
+pub fn reader_header_progress_meta_hidden_when_pagination_pending_test() {
+  // Before `ParagraphsMeasured` lands, `total_pages == 0`. The meta
+  // line must not paint a stale "0%" — the helper returns
+  // `element.none()` so the meta div is absent from the DOM.
+  let text = two_chapter_text()
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      pages: [],
+      total_pages: 0,
+      current_page: 0,
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert !string.contains(rendered, "class=\"reader-title-meta\"")
+}
+
+pub fn reader_header_progress_meta_renders_eta_when_stats_available_test() {
+  // With both `book_stats` (session aggregates) and `book.word_count`
+  // available, the meta line carries the ETA suffix in addition to
+  // the percentage. The ETA is computed by the same
+  // `library_view.estimate_remaining` helper the library card uses,
+  // so the format matches: "33% • ~10m left".
+  //
+  // Fixture math: 100-word book, 50 words read in 600s (0 skipped) →
+  // 50 words remain at 12 wpm → 50 * 600 / 50 = 600s = 10m.
+  let book = sample_book("a", "Alpha", None)
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      total_pages: list.length(pages),
+      current_page: 0,
+      active_book_id: Some("a"),
+      books: [book],
+      book_stats: Some(shared_stats.BookStats(
+        total_words_read: 50,
+        total_words_skipped: 0,
+        total_duration_seconds: 600,
+        session_count: 1,
+        percent_progress: 33.3,
+      )),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "33%")
+  assert string.contains(rendered, "~10m left")
+}
+
+pub fn reader_header_progress_meta_omits_eta_when_no_book_stats_test() {
+  // With `book_stats: None` (the default until the per-book fetch
+  // resolves), the meta line carries the percentage alone — no
+  // " • ~..." suffix. Pinning the absence catches a regression in
+  // which the helper produced a stray separator with an empty value.
+  let model = reader_stats_model()
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "class=\"reader-title-meta\"")
+  assert !string.contains(rendered, "left")
+  assert !string.contains(rendered, " • ")
+}
+
+// ---------------------------------------------------------------------------
+// internal helpers
+// ---------------------------------------------------------------------------
+
 fn search_test_page(index: Int, word_texts: List(String)) -> Page {
   let words =
     list.index_map(word_texts, fn(text, i) {

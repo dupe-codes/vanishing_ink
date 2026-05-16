@@ -122,7 +122,12 @@ fn view_stat_tile(label: String, value: String) -> Element(Msg) {
 /// The on-model order is reverse-chronological (most-recent first,
 /// matching the SQL `ORDER BY started_at DESC`); reverse it here so
 /// the rendered line reads left-to-right in chronological order.
-fn view_speed_trend_tile(samples: List(SessionSpeed)) -> Element(Msg) {
+///
+/// Exposed so the per-book stats overlay rendered from the reader
+/// can reuse the same sparkline chrome — the speed trend is a
+/// library-wide signal (most-recent N sessions across every book),
+/// so the same data set is meaningful in both surfaces.
+pub fn view_speed_trend_tile(samples: List(SessionSpeed)) -> Element(Msg) {
   case samples {
     [] -> view_speed_trend_empty()
     _ -> {
