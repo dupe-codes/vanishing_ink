@@ -129,10 +129,21 @@ fn validate_current_page(current_page: Int) -> Result(Int, String) {
 /// that the library card would happily render. Clamping at the
 /// boundary keeps the on-disk value within the same `[0, 100]` scale
 /// the rest of the surface assumes.
+///
+/// The two range conditions are split into nested `case` arms (rather
+/// than checked with a compound `&&`) so the structure matches the
+/// adjacent validators (`validate_current_page`,
+/// `validate_updated_at`) and aligns with the TigerStyle preference
+/// for single-condition arms — every test the validator runs lives on
+/// its own line and fails to its own error path.
 fn validate_percent_progress(percent_progress: Float) -> Result(Float, String) {
-  case percent_progress >=. 0.0 && percent_progress <=. 100.0 {
-    True -> Ok(percent_progress)
+  case percent_progress >=. 0.0 {
     False -> Error("percent_progress must be a float in the range [0, 100]")
+    True ->
+      case percent_progress <=. 100.0 {
+        False -> Error("percent_progress must be a float in the range [0, 100]")
+        True -> Ok(percent_progress)
+      }
   }
 }
 
