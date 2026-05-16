@@ -164,16 +164,27 @@ export function measure_word_lines(container_selector) {
 }
 
 /**
- * Installs a debounced `resize` listener on `window`. Uses a
- * trailing-edge debounce: the callback fires once, `RESIZE_DEBOUNCE_MS`
- * after the *last* resize event in a burst. This prevents the Lustre
- * update loop from being flooded during a continuous window-drag.
+ * Installs debounced resize listeners on both `window` and
+ * `window.visualViewport`. The two events cover complementary cases:
+ *
+ * - `window.resize` fires on viewport dimension changes (orientation,
+ *   window-drag, browser chrome show/hide on desktop).
+ * - `visualViewport.resize` fires when the *visual* viewport changes
+ *   independently of the layout viewport — notably when
+ *   `env(safe-area-inset-*)` values settle after `viewport-fit=cover`
+ *   is applied via JS at boot. Without this listener, the first
+ *   pagination measurement can read a `.reader-page-content` height
+ *   that doesn't yet account for the safe-area padding on the bottom
+ *   bar, causing text to overflow beneath the bar on notched phones.
+ *
+ * Both listeners share a single debounce timer so concurrent events
+ * (e.g., rotation triggers both) coalesce into one callback.
  *
  * @param {function(): void} callback Fired after each resize burst settles.
  */
 export function on_resize(callback) {
   let pending = null;
-  window.addEventListener("resize", () => {
+  const debounced = () => {
     if (pending !== null) {
       clearTimeout(pending);
     }
@@ -181,7 +192,11 @@ export function on_resize(callback) {
       pending = null;
       callback();
     }, RESIZE_DEBOUNCE_MS);
-  });
+  };
+  window.addEventListener("resize", debounced);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", debounced);
+  }
 }
 
 /**

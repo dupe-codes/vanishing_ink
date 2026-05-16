@@ -163,10 +163,9 @@ body.vi-dyslexia-font .settings-panel {
 }
 
 #app {
-  /* `100dvh` (dynamic viewport height) keeps the reader sized to the
-   * *visible* viewport on iOS Safari — the URL bar collapses and the
-   * height adjusts, where `100vh` would leave a strip of the page
-   * under the bar. `100vh` is the fallback for older browsers. */
+  /* `100dvh` (dynamic viewport height) tracks the browser's visible
+   * area as mobile chrome appears/disappears. Maximises reading area
+   * on mobile. `100vh` is the fallback for older browsers. */
   height: 100vh;
   height: 100dvh;
   width: 100%;
@@ -409,10 +408,22 @@ body.vi-reduced-motion .reader-progress-fill {
    * `.reader-active-line` overlay against this container so its
    * inline `top` / `height` resolve against the page's content
    * area — the same coordinate space the FFI normalises each
-   * `LineBox.top` into. */
+   * `LineBox.top` into.
+   *
+   * `overflow-y: auto` handles the edge case where a single
+   * paragraph is taller than the page budget. The pagination
+   * algorithm never splits mid-paragraph, so an oversized paragraph
+   * is placed as the sole item on a page regardless of fit. Without
+   * scrolling, the excess is clipped by `.reader-page`'s
+   * `overflow: hidden`, cutting off the bottom lines. With `auto`,
+   * the page becomes scrollable only when content exceeds the
+   * budget — normal pages with no overflow show no scrollbar.
+   * A proper fix (splitting paragraphs across page boundaries at
+   * render time) is tracked as a separate quest. */
   position: relative;
   flex: 1 1 0;
   min-height: 0;
+  overflow-y: auto;
 }
 
 .reader-active-line {
