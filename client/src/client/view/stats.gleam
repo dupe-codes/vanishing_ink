@@ -409,4 +409,3 @@ fn take_split(
     _, [head, ..tail] -> take_split(tail, remaining - 1, [head, ..acc])
   }
 }
-

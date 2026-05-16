@@ -332,4 +332,3 @@ fn enter_key_decoder() -> decode.Decoder(Msg) {
     _ -> decode.failure(NoOp, "non-enter-key")
   }
 }
-

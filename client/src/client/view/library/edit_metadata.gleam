@@ -130,4 +130,3 @@ fn view_save_button(submitting: Bool, disabled: Bool) -> Element(Msg) {
     [html.text(label)],
   )
 }
-

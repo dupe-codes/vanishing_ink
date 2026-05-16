@@ -184,4 +184,3 @@ fn view_epub_import_row(model: Model) -> Element(Msg) {
     html.span([attribute.class("epub-import-label")], [html.text(label_text)]),
   ])
 }
-
