@@ -142,6 +142,12 @@ pub fn apply_book_loaded(
       // the previous book does not paint over the reader header during
       // the window before the new book's `fetch_book_stats` lands.
       book_stats: None,
+      // Close any per-book stats overlay that survived a previous
+      // reader session — the flag is a per-reader UI affordance, and
+      // re-entering with the overlay still open would briefly paint
+      // the previous book's tile values against the new book's
+      // header until `fetch_book_stats` resolves.
+      reader_stats_open: False,
       ghost_opacity: defaults.ghost_opacity,
       wpm: defaults.default_wpm,
       paragraph_delay_ms: defaults.default_paragraph_delay_ms,
@@ -300,6 +306,13 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       engine_state: Stopped,
       next_word_index: None,
       settings_open: False,
+      // Tear down the per-book stats overlay alongside the rest of
+      // the reader's UI scratch surface — the panel paints against
+      // `book_stats` / `active_book_id`, both of which clear below,
+      // so leaving the flag set would render an empty-state panel
+      // over the library on a future entry path that opens the
+      // overlay without transiting the reader.
+      reader_stats_open: False,
       // Tear down Jump Ahead state alongside the rest of the per-
       // book scratch surface — the menu is per-book and the preview
       // snapshot points at the outgoing book's page index.

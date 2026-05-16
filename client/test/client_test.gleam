@@ -5584,6 +5584,14 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
       view: Library,
       books_loading: True,
       library_error: Some("old"),
+      // A pre-existing per-book stats overlay flag has to clear on
+      // re-entry — the panel renders against `book_stats` /
+      // `active_book_id`, both of which `apply_book_loaded` resets
+      // below, so leaving the flag set would briefly paint a stale
+      // empty-state panel over the new book's reader chrome until
+      // `fetch_book_stats` resolves. The whole-model equality below
+      // pins the reset.
+      reader_stats_open: True,
     )
   let text = two_chapter_text()
   let meta = sample_book("book-x", "X", None)
@@ -5826,6 +5834,12 @@ pub fn update_go_to_library_clears_reader_state_and_stops_engine_test() {
       active_book_id: Some("book-x"),
       total_sentence_count: 12,
       total_word_count: 99,
+      // Per-reader UI flag — has to clear alongside `settings_open`
+      // and `jump_menu_open` on the way back to the library so a
+      // future entry path that opens the overlay outside the reader
+      // chrome cannot paint over the library view. The whole-model
+      // equality below pins the reset.
+      reader_stats_open: True,
     )
 
   let #(updated, _effect) = reducer.update(prior, GoToLibrary)
