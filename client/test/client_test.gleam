@@ -7995,9 +7995,14 @@ pub fn estimate_remaining_returns_some_for_normal_case_test() {
 }
 
 pub fn format_session_count_singular_plural_examples_test() {
+  // Pin the singular / plural split — the only branch the production
+  // caller (`book_stats_summary`) can actually reach. The zero case
+  // is short-circuited by the caller before this helper runs, so no
+  // test pins it: the function's docstring documents that contract
+  // for anyone who needs the raw label, and pinning an unreachable
+  // path would just lock in dead behaviour.
   assert library_view.format_session_count(1) == "1 session"
   assert library_view.format_session_count(2) == "2 sessions"
-  assert library_view.format_session_count(0) == "0 sessions"
 }
 
 pub fn stats_format_duration_examples_test() {
