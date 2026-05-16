@@ -232,9 +232,11 @@ fn view_title_slot(model: Model, title: String) -> Element(Msg) {
 ///
 /// Rendering rules:
 ///
-///   * `total_pages == 0` (pagination pending) — render nothing so
-///     the meta line doesn't paint a stale "0%" before the first
-///     `ParagraphsMeasured` lands.
+///   * `total_pages == 0` (pagination pending) — render nothing while
+///     pagination has not yet produced pages. Once paginated, the
+///     guard releases and the meta line paints whatever percentage
+///     the model resolves to, including a legitimate "0%" when the
+///     reader is on page 1 of a freshly-loaded book.
 ///   * `book_stats` is `None` or ETA cannot be computed — render the
 ///     percentage alone (`"42%"`).
 ///   * Both available — render the joined line (`"42% • ~12m left"`).
