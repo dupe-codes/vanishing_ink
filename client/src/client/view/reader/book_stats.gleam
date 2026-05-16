@@ -81,22 +81,17 @@ fn view_stats_header() -> Element(Msg) {
   ])
 }
 
-/// Render the three per-book tiles. `None` produces an empty-state
-/// message rather than three dashed tiles — without any session for
-/// the active book, every tile would be `0`/`0s`, which reads as a
-/// degenerate snapshot instead of an honest "no data yet" surface.
+/// Render the three per-book tiles. `None` and `Some(s)` with
+/// `s.session_count == 0` both collapse to the same empty-state
+/// surface — without any session for the active book, every tile
+/// would be `0`/`0s`, which reads as a degenerate snapshot instead
+/// of an honest "no data yet" surface.
 fn view_stats_body(stats: Option(BookStats)) -> Element(Msg) {
   case stats {
-    None ->
-      html.div([attribute.class("stats-empty")], [
-        html.text("No reading stats recorded for this book yet."),
-      ])
+    None -> view_empty_state()
     Some(s) ->
       case s.session_count {
-        0 ->
-          html.div([attribute.class("stats-empty")], [
-            html.text("No reading stats recorded for this book yet."),
-          ])
+        0 -> view_empty_state()
         _ ->
           html.div([attribute.class("stats-grid")], [
             view_stat_tile(
@@ -111,6 +106,17 @@ fn view_stats_body(stats: Option(BookStats)) -> Element(Msg) {
           ])
       }
   }
+}
+
+/// The "no data yet" surface for the per-book overlay. Pulled out so
+/// the two no-stats branches (`None` and `Some(s) with session_count ==
+/// 0`) carry the exact same copy — a future revision touching the
+/// string only has to change it once, and the two paths cannot
+/// diverge silently on a typo.
+fn view_empty_state() -> Element(Msg) {
+  html.div([attribute.class("stats-empty")], [
+    html.text("No reading stats recorded for this book yet."),
+  ])
 }
 
 fn view_stat_tile(label: String, value: String) -> Element(Msg) {
