@@ -413,7 +413,12 @@ fn view_book_card(
 /// `BookStats.percent_progress`. The library does not have access to
 /// the reader's pagination output (which is computed per-viewport in
 /// the reader view), so it cannot re-derive the page-based number; it
-/// reads the pre-computed server value verbatim. The time component
+/// reads the pre-computed server value verbatim — meaning the card
+/// shows *viewport-of-last-save*: whatever viewport saved last wins
+/// until the next save overwrites. A reader who last saved on a phone
+/// and is currently browsing the library on a desktop will see the
+/// phone's percentage until the next page-turn on the desktop reader
+/// view writes its own viewport's number back. The time component
 /// uses the same formatter as the library-wide stats overlay so the
 /// two surfaces speak in one vocabulary. The session count and ETA
 /// append to the same `•`-delimited line so the card stays a single

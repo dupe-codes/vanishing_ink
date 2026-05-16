@@ -59,20 +59,33 @@ pub fn total_counts(text: SegmentedText) -> #(Int, Int) {
   })
 }
 
-/// Reading progress as a viewport-agnostic page-based percentage,
-/// rounded to one decimal place. Computed as
+/// Reading progress as a page-based percentage, rounded to one
+/// decimal place. Computed as
 /// `(current_page + 1) / total_pages * 100` so a reader on the first
 /// of ten pages reads as 10%, and the last page reads as 100% — the
 /// `+1` reflects that `current_page` is a zero-based index, and the
 /// reader has reached the *end* of that page rather than the start.
+///
+/// **Helper-purity, not system-purity.** The helper itself is
+/// viewport-pure: given `current_page` and `total_pages`, the same
+/// inputs always produce the same percentage. But both inputs are
+/// derived from the *current* viewport's pagination pass, so the
+/// *persisted* `reading_state.percent_progress` is
+/// viewport-of-last-save — whatever the saving viewport happened to
+/// compute. A reader who saves at 50% on a phone and re-opens on a
+/// desktop will see the library card display the phone's saved
+/// percentage until the next save overwrites it with the desktop
+/// viewport's live computation. The system property the page-based
+/// model improves on is *fade-mechanic independence* (the percentage
+/// no longer drifts when the reader pages ahead without erasing
+/// every sentence), not viewport-of-last-save independence.
 ///
 /// Reads from cached `current_page` / `total_pages` fields on the
 /// model. The previous revision (the erased-words and -sentences
 /// model) was tightly coupled to the fade / erase mechanic and
 /// drifted away from the reader's actual reading position whenever
 /// they paged ahead without erasing every sentence — the new
-/// computation is viewport-size agnostic and tracks the page turns
-/// the reader is actually making.
+/// computation tracks the page turns the reader is actually making.
 ///
 /// Returns `0.0` when `total_pages` is `0` — the cache is reset to
 /// `0` between `TextLoaded` and the first `ParagraphsMeasured`, so

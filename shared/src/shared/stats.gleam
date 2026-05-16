@@ -29,14 +29,25 @@ import gleam/json
 /// * `session_count` — number of recorded sessions, including any
 ///   that are still in flight (no `ended_at`). The library view uses
 ///   this as a coarse measure of "how often did the reader return?".
-/// * `percent_progress` — the latest viewport-agnostic page-based
-///   progress percentage the client persisted on
-///   `reading_state.percent_progress`, joined into the aggregate so
-///   the library card can render the same percentage the reader sees
-///   in the progress bar without re-deriving from the session
-///   counters (which only know about words read / skipped, not pages
-///   turned). Defaults to `0.0` for books with no recorded reading
-///   state row.
+/// * `percent_progress` — the latest page-based progress percentage
+///   the client persisted on `reading_state.percent_progress`, joined
+///   into the aggregate so the library card can render the same
+///   percentage the reader sees in the progress bar without
+///   re-deriving from the session counters (which only know about
+///   words read / skipped, not pages turned). The persisted value is
+///   *viewport-of-last-save* — the helper that computes it is
+///   viewport-pure, but its `current_page` / `total_pages` inputs are
+///   the saving viewport's own pagination output, so a phone-save
+///   reloaded on a desktop will display the phone's percentage until
+///   the next save overwrites it. Defaults to `0.0` for books with no
+///   recorded reading state row. Note that the field name also drifts
+///   from the pure session-aggregate framing the rest of `BookStats`
+///   carries: the other four fields are derived from `reading_session`
+///   rows, this one is read from `reading_state`. The drift is
+///   deliberate — the library card needs the percentage alongside the
+///   session counts and a separate stats endpoint would double the
+///   per-card request fan-out — but the type's name is no longer a
+///   pure description of its contents.
 pub type BookStats {
   BookStats(
     total_words_read: Int,

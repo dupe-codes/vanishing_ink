@@ -625,11 +625,16 @@ pub fn put_reading_state_for_missing_book_is_404_test() {
   assert simulate.read_body(response) == "Not found"
 }
 
-/// Round-trip the new viewport-agnostic `percent_progress` field
-/// end-to-end. The PUT body carries an explicit value, the response
-/// echoes the same value, and a subsequent GET resurfaces it from the
-/// `reading_state.percent_progress` column. Pinning the full record
-/// catches a silent drop of the field on either side of the wire.
+/// Round-trip the new page-based `percent_progress` field end-to-end.
+/// The PUT body carries an explicit value, the response echoes the
+/// same value, and a subsequent GET resurfaces it from the
+/// `reading_state.percent_progress` column. Pinning the full
+/// `ReadingState` record (rather than just `.percent_progress`) keeps
+/// the round-trip honest — a silent drop of any other field on either
+/// side of the wire would otherwise slip through. The boundary value
+/// `100.0` is folded into the same test so the validator's
+/// accept-at-upper-bound path is exercised end-to-end alongside the
+/// mid-range `42.5` round-trip.
 pub fn put_reading_state_round_trips_percent_progress_test() {
   use ctx <- with_context
   let created = http_create_book(ctx, "Title", None, sample_text)

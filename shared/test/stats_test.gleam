@@ -89,7 +89,7 @@ pub fn session_speed_codec_round_trips_test() {
 
 pub fn book_stats_codec_round_trips_test() {
   // The `BookStats` codec is symmetric across all five fields,
-  // including the new viewport-agnostic `percent_progress`. The
+  // including the new page-based `percent_progress`. The
   // encoder/decoder pair lives at the JSON boundary the server and
   // client share — a drift on either side would otherwise surface as
   // a silent shape mismatch at runtime (a missing field decodes to

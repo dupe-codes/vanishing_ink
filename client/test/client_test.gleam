@@ -2515,12 +2515,16 @@ pub fn progress_percentage_last_page_is_one_hundred_test() {
   assert state_helpers.progress_percentage(model) == 100.0
 }
 
-pub fn progress_percentage_is_viewport_agnostic_test() {
-  // The same "halfway through the book" position must yield the
-  // same percentage regardless of how the viewport paginates the
-  // text. Page 1 of 4 (`2/4 = 50%`) and page 3 of 8 (`4/8 = 50%`)
-  // are both reading-position halfway — the invariant the
-  // page-based model is designed around.
+pub fn progress_percentage_is_viewport_pure_test() {
+  // The helper is viewport-pure: given matching `current_page` /
+  // `total_pages` ratios it always returns the same percentage,
+  // regardless of how the underlying viewport paginated the text.
+  // Page 1 of 4 (`2/4 = 50%`) and page 3 of 8 (`4/8 = 50%`) both
+  // resolve to 50%. This pins the *helper-level* property only — the
+  // *persisted* `reading_state.percent_progress` is
+  // viewport-of-last-save, because `current_page` is itself
+  // viewport-dependent. See the docstring on
+  // `state_helpers.progress_percentage` for the distinction.
   let four_page = Model(..empty_model(), total_pages: 4, current_page: 1)
   let eight_page = Model(..empty_model(), total_pages: 8, current_page: 3)
   assert state_helpers.progress_percentage(four_page) == 50.0
@@ -4861,13 +4865,15 @@ pub fn view_progress_bar_reaches_one_hundred_on_last_page_test() {
   assert string.contains(rendered, "style=\"width:100.0%;\"")
 }
 
-pub fn view_progress_bar_is_viewport_agnostic_test() {
-  // Two viewports that paginate the same text into different page
-  // counts should both report the same logical mid-book percentage
-  // for the matching mid-book page. A 4-page viewport at page 1 of 4
-  // (50%) and an 8-page viewport at page 3 of 8 (also 50%) must
-  // render identical bar fills — this is the central invariant of
-  // the page-based model.
+pub fn view_progress_bar_is_viewport_pure_test() {
+  // Wire the helper-purity test through the actual view layer: two
+  // viewports that paginate the same text into different page counts
+  // both report the same logical mid-book percentage for the matching
+  // mid-book page. A 4-page viewport at page 1 of 4 (50%) and an
+  // 8-page viewport at page 3 of 8 (also 50%) render identical bar
+  // fills. As with `progress_percentage_is_viewport_pure_test`, this
+  // is a *helper-level* invariant; the persisted
+  // `reading_state.percent_progress` is viewport-of-last-save.
   //
   // `text: Some(_)` is set so the reader view dispatches off the
   // populated branch; `pages` carries enough synthetic entries to
