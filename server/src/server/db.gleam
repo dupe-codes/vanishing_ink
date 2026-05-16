@@ -52,7 +52,7 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
 pub fn ensure_books_genre_column(
   connection: sqlight.Connection,
 ) -> Result(Nil, sqlight.Error) {
-  use columns <- result.try(book_column_names(connection))
+  use columns <- result.try(table_column_names(connection, "books"))
   case list.contains(columns, "genre") {
     True -> Ok(Nil)
     False ->
@@ -63,15 +63,6 @@ pub fn ensure_books_genre_column(
         Error(error) -> Error(error)
       }
   }
-}
-
-/// Read the column names of the `books` table from `PRAGMA table_info`.
-/// `table_info` returns rows of `(cid, name, type, notnull, dflt_value, pk)`
-/// — we only need the `name` column at ordinal 1.
-fn book_column_names(
-  connection: sqlight.Connection,
-) -> Result(List(String), sqlight.Error) {
-  table_column_names(connection, "books")
 }
 
 /// Add the `reading_state.percent_progress` column to databases created
