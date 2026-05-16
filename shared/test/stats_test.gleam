@@ -106,8 +106,7 @@ pub fn book_stats_codec_round_trips_test() {
   let encoded = stats.book_stats_to_json(sample) |> gleam_json.to_string
   assert encoded
     == "{\"total_words_read\":120,\"total_words_skipped\":35,\"total_duration_seconds\":1800,\"session_count\":4,\"percent_progress\":42.5}"
-  let assert Ok(decoded) =
-    gleam_json.parse(encoded, stats.book_stats_decoder())
+  let assert Ok(decoded) = gleam_json.parse(encoded, stats.book_stats_decoder())
   assert decoded == sample
 }
 
@@ -116,17 +115,16 @@ pub fn book_stats_entry_codec_round_trips_test() {
   // `book_id` riding at the top level alongside the aggregate fields.
   // The entry codec is a separate pair from the single-book codec,
   // so the round-trip pins the wire form independently.
-  let entry =
-    #(
-      "book-1",
-      stats.BookStats(
-        total_words_read: 7,
-        total_words_skipped: 1,
-        total_duration_seconds: 1800,
-        session_count: 1,
-        percent_progress: 12.5,
-      ),
-    )
+  let entry = #(
+    "book-1",
+    stats.BookStats(
+      total_words_read: 7,
+      total_words_skipped: 1,
+      total_duration_seconds: 1800,
+      session_count: 1,
+      percent_progress: 12.5,
+    ),
+  )
   let encoded = stats.book_stats_entry_to_json(entry) |> gleam_json.to_string
   assert encoded
     == "{\"book_id\":\"book-1\",\"total_words_read\":7,\"total_words_skipped\":1,\"total_duration_seconds\":1800,\"session_count\":1,\"percent_progress\":12.5}"

@@ -4899,10 +4899,8 @@ pub fn view_progress_bar_is_viewport_agnostic_test() {
       current_page: 3,
     )
 
-  let four_page_rendered =
-    view.view(four_page_model) |> element.to_string
-  let eight_page_rendered =
-    view.view(eight_page_model) |> element.to_string
+  let four_page_rendered = view.view(four_page_model) |> element.to_string
+  let eight_page_rendered = view.view(eight_page_model) |> element.to_string
 
   assert string.contains(four_page_rendered, "style=\"width:50.0%;\"")
   assert string.contains(eight_page_rendered, "style=\"width:50.0%;\"")

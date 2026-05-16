@@ -94,9 +94,7 @@ pub fn progress_percentage(model: Model) -> Float {
   case model.total_pages {
     0 -> 0.0
     total ->
-      int.to_float(model.current_page + 1)
-      /. int.to_float(total)
-      *. 100.0
+      int.to_float(model.current_page + 1) /. int.to_float(total) *. 100.0
       |> float.to_precision(1)
   }
 }
