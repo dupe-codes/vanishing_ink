@@ -2210,6 +2210,90 @@ pub fn ensure_books_genre_column_migrates_pre_genre_schema_test() {
   let assert Ok(_) = sqlight.close(conn)
 }
 
+pub fn ensure_reading_state_percent_progress_column_migrates_pre_percent_progress_schema_test() {
+  // Mirror the precedent set by `ensure_books_genre_column_migrates_
+  // pre_genre_schema_test` (server/test/server_test.gleam:2134). The
+  // ALTER TABLE branch of `ensure_reading_state_percent_progress_
+  // column` only fires against tables created before the column
+  // landed; every test that goes through `db.initialize` on a fresh
+  // `:memory:` database picks the column up from the inline
+  // `CREATE TABLE IF NOT EXISTS` and never drives the migration. This
+  // test hand-builds a pre-percent_progress `reading_state` table,
+  // seeds a row, runs the migration, and asserts both the column
+  // appears AND the seeded row's `percent_progress` reads back as the
+  // schema default `0.0` (not a backfill, not an error). Idempotency
+  // is then asserted: a second call leaves the row's `0.0` undisturbed.
+  let assert Ok(conn) = sqlight.open(":memory:")
+  // The pre-percent_progress schema omits the new column and the FK
+  // reference (FK enforcement is off by default, so a hand-built
+  // standalone `reading_state` table is sufficient for the migration
+  // path under test).
+  let pre_percent_progress_schema =
+    "CREATE TABLE reading_state (
+       book_id TEXT PRIMARY KEY,
+       mode TEXT NOT NULL DEFAULT 'manual',
+       sentence_bitset BLOB,
+       word_bitset BLOB,
+       current_page INTEGER NOT NULL DEFAULT 0,
+       updated_at TEXT NOT NULL
+     );"
+  let assert Ok(_) = sqlight.exec(pre_percent_progress_schema, conn)
+
+  // Seed a row at the pre-percent_progress schema so the migration
+  // runs against non-empty data. The contract under test: the seeded
+  // row's `percent_progress` must default to `0.0` (the column's
+  // `NOT NULL DEFAULT 0.0`) after the ALTER TABLE ADD COLUMN.
+  let seed_row_sql =
+    "INSERT INTO reading_state (book_id, mode, sentence_bitset, word_bitset,
+      current_page, updated_at)
+     VALUES ('legacy-1', 'manual', NULL, NULL, 3, '2026-04-01T12:00:00Z');"
+  let assert Ok(_) = sqlight.exec(seed_row_sql, conn)
+
+  // Sanity: the table starts without `percent_progress`. SELECT must
+  // fail with a column-missing error — confirms the seed schema is
+  // genuinely pre-percent_progress.
+  let assert Error(_) =
+    sqlight.exec("SELECT percent_progress FROM reading_state;", conn)
+
+  // First run: the migration adds the column.
+  let assert Ok(Nil) = db.ensure_reading_state_percent_progress_column(conn)
+  let assert Ok(_) =
+    sqlight.exec("SELECT percent_progress FROM reading_state;", conn)
+
+  // The pre-existing row's `percent_progress` reads back as `0.0` —
+  // the column default lands the floor on every existing row, and the
+  // seeded row is still there with its original `book_id` and
+  // `current_page`.
+  let row_decoder = {
+    use book_id <- decode.field(0, decode.string)
+    use current_page <- decode.field(1, decode.int)
+    use percent_progress <- decode.field(2, decode.float)
+    decode.success(#(book_id, current_page, percent_progress))
+  }
+  let assert Ok([#("legacy-1", 3, 0.0)]) =
+    sqlight.query(
+      "SELECT book_id, current_page, percent_progress FROM reading_state;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
+
+  // Second run: the PRAGMA-style column probe sees `percent_progress`
+  // already present and skips the ALTER. Still `Ok(Nil)`, still
+  // leaves the column intact, and the seeded row's `0.0` is
+  // undisturbed.
+  let assert Ok(Nil) = db.ensure_reading_state_percent_progress_column(conn)
+  let assert Ok([#("legacy-1", 3, 0.0)]) =
+    sqlight.query(
+      "SELECT book_id, current_page, percent_progress FROM reading_state;",
+      on: conn,
+      with: [],
+      expecting: row_decoder,
+    )
+
+  let assert Ok(_) = sqlight.close(conn)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
