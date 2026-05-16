@@ -9,14 +9,14 @@
 ////
 //// The overlay shows three per-book tiles — total words read, total
 //// reading time, and session count — plus the library-wide speed
-//// trend sparkline (reused from `client/view/stats`). Values come
-//// from `model.book_stats`; a `None` value renders a "no stats" empty
-//// state so the overlay never paints stale tiles. The speed trend
-//// reuses the library-wide samples on `model.speed_trend` because the
-//// trend is a cross-book signal — the SQL feed is `ORDER BY started_at
-//// DESC LIMIT N` over every session, not filtered by book — and the
-//// reader's recent-pace context is meaningful regardless of which
-//// specific book is open.
+//// trend sparkline (reused from `client/view/stats_helpers`). Values
+//// come from `model.book_stats`; a `None` value renders a "no stats"
+//// empty state so the overlay never paints stale tiles. The speed
+//// trend reuses the library-wide samples on `model.speed_trend`
+//// because the trend is a cross-book signal — the SQL feed is
+//// `ORDER BY started_at DESC LIMIT N` over every session, not
+//// filtered by book — and the reader's recent-pace context is
+//// meaningful regardless of which specific book is open.
 
 import gleam/int
 import gleam/option.{type Option, None, Some}
@@ -28,7 +28,7 @@ import lustre/event
 import client/msg.{type Msg, ToggleReaderStats}
 import client/state.{type Model}
 import client/view/overlay_helpers.{stop_click_propagation}
-import client/view/stats as stats_view
+import client/view/stats_helpers
 import shared/stats.{type BookStats}
 
 /// Render the per-book stats overlay (scrim + sheet). Renders nothing
@@ -60,7 +60,7 @@ fn view_stats_sheet(model: Model) -> Element(Msg) {
     ),
     view_stats_header(),
     view_stats_body(model.book_stats),
-    stats_view.view_speed_trend_tile(model.speed_trend),
+    stats_helpers.view_speed_trend_tile(model.speed_trend),
   ])
 }
 
@@ -101,11 +101,11 @@ fn view_stats_body(stats: Option(BookStats)) -> Element(Msg) {
           html.div([attribute.class("stats-grid")], [
             view_stat_tile(
               "Words read",
-              stats_view.format_words(s.total_words_read),
+              stats_helpers.format_words(s.total_words_read),
             ),
             view_stat_tile(
               "Reading time",
-              stats_view.format_duration(s.total_duration_seconds),
+              stats_helpers.format_duration(s.total_duration_seconds),
             ),
             view_stat_tile("Sessions", int.to_string(s.session_count)),
           ])

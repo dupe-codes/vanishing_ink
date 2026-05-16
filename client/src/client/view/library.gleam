@@ -33,7 +33,7 @@ import client/types.{type BookMeta}
 import client/view/library/add_book
 import client/view/library/edit_metadata
 import client/view/overlay_helpers.{stop_click_propagation}
-import client/view/stats as stats_view
+import client/view/stats_helpers
 import shared/stats.{type BookStats}
 
 /// Render the library view: app bar + scrollable body (hero card,
@@ -434,9 +434,11 @@ fn book_stats_summary(
         0 -> element.none()
         _ -> {
           let pct = progress_percentage(stats)
-          let time = stats_view.format_duration(stats.total_duration_seconds)
+          let time = stats_helpers.format_duration(stats.total_duration_seconds)
           let sessions = format_session_count(stats.session_count)
-          let eta_suffix = case estimate_remaining(stats, book.word_count) {
+          let eta_suffix = case
+            stats_helpers.estimate_remaining(stats, book.word_count)
+          {
             None -> ""
             Some(eta) -> " • " <> eta
           }
@@ -464,46 +466,6 @@ pub fn format_session_count(count: Int) -> String {
   case count {
     1 -> "1 session"
     _ -> int.to_string(count) <> " sessions"
-  }
-}
-
-/// Estimate the time remaining to finish the book at the reader's
-/// current pace. Returns `None` for edge cases where the projection
-/// has no meaning:
-///
-/// * `total_word_count` is zero — the book has no words, ETA is
-///   meaningless.
-/// * The book is already complete (`covered >= total_word_count`).
-/// * `total_words_read` is zero — the reader has not actually read
-///   anything, only skipped via Lock-In jumps. Computing speed from
-///   a zero numerator would either divide by zero or produce a
-///   meaningless `0 / duration` rate.
-/// * `total_duration_seconds` is zero — no time has elapsed, so no
-///   rate can be computed.
-///
-/// `total_words_read` (not `covered`) drives the speed denominator so
-/// Lock-In jumps don't inflate apparent reading speed — a reader who
-/// skipped 50k words in 1 minute has not "read" at 3M wpm.
-pub fn estimate_remaining(
-  stats: BookStats,
-  total_word_count: Int,
-) -> Option(String) {
-  let covered = stats.total_words_read + stats.total_words_skipped
-  let remaining = total_word_count - covered
-  case
-    total_word_count,
-    remaining,
-    stats.total_words_read,
-    stats.total_duration_seconds
-  {
-    0, _, _, _ -> None
-    _, r, _, _ if r <= 0 -> None
-    _, _, 0, _ -> None
-    _, _, _, 0 -> None
-    _, r, words_read, duration_seconds -> {
-      let eta_seconds = r * duration_seconds / words_read
-      Some("~" <> stats_view.format_duration(eta_seconds) <> " left")
-    }
   }
 }
 

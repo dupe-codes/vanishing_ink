@@ -48,8 +48,8 @@ import client/state.{
 }
 import client/state/helpers.{erased_opacity_value, progress_percentage}
 import client/types.{type BookMeta}
-import client/view/library as library_view
 import client/view/reader/bottom_bar
+import client/view/stats_helpers
 import shared/segmenter.{type Paragraph, type Sentence, type Word}
 
 /// Reader-view body. Renders a loading placeholder until a
@@ -227,7 +227,7 @@ fn view_title_slot(model: Model, title: String) -> Element(Msg) {
 
 /// Render the muted progress + ETA line that rides below the title.
 /// Reads `progress_percentage` from the model (already cached on the
-/// pagination path) and the ETA from `library_view.estimate_remaining`
+/// pagination path) and the ETA from `stats_helpers.estimate_remaining`
 /// against the active book's `word_count`.
 ///
 /// Rendering rules:
@@ -246,7 +246,7 @@ fn view_progress_meta(model: Model) -> Element(Msg) {
       let pct_text = int.to_string(float.round(pct)) <> "%"
       let label = case active_book_meta(model), model.book_stats {
         Some(meta), Some(stats) ->
-          case library_view.estimate_remaining(stats, meta.word_count) {
+          case stats_helpers.estimate_remaining(stats, meta.word_count) {
             Some(eta) -> pct_text <> " • " <> eta
             None -> pct_text
           }

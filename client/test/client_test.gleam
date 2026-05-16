@@ -84,6 +84,7 @@ import client/view
 import client/view/library as library_view
 import client/view/reader as view_reader
 import client/view/stats as stats_view_module
+import client/view/stats_helpers
 import shared/stats as shared_stats
 
 pub fn main() -> Nil {
@@ -8118,7 +8119,7 @@ pub fn estimate_remaining_returns_none_when_complete_test() {
       session_count: 1,
       percent_progress: 100.0,
     )
-  assert library_view.estimate_remaining(stats, 100) == None
+  assert stats_helpers.estimate_remaining(stats, 100) == None
 }
 
 pub fn estimate_remaining_returns_none_when_zero_words_read_test() {
@@ -8132,7 +8133,7 @@ pub fn estimate_remaining_returns_none_when_zero_words_read_test() {
       session_count: 1,
       percent_progress: 0.0,
     )
-  assert library_view.estimate_remaining(stats, 100) == None
+  assert stats_helpers.estimate_remaining(stats, 100) == None
 }
 
 pub fn estimate_remaining_returns_none_when_zero_duration_test() {
@@ -8146,7 +8147,7 @@ pub fn estimate_remaining_returns_none_when_zero_duration_test() {
       session_count: 1,
       percent_progress: 50.0,
     )
-  assert library_view.estimate_remaining(stats, 100) == None
+  assert stats_helpers.estimate_remaining(stats, 100) == None
 }
 
 pub fn estimate_remaining_returns_some_for_normal_case_test() {
@@ -8159,7 +8160,7 @@ pub fn estimate_remaining_returns_some_for_normal_case_test() {
       session_count: 1,
       percent_progress: 50.0,
     )
-  assert library_view.estimate_remaining(stats, 100) == Some("~10m left")
+  assert stats_helpers.estimate_remaining(stats, 100) == Some("~10m left")
 }
 
 pub fn format_session_count_singular_plural_examples_test() {
@@ -8176,13 +8177,13 @@ pub fn format_session_count_singular_plural_examples_test() {
 pub fn stats_format_duration_examples_test() {
   // Pin the formatter behaviour at each boundary so future tweaks do
   // not silently change library / stats overlay copy.
-  assert stats_view_module.format_duration(0) == "0s"
-  assert stats_view_module.format_duration(59) == "59s"
-  assert stats_view_module.format_duration(60) == "1m"
-  assert stats_view_module.format_duration(125) == "2m"
-  assert stats_view_module.format_duration(3600) == "1h"
-  assert stats_view_module.format_duration(3660) == "1h 1m"
-  assert stats_view_module.format_duration(7325) == "2h 2m"
+  assert stats_helpers.format_duration(0) == "0s"
+  assert stats_helpers.format_duration(59) == "59s"
+  assert stats_helpers.format_duration(60) == "1m"
+  assert stats_helpers.format_duration(125) == "2m"
+  assert stats_helpers.format_duration(3600) == "1h"
+  assert stats_helpers.format_duration(3660) == "1h 1m"
+  assert stats_helpers.format_duration(7325) == "2h 2m"
 }
 
 pub fn stats_format_streak_examples_test() {
@@ -8225,9 +8226,9 @@ pub fn stats_view_renders_empty_state_when_speed_trend_empty_test() {
 pub fn stats_average_wpm_examples_test() {
   // Pin the predicate at the boundaries the view layer cannot exercise:
   // empty list, single sample, mixed values.
-  assert stats_view_module.average_wpm([]) == 0
-  assert stats_view_module.average_wpm([200]) == 200
-  assert stats_view_module.average_wpm([160, 200, 240]) == 200
+  assert stats_helpers.average_wpm([]) == 0
+  assert stats_helpers.average_wpm([200]) == 200
+  assert stats_helpers.average_wpm([160, 200, 240]) == 200
 }
 
 pub fn toggle_stats_view_opens_and_chains_aggregate_fetches_test() {
@@ -9778,7 +9779,7 @@ pub fn reader_header_progress_meta_renders_eta_when_stats_available_test() {
   // With both `book_stats` (session aggregates) and `book.word_count`
   // available, the meta line carries the ETA suffix in addition to
   // the percentage. The ETA is computed by the same
-  // `library_view.estimate_remaining` helper the library card uses,
+  // `stats_helpers.estimate_remaining` helper the library card uses,
   // so the format matches: "33% • ~10m left".
   //
   // Fixture math: 100-word book, 50 words read in 600s (0 skipped) →
