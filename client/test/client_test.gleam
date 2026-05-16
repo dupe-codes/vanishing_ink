@@ -9571,13 +9571,14 @@ pub fn reader_header_carries_stats_button_test() {
 pub fn reader_stats_overlay_hidden_when_closed_test() {
   // `reader_stats_open: False` is the default; the overlay markup
   // must not appear in the rendered HTML so the reader sees only the
-  // chrome until they tap the affordance.
+  // chrome until they tap the affordance. The `reader-book-stats-overlay`
+  // modifier class is the load-bearing pin — the header button's
+  // `aria-label="Open book stats"` already carries the literal "book
+  // stats" substring, so a class-level check is the only way to
+  // distinguish absence of the panel from the always-rendered button.
   let rendered = view.view(reader_stats_model()) |> element.to_string
-  assert !string.contains(
-    rendered,
-    "class=\"stats-overlay reader-book-stats-overlay",
-  )
-  assert !string.contains(rendered, "Book stats")
+  assert !string.contains(rendered, "reader-book-stats-overlay")
+  assert !string.contains(rendered, "aria-label=\"Close book stats\"")
 }
 
 pub fn reader_stats_overlay_renders_when_open_test() {
