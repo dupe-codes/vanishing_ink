@@ -9622,6 +9622,38 @@ pub fn reader_stats_overlay_renders_empty_state_when_no_stats_test() {
   assert !string.contains(rendered, "class=\"stats-grid\"")
 }
 
+pub fn reader_stats_overlay_renders_empty_state_when_session_count_zero_test() {
+  // Defensive: even with a `BookStats` row on the model, a
+  // `session_count: 0` payload must collapse to the same empty-state
+  // copy as the `book_stats: None` branch. The server boundary today
+  // never produces a `session_count: 0` row (the aggregate is created
+  // alongside the first session), but the view-layer guard exists so
+  // a future server change or a hand-crafted GET cannot surface three
+  // dashed tiles as a degenerate snapshot. Pinning the path with a
+  // test keeps a regression that flipped the condition to `> 1` or
+  // `>= 0` from sneaking through.
+  let model =
+    Model(
+      ..reader_stats_model(),
+      reader_stats_open: True,
+      book_stats: Some(shared_stats.BookStats(
+        total_words_read: 0,
+        total_words_skipped: 0,
+        total_duration_seconds: 0,
+        session_count: 0,
+        percent_progress: 0.0,
+      )),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(
+    rendered,
+    "No reading stats recorded for this book yet.",
+  )
+  // The tile grid stays absent — the empty-state branch is a single
+  // copy line, not the three-tile chrome.
+  assert !string.contains(rendered, "class=\"stats-grid\"")
+}
+
 pub fn reader_stats_overlay_renders_tile_values_when_book_stats_present_test() {
   // With session aggregates on the model, the overlay paints three
   // tiles: words read (formatted with thousands separator), reading
@@ -9716,8 +9748,12 @@ pub fn reader_header_renders_progress_meta_when_paginated_test() {
   // The `two_chapter_text` fixture flattens to three paragraphs, so
   // `pages` is three long with `current_page: 0` → (0+1)/3 = 33.3%,
   // which rounds to 33 for the textual meta line.
-  assert string.contains(rendered, "class=\"reader-title-meta\"")
-  assert string.contains(rendered, "33%")
+  //
+  // Anchor the percentage against the meta-line's class+">" boundary
+  // rather than a bare "33%" substring — without the anchor, a
+  // future render that produced "133%" or "233%" elsewhere on the
+  // page would still pass this assertion.
+  assert string.contains(rendered, "class=\"reader-title-meta\">33%")
 }
 
 pub fn reader_header_progress_meta_hidden_when_pagination_pending_test() {
@@ -9770,8 +9806,13 @@ pub fn reader_header_progress_meta_renders_eta_when_stats_available_test() {
       )),
     )
   let rendered = view.view(model) |> element.to_string
-  assert string.contains(rendered, "33%")
-  assert string.contains(rendered, "~10m left")
+  // Anchor the joined "33% • ~10m left" against the meta-line class
+  // boundary — a bare substring would also match "133%" / "233%" if
+  // a future render leaked another percentage onto the page.
+  assert string.contains(
+    rendered,
+    "class=\"reader-title-meta\">33% • ~10m left",
+  )
 }
 
 pub fn reader_header_progress_meta_omits_eta_when_no_book_stats_test() {
