@@ -86,3 +86,51 @@ pub fn session_speed_codec_round_trips_test() {
     gleam_json.parse(encoded, stats.session_speed_decoder())
   assert decoded == sample
 }
+
+pub fn book_stats_codec_round_trips_test() {
+  // The `BookStats` codec is symmetric across all five fields,
+  // including the new viewport-agnostic `percent_progress`. The
+  // encoder/decoder pair lives at the JSON boundary the server and
+  // client share — a drift on either side would otherwise surface as
+  // a silent shape mismatch at runtime (a missing field decodes to
+  // an error; a renamed field skips the value entirely). Pinning the
+  // wire form here keeps the contract explicit.
+  let sample =
+    stats.BookStats(
+      total_words_read: 120,
+      total_words_skipped: 35,
+      total_duration_seconds: 1800,
+      session_count: 4,
+      percent_progress: 42.5,
+    )
+  let encoded = stats.book_stats_to_json(sample) |> gleam_json.to_string
+  assert encoded
+    == "{\"total_words_read\":120,\"total_words_skipped\":35,\"total_duration_seconds\":1800,\"session_count\":4,\"percent_progress\":42.5}"
+  let assert Ok(decoded) =
+    gleam_json.parse(encoded, stats.book_stats_decoder())
+  assert decoded == sample
+}
+
+pub fn book_stats_entry_codec_round_trips_test() {
+  // The bulk per-book stats endpoint sends one object per book with
+  // `book_id` riding at the top level alongside the aggregate fields.
+  // The entry codec is a separate pair from the single-book codec,
+  // so the round-trip pins the wire form independently.
+  let entry =
+    #(
+      "book-1",
+      stats.BookStats(
+        total_words_read: 7,
+        total_words_skipped: 1,
+        total_duration_seconds: 1800,
+        session_count: 1,
+        percent_progress: 12.5,
+      ),
+    )
+  let encoded = stats.book_stats_entry_to_json(entry) |> gleam_json.to_string
+  assert encoded
+    == "{\"book_id\":\"book-1\",\"total_words_read\":7,\"total_words_skipped\":1,\"total_duration_seconds\":1800,\"session_count\":1,\"percent_progress\":12.5}"
+  let assert Ok(decoded) =
+    gleam_json.parse(encoded, stats.book_stats_entry_decoder())
+  assert decoded == entry
+}

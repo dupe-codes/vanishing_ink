@@ -2484,6 +2484,61 @@ pub fn erased_opacity_value_true_branch_at_default_test() {
 }
 
 // ---------------------------------------------------------------------------
+// progress_percentage — page-based
+// ---------------------------------------------------------------------------
+
+pub fn progress_percentage_handles_zero_pages_test() {
+  // Pagination is pending — `total_pages == 0` is the only branch
+  // that can divide by zero, and it must short-circuit to `0.0`
+  // rather than NaN. This guard is also what keeps the wire field
+  // `percent_progress` in range during the `TextLoaded` →
+  // `ParagraphsMeasured` window before pagination has produced
+  // any pages.
+  let model = Model(..empty_model(), total_pages: 0, current_page: 0)
+  assert state_helpers.progress_percentage(model) == 0.0
+}
+
+pub fn progress_percentage_first_page_test() {
+  // First page of a 10-page book → `(0 + 1) / 10 * 100 = 10.0`.
+  // The `+1` reflects that `current_page` is a zero-based index
+  // and the reader has reached the *end* of that page.
+  let model = Model(..empty_model(), total_pages: 10, current_page: 0)
+  assert state_helpers.progress_percentage(model) == 10.0
+}
+
+pub fn progress_percentage_last_page_is_one_hundred_test() {
+  // Last page of a 10-page book → `(9 + 1) / 10 * 100 = 100.0`. A
+  // reader who has reached the final page sees the bar fill the
+  // track — the centerpiece of the page-based model's "your bar
+  // tops out at 100% when you finish".
+  let model = Model(..empty_model(), total_pages: 10, current_page: 9)
+  assert state_helpers.progress_percentage(model) == 100.0
+}
+
+pub fn progress_percentage_is_viewport_agnostic_test() {
+  // The same "halfway through the book" position must yield the
+  // same percentage regardless of how the viewport paginates the
+  // text. Page 1 of 4 (`2/4 = 50%`) and page 3 of 8 (`4/8 = 50%`)
+  // are both reading-position halfway — the invariant the
+  // page-based model is designed around.
+  let four_page = Model(..empty_model(), total_pages: 4, current_page: 1)
+  let eight_page = Model(..empty_model(), total_pages: 8, current_page: 3)
+  assert state_helpers.progress_percentage(four_page) == 50.0
+  assert state_helpers.progress_percentage(eight_page) == 50.0
+}
+
+pub fn progress_percentage_rounds_to_one_decimal_place_test() {
+  // `float.to_precision(_, 1)` snaps to a single decimal digit so
+  // the serialised `width:<n>%` style stays a clean prefix; without
+  // this snap, the raw float division would emit
+  // `width:33.333333333333%` and force every rendering assertion
+  // to substring-match `33.3`. Pinning the helper directly catches
+  // a future refactor that drops the rounding.
+  let model = Model(..empty_model(), total_pages: 3, current_page: 0)
+  assert state_helpers.progress_percentage(model) == 33.3
+}
+
+// ---------------------------------------------------------------------------
 // view — settings panel
 // ---------------------------------------------------------------------------
 //
@@ -3658,6 +3713,12 @@ fn reading_state_body(
       _ -> "\"" <> ffi.pack_indices_to_base64(indices) <> "\""
     }
   }
+  // `percent_progress` is part of the new wire shape; the value is a
+  // server-supplied constant for these fixtures because the load arm
+  // is responsible for stamping bitsets and `current_page` from this
+  // body — `percent_progress` itself is consumed by the library
+  // view, not by the reader-side reducer, so its value only has to
+  // be a parseable float to make the decoder happy.
   "{\"book_id\":\""
   <> book_id
   <> "\",\"mode\":\""
@@ -3668,6 +3729,7 @@ fn reading_state_body(
   <> encode_field(word_indices)
   <> ",\"current_page\":"
   <> int.to_string(current_page)
+  <> ",\"percent_progress\":0.0"
   <> ",\"updated_at\":\"2026-05-13T10:00:00.000Z\"}"
 }
 
@@ -4721,7 +4783,21 @@ pub fn view_progress_bar_is_zero_when_no_pages_paginated_test() {
   // the model. Before `ParagraphsMeasured` lands, `total_pages == 0`
   // and the page-based numerator has nothing to divide by, so the
   // helper short-circuits to `0.0`.
-  let model = Model(..empty_model(), total_pages: 0, current_page: 0)
+  //
+  // `text: Some(_)` is set so the reader view dispatches off the
+  // pre-pagination placeholder branch — `pages` is intentionally
+  // empty to model the `TextLoaded` → `ParagraphsMeasured` race
+  // window in which the fixture lives.
+  let text = two_chapter_text()
+  let model =
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      pages: [],
+      total_pages: 0,
+      current_page: 0,
+    )
 
   let rendered = view.view(model) |> element.to_string
 
@@ -4792,10 +4868,36 @@ pub fn view_progress_bar_is_viewport_agnostic_test() {
   // (50%) and an 8-page viewport at page 3 of 8 (also 50%) must
   // render identical bar fills — this is the central invariant of
   // the page-based model.
+  //
+  // `text: Some(_)` is set so the reader view dispatches off the
+  // populated branch; `pages` carries enough synthetic entries to
+  // satisfy the `current_page` look-up, but the contents of those
+  // pages are immaterial to the progress bar — the helper reads
+  // only the cached `current_page` / `total_pages` fields.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let synthetic_pages = fn(count: Int) -> List(Page) {
+    list.repeat(Nil, count)
+    |> list.index_map(fn(_, i) { Page(index: i, paragraphs: flat) })
+  }
   let four_page_model =
-    Model(..empty_model(), total_pages: 4, current_page: 1)
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: synthetic_pages(4),
+      total_pages: 4,
+      current_page: 1,
+    )
   let eight_page_model =
-    Model(..empty_model(), total_pages: 8, current_page: 3)
+    Model(
+      ..empty_model(),
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: synthetic_pages(8),
+      total_pages: 8,
+      current_page: 3,
+    )
 
   let four_page_rendered =
     view.view(four_page_model) |> element.to_string

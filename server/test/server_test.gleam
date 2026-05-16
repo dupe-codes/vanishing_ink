@@ -625,6 +625,86 @@ pub fn put_reading_state_for_missing_book_is_404_test() {
   assert simulate.read_body(response) == "Not found"
 }
 
+/// Round-trip the new viewport-agnostic `percent_progress` field
+/// end-to-end. The PUT body carries an explicit value, the response
+/// echoes the same value, and a subsequent GET resurfaces it from the
+/// `reading_state.percent_progress` column. Pinning the full record
+/// catches a silent drop of the field on either side of the wire.
+pub fn put_reading_state_round_trips_percent_progress_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(4)),
+      #("percent_progress", json.float(42.5)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  assert decoded.percent_progress == 42.5
+
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let reloaded = decode_body(get_response, reading_state_wire_decoder())
+  assert reloaded.percent_progress == 42.5
+}
+
+/// A PUT that omits `percent_progress` lands with the schema-default
+/// of `0.0`. The optional-field decode on the server is what keeps an
+/// older client that has not been redeployed yet from 400-ing on
+/// every save — the value defaults to the same `0.0` the schema's
+/// `DEFAULT 0.0` would inject for an `ALTER TABLE`-upgraded row.
+pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body = put_reading_state_body("manual", 3, "2026-05-12T02:00:00Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  assert decoded.percent_progress == 0.0
+}
+
+/// A PUT with a `percent_progress` outside `[0, 100]` is refused with
+/// a 400 — the column stores a `REAL` and the schema would happily
+/// accept a negative or oversize value, but the validator at the
+/// handler boundary keeps the persisted value within the same range
+/// the rest of the surface assumes.
+pub fn put_reading_state_rejects_out_of_range_percent_progress_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let too_high =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("percent_progress", json.float(150.0)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let high_response = http_put_reading_state(ctx, created.book.id, too_high)
+  assert high_response.status == 400
+  assert string.contains(simulate.read_body(high_response), "percent_progress")
+
+  let too_low =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("percent_progress", json.float(-0.1)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let low_response = http_put_reading_state(ctx, created.book.id, too_low)
+  assert low_response.status == 400
+  assert string.contains(simulate.read_body(low_response), "percent_progress")
+}
+
 // ---------------------------------------------------------------------------
 // Reading state — SQL layer
 // ---------------------------------------------------------------------------
@@ -1336,6 +1416,61 @@ pub fn get_book_stats_for_missing_book_is_404_test() {
       ctx,
     )
   assert response.status == 404
+}
+
+/// The library card needs `BookStats.percent_progress` to render the
+/// page-based progress percentage without re-deriving from the
+/// session counters. The SQL query for `get_book_stats` joins
+/// `reading_state` against `reading_sessions` so the field arrives
+/// alongside the aggregates; this test pins the seam by writing a
+/// reading-state row, recording a session, and asserting both the
+/// scalar query (`GET /api/books/:id/stats`) and the bulk listing
+/// (`GET /api/stats/books`) surface the persisted percentage.
+pub fn book_stats_surfaces_percent_progress_from_reading_state_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let id = created.book.id
+
+  // Stamp `reading_state.percent_progress` to a non-default value.
+  let state_body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(3)),
+      #("percent_progress", json.float(73.5)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let _ = http_put_reading_state(ctx, id, state_body)
+
+  // One recorded session so the book appears in the bulk listing too
+  // (which groups by `reading_sessions.book_id`).
+  let _ = http_post_session(ctx, id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      id,
+      "s1",
+      end_session_body("2026-05-12T10:30:00Z", 100, 0, 5, 1800),
+    )
+
+  let scalar =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/books/" <> id <> "/stats"),
+      ctx,
+    )
+  assert decode_body(scalar, stats.book_stats_decoder()).percent_progress
+    == 73.5
+
+  let listing =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/books"),
+      ctx,
+    )
+  let entries =
+    decode_body(listing, decode.list(stats.book_stats_entry_decoder()))
+  let assert [#(_, only_book_stats), ..] = entries
+  assert only_book_stats.percent_progress == 73.5
 }
 
 pub fn get_book_stats_aggregates_across_sessions_test() {
