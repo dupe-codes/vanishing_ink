@@ -7918,6 +7918,15 @@ pub fn library_appbar_carries_stats_button_test() {
 }
 
 pub fn library_card_renders_book_stats_summary_when_available_test() {
+  // Discriminating fixture: `total_words_read + total_words_skipped =
+  // sample_book.word_count = 100`, so the *old* word-coverage
+  // derivation would render `"100%"`. The new helper reads
+  // `percent_progress` verbatim, so the rendered line must carry
+  // `"42%"` (and must NOT carry `"100%"`). A future refactor that
+  // silently re-derived from the session counters would fail both
+  // assertions — pinning the precedence is the load-bearing
+  // contribution of this test, separate from also asserting that the
+  // stats line exists and that the time/session segments render.
   let book = sample_book("a", "Alpha", None)
   let model =
     Model(
@@ -7927,23 +7936,25 @@ pub fn library_card_renders_book_stats_summary_when_available_test() {
         #(
           "a",
           shared_stats.BookStats(
-            total_words_read: 50,
-            total_words_skipped: 50,
+            total_words_read: 60,
+            total_words_skipped: 40,
             total_duration_seconds: 600,
             session_count: 1,
-            // Page-based progress now rides on the server value; the
-            // library card reads it verbatim rather than re-deriving
-            // from `words_read + words_skipped`.
-            percent_progress: 100.0,
+            percent_progress: 42.0,
           ),
         ),
       ]),
     )
   let rendered = view.view(model) |> element.to_string
   assert string.contains(rendered, "class=\"book-stats-line\"")
-  // `percent_progress: 100.0` rounds to a "100%" prefix on the line.
-  assert string.contains(rendered, "100%")
+  // Precedence pin: the server-supplied `percent_progress` wins over
+  // the legacy `(read + skipped) / word_count` derivation.
+  assert string.contains(rendered, "42%")
+  assert !string.contains(rendered, "100%")
+  // Session-aggregate segments still render: total_duration_seconds
+  // → "10m"; session_count of 1 → "1 session".
   assert string.contains(rendered, "10m")
+  assert string.contains(rendered, "1 session")
 }
 
 pub fn library_card_hides_stats_when_no_sessions_test() {
@@ -7957,6 +7968,13 @@ pub fn library_card_renders_session_count_singular_test() {
   // A single recorded session reads as "1 session" (singular). The
   // stats line therefore carries "10m • 1 session" rather than the
   // misleading plural form a naive `<count> sessions` would produce.
+  //
+  // The fixture also uses a discriminating `percent_progress` (42.0
+  // against a coverage ratio that would derive to 100%) so a future
+  // regression that re-derived from the session counters would
+  // visibly change the rendered prefix this test does not pin
+  // directly — keeping the fixture honest with the other library-card
+  // tests.
   let book = sample_book("a", "Alpha", None)
   let model =
     Model(
@@ -7970,7 +7988,7 @@ pub fn library_card_renders_session_count_singular_test() {
             total_words_skipped: 50,
             total_duration_seconds: 600,
             session_count: 1,
-            percent_progress: 100.0,
+            percent_progress: 42.0,
           ),
         ),
       ]),
@@ -7987,6 +8005,11 @@ pub fn library_card_renders_session_count_plural_test() {
   // Multiple sessions render as "N sessions". The book is incomplete
   // (50% covered) so the ETA also appears alongside the count, but
   // this test pins the plural form in isolation.
+  //
+  // `percent_progress: 42.0` is deliberately distinct from the
+  // word-coverage ratio (50%) so the fixture cannot accidentally pass
+  // under a precedence-regressed renderer that re-derived percent
+  // from the session counters — same hygiene as the singular test.
   let book = sample_book("a", "Alpha", None)
   let model =
     Model(
@@ -8000,7 +8023,7 @@ pub fn library_card_renders_session_count_plural_test() {
             total_words_skipped: 0,
             total_duration_seconds: 600,
             session_count: 4,
-            percent_progress: 50.0,
+            percent_progress: 42.0,
           ),
         ),
       ]),
@@ -8014,6 +8037,12 @@ pub fn library_card_renders_eta_when_book_incomplete_test() {
   // words skipped — 50 words remain at the same pace, so ETA is
   // 50 * 600 / 50 = 600 seconds = 10m. The ETA suffix appends to the
   // stats line as "• ~10m left".
+  //
+  // ETA reads only the session counters (words_read, words_skipped,
+  // duration_seconds), so it is independent of `percent_progress` —
+  // setting `percent_progress: 42.0` (distinct from the 50%
+  // coverage-ratio derivation) keeps the fixture honest and proves
+  // ETA does not silently couple to the new field.
   let book = sample_book("a", "Alpha", None)
   let model =
     Model(
@@ -8027,7 +8056,7 @@ pub fn library_card_renders_eta_when_book_incomplete_test() {
             total_words_skipped: 0,
             total_duration_seconds: 600,
             session_count: 1,
-            percent_progress: 50.0,
+            percent_progress: 42.0,
           ),
         ),
       ]),
