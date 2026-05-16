@@ -186,13 +186,28 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// dispatches and mid-preview dispatches collapse to `effect.none()`
 /// for free.
 ///
-/// Side-effect: refreshes the `pagehide` snapshot via
-/// `refresh_session_snapshot(model)` so the beacon body stays within
-/// one tick of the most recent counter mutation. The snapshot refresh
-/// fires synchronously here (not inside the returned effect) so that
-/// a tab close racing the effect dispatch still flushes the correct
-/// payload — by the time Lustre runs the effect, the unload event
-/// would already have been delivered.
+/// SIDE-EFFECT — this function is not a pure `Effect` constructor.
+/// It synchronously calls `refresh_session_snapshot(model)` before
+/// returning, refreshing the `pagehide` beacon snapshot so the slot
+/// stays within one tick of the most recent counter mutation. The
+/// rest of the codebase's effect constructors are pure (model in,
+/// `Effect` out, no FFI until the runtime evaluates the effect);
+/// this one is the deliberate exception.
+///
+/// The exception exists because the snapshot must be in place
+/// *before the next paint*. By the time Lustre dispatches a deferred
+/// effect, an unload-path event could already have fired — and a
+/// `pagehide` racing the deferred refresh would beacon stale counters
+/// (or none at all). Calling `refresh_session_snapshot` inline keeps
+/// the slot synchronous with the model the caller just built.
+///
+/// Every reducer arm that mutates session counters (open, page turn,
+/// word erase, lock-in, close, auto-fade tick) routes through this
+/// function so the slot and the canonical PUT body never drift.
+/// Modifying this function's side-effect contract — moving the
+/// refresh into the returned `Effect`, conditionalising it, or
+/// dropping it — would break that invariant; do not do it without
+/// auditing every caller for a tab-close racing window.
 ///
 /// ORDERING — same caveat as `save_book_settings`: rapid erases /
 /// page turns fire one PUT per dispatch with no debounce and no

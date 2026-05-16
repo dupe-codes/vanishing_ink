@@ -672,6 +672,26 @@ export function set_session_snapshot(url, body) {
  * The listener clears the slot after delivery so a subsequent
  * `pagehide` (modern browsers can fire it more than once per
  * navigation) does not re-flush stale data.
+ *
+ * The handler deliberately does **not** distinguish
+ * `event.persisted === true` (the document is suspending into the
+ * back-forward cache and may revive) from `false` (the document is
+ * truly leaving). Both arms beacon the in-slot snapshot and clear
+ * it. The trade-off is safe because:
+ *
+ *   * The server's session-update path is last-write-wins keyed on
+ *     `updated_at`, so a duplicate beacon (BFCache suspend → resume
+ *     → another beacon on a later `pagehide`) is dropped silently
+ *     when its counters are no longer newer than the latest write.
+ *   * A BFCache revival reuses the same JS context, so the next
+ *     `save_reading_state` call (e.g. on the first user interaction
+ *     post-resume) repopulates the slot with fresh counters before
+ *     any subsequent unload fires.
+ *
+ * The conservative alternative — gating on `!event.persisted` — would
+ * leak the counters of a session whose tab is closed from a BFCache
+ * suspend without ever reviving, which is the exact scenario the
+ * beacon is supposed to cover.
  */
 export function add_pagehide_listener() {
   window.addEventListener("pagehide", () => {
