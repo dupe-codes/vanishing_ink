@@ -42,6 +42,7 @@ import shared/segmenter.{
 }
 
 import gleam/dynamic
+import gleam/dynamic/decode
 
 import client/effects
 import client/epub.{
@@ -8090,14 +8091,77 @@ pub fn fetch_speed_trend_result_ok_stamps_samples_test() {
     ]
 }
 
-pub fn session_snapshot_body_contains_session_counter_fields_test() {
+/// Normalised snapshot of the closing-PUT body the `pagehide`
+/// listener flushes. `ended_at` and `duration_seconds` are read off
+/// the live FFI wall clock and vary between runs; the parse step
+/// replaces them with sentinels (a fixed string and zero) so the
+/// whole-payload assertion below is stable. Defined here rather than
+/// in `effects` because the wire shape is the contract — the
+/// production code rolls its own JSON object inline; the test owns
+/// the decoder that mirrors it.
+type SnapshotBody {
+  SnapshotBody(
+    ended_at: String,
+    words_read: Int,
+    words_skipped: Int,
+    pages_turned: Int,
+    duration_seconds: Int,
+  )
+}
+
+fn snapshot_body_decoder() -> decode.Decoder(SnapshotBody) {
+  use ended_at <- decode.field("ended_at", decode.string)
+  use words_read <- decode.field("words_read", decode.int)
+  use words_skipped <- decode.field("words_skipped", decode.int)
+  use pages_turned <- decode.field("pages_turned", decode.int)
+  use duration_seconds <- decode.field("duration_seconds", decode.int)
+  decode.success(SnapshotBody(
+    ended_at: ended_at,
+    words_read: words_read,
+    words_skipped: words_skipped,
+    pages_turned: pages_turned,
+    duration_seconds: duration_seconds,
+  ))
+}
+
+/// Parse the snapshot body, assert the live-wall-clock fields look
+/// sane, then normalise them to sentinels so the caller can compare
+/// against an `expect == SnapshotBody(...)` literal without flaking
+/// on the millisecond clock. Returns both the normalised body and
+/// the top-level key set so the caller can pin the wire key list
+/// independently — a typed decoder permits stray extra keys, and the
+/// critic's note specifically called out that a substring-based
+/// check would not catch them.
+fn parse_and_normalise_snapshot_body(
+  body: String,
+) -> #(SnapshotBody, List(String)) {
+  let assert Ok(parsed) = json.parse(body, snapshot_body_decoder())
+  // Wall-clock sanity: `ended_at` is some non-empty ISO timestamp,
+  // and `duration_seconds` is a non-negative integer. Both come from
+  // `ffi.now_iso8601()` / `ffi.now_ms()` so we can't pin exact
+  // values, but the contract is "looks like a real wall-clock
+  // reading," not "is empty/garbage."
+  assert string.length(parsed.ended_at) > 0
+  assert parsed.duration_seconds >= 0
+  let normalised =
+    SnapshotBody(..parsed, ended_at: "<wall-clock>", duration_seconds: 0)
+
+  let assert Ok(key_dict) =
+    json.parse(body, decode.dict(decode.string, decode.dynamic))
+  let keys = dict.keys(key_dict) |> list.sort(string.compare)
+  #(normalised, keys)
+}
+
+pub fn session_snapshot_body_pins_full_wire_shape_test() {
   // The snapshot body mirrors `end_reading_session`'s payload shape
   // — the server's existing handler decodes both via the same
   // `end_session_decoder`, so the wire form must carry the same five
-  // fields. `ended_at` and `duration_seconds` are read off the live
-  // FFI wall clock and vary between runs; we pin the deterministic
-  // fields (`words_read`, `words_skipped`, `pages_turned`) via
-  // substring contains so the test is stable.
+  // fields with no extras. `ended_at` and `duration_seconds` come
+  // from the live FFI wall clock and are normalised to sentinels by
+  // `parse_and_normalise_snapshot_body` so the assertion can pin
+  // the WHOLE payload rather than a field-by-field substring check.
+  // A stray extra key in the JSON would show up in the sorted key
+  // list and fail the second assertion.
   let prior =
     Model(
       ..empty_model(),
@@ -8111,15 +8175,26 @@ pub fn session_snapshot_body_contains_session_counter_fields_test() {
     )
 
   let body = effects.build_session_snapshot_body(prior)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
 
   // `pages_turned` = 5 - 0 = 5.
-  assert string.contains(body, "\"pages_turned\":5")
   // `words_read` = 5 erased - 0 baseline - 2 skipped = 3.
-  assert string.contains(body, "\"words_read\":3")
-  assert string.contains(body, "\"words_skipped\":2")
-  // Every required field is present so the server decoder accepts it.
-  assert string.contains(body, "\"ended_at\":")
-  assert string.contains(body, "\"duration_seconds\":")
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 3,
+      words_skipped: 2,
+      pages_turned: 5,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 
 pub fn session_snapshot_body_clamps_negative_pages_to_zero_test() {
@@ -8127,7 +8202,9 @@ pub fn session_snapshot_body_clamps_negative_pages_to_zero_test() {
   // shrink `current_page` past `session_start_page`. In that case
   // `pages_turned` collapses to zero rather than reporting a
   // negative count — mirrors the same clamp `apply_end_session`
-  // performs.
+  // performs. The remaining counters round-trip at zero too, so the
+  // whole-payload comparison pins both the clamp and the
+  // unmodified fields together.
   let prior =
     Model(
       ..empty_model(),
@@ -8140,8 +8217,24 @@ pub fn session_snapshot_body_clamps_negative_pages_to_zero_test() {
     )
 
   let body = effects.build_session_snapshot_body(prior)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
 
-  assert string.contains(body, "\"pages_turned\":0")
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: 0,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 
 pub fn fetch_speed_trend_result_error_clears_prior_samples_test() {
