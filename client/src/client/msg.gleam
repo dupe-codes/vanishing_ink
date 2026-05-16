@@ -465,6 +465,13 @@ pub type Msg {
   /// prior map in place.
   FetchLibraryBookStatsResult(result: Result(String, ffi.FetchError))
 
+  /// `GET /api/stats/speed` resolved. The success arm decodes the
+  /// body as a list of `SessionSpeed` samples and stamps it onto
+  /// `model.speed_trend`; the error arm logs and clears the prior
+  /// snapshot so a stale trend never paints the freshly-opened
+  /// overlay.
+  FetchSpeedTrendResult(result: Result(String, ffi.FetchError))
+
   /// Reader tapped the stats button (open) or the scrim / close button
   /// on the stats overlay (close). Flips `model.stats_open`. Opening
   /// also chains a fresh `fetch_library_stats` so the overlay always

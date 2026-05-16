@@ -55,6 +55,7 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
     ["api", "books", id, "stats"] -> sessions.book_stats(req, ctx, id)
     ["api", "stats"] -> sessions.library_stats(req, ctx)
     ["api", "stats", "books"] -> sessions.book_stats_collection(req, ctx)
+    ["api", "stats", "speed"] -> sessions.speed_trend(req, ctx)
     ["api", "settings"] -> settings(req, ctx)
 
     // SPA shell — serve index.html for the root and any non-API,

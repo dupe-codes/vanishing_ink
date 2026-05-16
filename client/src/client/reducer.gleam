@@ -49,8 +49,8 @@ import client/msg.{
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
   EraseSentence, ExecuteDelete, FetchBookStatsResult,
-  FetchLibraryBookStatsResult, FetchLibraryStatsResult, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  FetchLibraryBookStatsResult, FetchLibraryStatsResult, FetchSpeedTrendResult,
+  FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
   ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
@@ -86,8 +86,9 @@ import client/reducer/metadata.{
 }
 import client/reducer/session.{
   apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,
-  apply_fetch_library_stats_result, apply_session_created, apply_session_ended,
-  apply_toggle_stats_view, apply_visibility_changed,
+  apply_fetch_library_stats_result, apply_fetch_speed_trend_result,
+  apply_session_created, apply_session_ended, apply_toggle_stats_view,
+  apply_visibility_changed,
 }
 import client/reducer/settings.{
   apply_reset_book_settings, apply_set_font_size, apply_set_ghost_opacity,
@@ -437,6 +438,9 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     FetchLibraryBookStatsResult(result) ->
       apply_fetch_library_book_stats_result(model, result)
+
+    FetchSpeedTrendResult(result) ->
+      apply_fetch_speed_trend_result(model, result)
 
     ToggleStatsView -> apply_toggle_stats_view(model)
 

@@ -48,9 +48,13 @@ pub fn collection(req: Request, ctx: Context, book_id: String) -> Response {
 }
 
 /// Dispatcher for `/api/books/:id/sessions/:session_id`. The PUT closes
-/// (or updates) an in-flight session. There is no DELETE — sessions
-/// are append-only; the client closes a session by PUTting the final
-/// counters, never by removing the row.
+/// (or updates) an in-flight session. POST is accepted with the same
+/// shape as PUT so the client's `pagehide`/`sendBeacon` durability
+/// path can flush the closing counters — `navigator.sendBeacon` only
+/// supports POST, but the handler logic is identical so the two
+/// methods share one code path. There is no DELETE — sessions are
+/// append-only; the client closes a session by PUTting (or POSTing
+/// via the beacon path) the final counters, never by removing the row.
 pub fn item(
   req: Request,
   ctx: Context,
@@ -59,7 +63,8 @@ pub fn item(
 ) -> Response {
   case req.method {
     Put -> put_session_handler(req, ctx, book_id, session_id)
-    _ -> wisp.method_not_allowed([Put])
+    Post -> put_session_handler(req, ctx, book_id, session_id)
+    _ -> wisp.method_not_allowed([Put, Post])
   }
 }
 
@@ -86,6 +91,16 @@ pub fn library_stats(req: Request, ctx: Context) -> Response {
 pub fn book_stats_collection(req: Request, ctx: Context) -> Response {
   case req.method {
     Get -> get_book_stats_collection_handler(ctx)
+    _ -> wisp.method_not_allowed([Get])
+  }
+}
+
+/// Dispatcher for `/api/stats/speed`. GET-only — returns the most
+/// recent N session speeds (default 20) for the library stats
+/// overlay's sparkline tile.
+pub fn speed_trend(req: Request, ctx: Context) -> Response {
+  case req.method {
+    Get -> get_speed_trend_handler(ctx)
     _ -> wisp.method_not_allowed([Get])
   }
 }
@@ -383,6 +398,25 @@ fn get_book_stats_collection_handler(ctx: Context) -> Response {
     Ok(entries) -> {
       let body =
         json.array(entries, stats.book_stats_entry_to_json)
+        |> json.to_string
+      wisp.json_response(body, 200)
+    }
+  }
+}
+
+/// Cap the response size at twenty recent sessions. Two dozen samples
+/// is plenty to read a trend across a 200×40-pixel sparkline; beyond
+/// that the polyline starts compressing into a horizontal line and the
+/// payload size grows for no visual benefit.
+const speed_trend_limit: Int = 20
+
+fn get_speed_trend_handler(ctx: Context) -> Response {
+  case db_sessions.get_recent_session_speeds(ctx.db, speed_trend_limit) {
+    Error(error) ->
+      web.db_error_response("db_sessions.get_recent_session_speeds", error)
+    Ok(samples) -> {
+      let body =
+        json.array(samples, stats.session_speed_to_json)
         |> json.to_string
       wisp.json_response(body, 200)
     }

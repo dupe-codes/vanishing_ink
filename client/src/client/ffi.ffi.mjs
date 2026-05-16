@@ -618,6 +618,94 @@ export function add_visibility_listener(callback) {
 }
 
 /**
+ * Module-level slot for the most recent session-update snapshot. The
+ * Gleam reducer stamps this from every arm that mutates session
+ * counters (open, page turn, word erase, lock-in, close). On
+ * `pagehide` the listener below flushes whatever is currently in the
+ * slot via `navigator.sendBeacon` — a reliable best-effort PUT that
+ * the browser delivers even after the document unloads, unlike
+ * `fetch()` which often gets cancelled on unload paths.
+ *
+ * Cleared to `null` by `set_session_snapshot("", "")` so a clean close
+ * does not double-fire the PUT alongside the `pagehide` event.
+ */
+let session_snapshot = null;
+
+/**
+ * Stamp or clear the session snapshot slot. Both `url` and `body`
+ * empty clears the slot — used by `refresh_session_snapshot` when no
+ * session is in flight. Either-empty (one populated, the other
+ * blank) is treated as a programming error: clearing on either-empty
+ * would let a future caller who passed a non-empty url with an empty
+ * body silently nuke the snapshot. Require both fields populated
+ * before stamping, both empty before clearing.
+ *
+ * @param {string} url
+ * @param {string} body
+ */
+export function set_session_snapshot(url, body) {
+  if (url === "" && body === "") {
+    session_snapshot = null;
+    return;
+  }
+  if (url === "" || body === "") {
+    // Refuse the half-formed pair rather than guessing. The Gleam
+    // caller (`refresh_session_snapshot`) only ever passes both
+    // populated or both empty; anything else is a bug at the call
+    // site that an undefined-behaviour clear would mask.
+    return;
+  }
+  session_snapshot = { url, body };
+}
+
+/**
+ * Installs a `pagehide` listener that flushes the in-slot snapshot
+ * via `sendBeacon`. The spec routes `sendBeacon` through a dedicated
+ * delivery queue the browser can keep alive past unload — the typical
+ * failure mode of `fetch()` during unload (cancelled request, lost
+ * data) is avoided.
+ *
+ * The Blob carries the canonical `application/json` content-type so
+ * the server's existing `application/json` PUT handler accepts it
+ * without a separate body parser branch.
+ *
+ * The listener clears the slot after delivery so a subsequent
+ * `pagehide` (modern browsers can fire it more than once per
+ * navigation) does not re-flush stale data.
+ *
+ * The handler deliberately does **not** distinguish
+ * `event.persisted === true` (the document is suspending into the
+ * back-forward cache and may revive) from `false` (the document is
+ * truly leaving). Both arms beacon the in-slot snapshot and clear
+ * it. The trade-off is safe because:
+ *
+ *   * The server's session-update path is last-write-wins keyed on
+ *     `updated_at`, so a duplicate beacon (BFCache suspend → resume
+ *     → another beacon on a later `pagehide`) is dropped silently
+ *     when its counters are no longer newer than the latest write.
+ *   * A BFCache revival reuses the same JS context, so the next
+ *     `save_reading_state` call (e.g. on the first user interaction
+ *     post-resume) repopulates the slot with fresh counters before
+ *     any subsequent unload fires.
+ *
+ * The conservative alternative — gating on `!event.persisted` — would
+ * leak the counters of a session whose tab is closed from a BFCache
+ * suspend without ever reviving, which is the exact scenario the
+ * beacon is supposed to cover.
+ */
+export function add_pagehide_listener() {
+  window.addEventListener("pagehide", () => {
+    if (session_snapshot !== null) {
+      const blob = new Blob([session_snapshot.body], {
+        type: "application/json",
+      });
+      navigator.sendBeacon(session_snapshot.url, blob);
+      session_snapshot = null;
+    }
+  });
+}
+
+/**
  * Wall-clock now as integer milliseconds since the Unix epoch. Used by
  * the reading-session reducer to compute the duration of a session
  * locally; the canonical ISO-8601 stamp goes over the wire via

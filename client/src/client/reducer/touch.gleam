@@ -6,6 +6,7 @@
 //// stashed `touch_start`, classifies the gesture, and routes the
 //// result.
 
+import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/set
@@ -24,11 +25,32 @@ import client/state/helpers.{go_to_page}
 /// in identical ways, and a copy-and-paste here would let the two
 /// branches drift apart on a future refactor (e.g. one of them
 /// growing a "max-undo-count" cap that the other forgot).
+///
+/// Mirrors `apply_erase`: the word indices the original erase folded
+/// into `erased_words` are removed alongside the sentence index so an
+/// undo fully restores the pre-erase counters. Without this, the
+/// session's `words_read` delta would grow on every erase-then-undo
+/// loop because the words would stay in the set after the sentence
+/// returned to view.
 pub fn apply_undo(model: Model) -> Model {
   case model.undo_stack {
     [] -> model
-    [last, ..rest] ->
-      Model(..model, erased: set.delete(model.erased, last), undo_stack: rest)
+    [last, ..rest] -> {
+      let word_indices = case dict.get(model.sentence_word_indices, last) {
+        Ok(indices) -> indices
+        Error(_) -> []
+      }
+      let updated_erased_words =
+        list.fold(word_indices, model.erased_words, fn(acc, idx) {
+          set.delete(acc, idx)
+        })
+      Model(
+        ..model,
+        erased: set.delete(model.erased, last),
+        erased_words: updated_erased_words,
+        undo_stack: rest,
+      )
+    }
   }
 }
 
@@ -40,16 +62,38 @@ pub fn apply_undo(model: Model) -> Model {
 /// clicked would push a second copy and force two undo presses to
 /// restore one sentence. Shared between `EraseSentence` (from
 /// click/tap) and `EraseFocused` (from the keyboard cursor).
+///
+/// Project the erased sentence onto its constituent words via
+/// `sentence_word_indices` and fold them into `erased_words`. The
+/// session lifecycle counts `set.size(erased_words)` to compute
+/// `words_read` for the closing PUT, so without this projection a
+/// Manual-mode session that erased entire sentences would report zero
+/// words read. Missing entries (a sentence index with no matching
+/// dict key) collapse to no word-level changes — a defensive fallback
+/// for a future code path that erases via a synthetic global index
+/// outside the loaded document.
 pub fn apply_erase(model: Model, global_index: Int) -> Model {
   case set.contains(model.erased, global_index) {
     True -> model
-    False ->
+    False -> {
+      let word_indices = case
+        dict.get(model.sentence_word_indices, global_index)
+      {
+        Ok(indices) -> indices
+        Error(_) -> []
+      }
+      let updated_erased_words =
+        list.fold(word_indices, model.erased_words, fn(acc, idx) {
+          set.insert(acc, idx)
+        })
       Model(
         ..model,
         erased: set.insert(model.erased, global_index),
+        erased_words: updated_erased_words,
         undo_stack: [global_index, ..model.undo_stack]
           |> list.take(undo_stack_depth),
       )
+    }
   }
 }
 

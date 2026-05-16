@@ -13,6 +13,7 @@
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/http
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -1194,6 +1195,55 @@ pub fn put_session_round_trips_through_http_test() {
     )
 }
 
+/// The client's `pagehide`/`sendBeacon` durability path flushes the
+/// closing counters by POSTing to the item endpoint — `sendBeacon`
+/// only supports POST, so the dispatcher in `server/sessions.gleam`
+/// routes Post → put_session_handler. Pin both the 200 status and
+/// the persisted row shape so a future edit that removes the Post
+/// arm fails this test loudly rather than silently breaking the
+/// beacon path.
+pub fn post_session_update_round_trips_through_http_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+  let _ =
+    http_post_session(ctx, created.book.id, "session-1", "2026-05-12T10:00:00Z")
+
+  let body = end_session_body("2026-05-12T10:05:00Z", 120, 30, 4, 300)
+  let response =
+    http_post_session_update(ctx, created.book.id, "session-1", body)
+  assert response.status == 200
+
+  let decoded = decode_body(response, reading_session_wire_decoder())
+  assert decoded
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: Some("2026-05-12T10:05:00.000Z"),
+      words_read: 120,
+      words_skipped: 30,
+      pages_turned: 4,
+      duration_seconds: 300,
+    )
+
+  // And the row truly persisted — fetching the session from the DB
+  // returns the same closed shape. A handler that 200s without
+  // writing would slip past the status-only assertion above.
+  let assert Ok(Some(persisted)) =
+    db_sessions.get_reading_session(ctx.db, "session-1")
+  assert persisted
+    == ReadingSession(
+      id: "session-1",
+      book_id: created.book.id,
+      started_at: "2026-05-12T10:00:00.000Z",
+      ended_at: Some("2026-05-12T10:05:00.000Z"),
+      words_read: 120,
+      words_skipped: 30,
+      pages_turned: 4,
+      duration_seconds: 300,
+    )
+}
+
 pub fn put_session_with_mismatched_book_id_is_404_test() {
   use ctx <- with_context
   let book_a = http_create_book(ctx, "A", None, sample_text)
@@ -1400,6 +1450,142 @@ pub fn get_library_book_stats_returns_per_book_entries_test() {
     _ -> [#(book_b.book.id, book_b_stats), #(book_a.book.id, book_a_stats)]
   }
   assert sorted == expected
+}
+
+pub fn get_speed_trend_returns_recent_session_speeds_test() {
+  // The endpoint returns the most recent N session speeds with
+  // non-zero `words_read` and `duration_seconds`. WPM is computed
+  // server-side as `words_read * 60 / duration_seconds` — for the
+  // first session below (5 words / 60 seconds = 5 wpm), and for the
+  // second (60 words / 60 seconds = 60 wpm). The endpoint returns
+  // the most-recent session first.
+  use ctx <- with_context
+  let book = http_create_book(ctx, "A", None, sample_text)
+  let _ = http_post_session(ctx, book.book.id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s1",
+      end_session_body("2026-05-12T10:01:00Z", 5, 0, 1, 60),
+    )
+  let _ = http_post_session(ctx, book.book.id, "s2", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s2",
+      end_session_body("2026-05-13T10:01:00Z", 60, 0, 1, 60),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/speed"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded =
+    decode_body(response, decode.list(stats.session_speed_decoder()))
+  // Most-recent first — `s2` (60 wpm) leads, `s1` (5 wpm) follows.
+  // The dates round-trip through the server's
+  // canonicalisation pass and come back with millisecond precision.
+  let wpms = list.map(decoded, fn(s) { s.wpm })
+  assert wpms == [60, 5]
+}
+
+pub fn get_speed_trend_skips_zero_duration_sessions_test() {
+  // A session with `duration_seconds == 0` cannot produce a
+  // meaningful WPM (division by zero), and a session with
+  // `words_read == 0` would always be 0 wpm regardless of duration.
+  // Both are filtered out at the SQL level so the rendered sparkline
+  // only shows sessions with actual engagement.
+  use ctx <- with_context
+  let book = http_create_book(ctx, "A", None, sample_text)
+  let _ = http_post_session(ctx, book.book.id, "s1", "2026-05-12T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s1",
+      end_session_body("2026-05-12T10:00:00Z", 5, 0, 0, 0),
+    )
+  let _ = http_post_session(ctx, book.book.id, "s2", "2026-05-13T10:00:00Z")
+  let _ =
+    http_put_session(
+      ctx,
+      book.book.id,
+      "s2",
+      end_session_body("2026-05-13T10:01:00Z", 0, 0, 0, 60),
+    )
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/speed"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded =
+    decode_body(response, decode.list(stats.session_speed_decoder()))
+  assert decoded == []
+}
+
+pub fn get_speed_trend_caps_at_twenty_recent_sessions_test() {
+  // The endpoint returns at most 20 entries — the client renders the
+  // result as a 200×40 SVG sparkline and cannot resolve more than a
+  // few dozen samples anyway, so the handler caps the result set at
+  // SQL level via `LIMIT 20`. Inserting 21 sessions with distinct,
+  // monotonically-increasing `started_at` and matching wpms lets us
+  // assert that the oldest session is the one dropped, not merely
+  // that the list was truncated.
+  use ctx <- with_context
+  let book = http_create_book(ctx, "A", None, sample_text)
+  // Each session i in 1..21 has:
+  //   * started_at "2026-05-DD<i>T10:00:00Z" — day = pad(i)
+  //   * words_read = i, duration_seconds = 60 → wpm = i
+  // So the full inserted set spans wpms 1..21; under DESC ordering
+  // the top 20 are wpms 21..2 (wpm = 1 is the oldest, dropped).
+  //
+  // `int.range` runs the reducer for `from` inclusive, `to` exclusive,
+  // so `int.range(1, 22, ...)` covers the integers 1..21.
+  let session_indices =
+    int.range(from: 1, to: 22, with: [], run: list.prepend)
+    |> list.reverse
+  list.each(session_indices, fn(i) {
+    let day = case i < 10 {
+      True -> "0" <> int.to_string(i)
+      False -> int.to_string(i)
+    }
+    let session_id = "s" <> int.to_string(i)
+    let started_at = "2026-05-" <> day <> "T10:00:00Z"
+    let ended_at = "2026-05-" <> day <> "T10:01:00Z"
+    let _ = http_post_session(ctx, book.book.id, session_id, started_at)
+    let _ =
+      http_put_session(
+        ctx,
+        book.book.id,
+        session_id,
+        end_session_body(ended_at, i, 0, 1, 60),
+      )
+    Nil
+  })
+
+  let response =
+    router.handle_request(
+      simulate.browser_request(http.Get, "/api/stats/speed"),
+      ctx,
+    )
+  assert response.status == 200
+  let decoded =
+    decode_body(response, decode.list(stats.session_speed_decoder()))
+  // 21 inserted, 20 returned, ordered most-recent first. Prepending
+  // the integers 2..21 yields [21, 20, ..., 2] — the wpms of the
+  // newest 20 sessions, in DESC order. Asserting on the whole list
+  // (not just `list.length`) pins both the cap and the ordering, so
+  // a regression that flipped the LIMIT or the ORDER BY would
+  // surface here.
+  let wpms = list.map(decoded, fn(s) { s.wpm })
+  let expected_wpms = int.range(from: 2, to: 22, with: [], run: list.prepend)
+  assert wpms == expected_wpms
 }
 
 // The four `compute_current_streak_days_*` tests live in
@@ -1932,6 +2118,24 @@ fn http_put_session(
 ) -> wisp.Response {
   simulate.browser_request(
     http.Put,
+    "/api/books/" <> book_id <> "/sessions/" <> session_id,
+  )
+  |> simulate.json_body(body)
+  |> router.handle_request(ctx)
+}
+
+/// POST the closing payload to the per-session item endpoint. The
+/// dispatcher routes `Post` → `put_session_handler` so the
+/// `navigator.sendBeacon` durability path (POST-only) can flush the
+/// closing counters; this helper exercises that same wire contract.
+fn http_post_session_update(
+  ctx: web.Context,
+  book_id: String,
+  session_id: String,
+  body: json.Json,
+) -> wisp.Response {
+  simulate.browser_request(
+    http.Post,
     "/api/books/" <> book_id <> "/sessions/" <> session_id,
   )
   |> simulate.json_body(body)

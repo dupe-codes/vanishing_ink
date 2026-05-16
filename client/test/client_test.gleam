@@ -42,6 +42,7 @@ import shared/segmenter.{
 }
 
 import gleam/dynamic
+import gleam/dynamic/decode
 
 import client/effects
 import client/epub.{
@@ -53,21 +54,23 @@ import client/msg.{
   AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookMetadataUpdated,
   BookSettingsLoaded, BooksLoaded, CancelDelete, CloseEditMetadata,
   ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused, EraseSentence,
-  ExecuteDelete, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
-  GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage,
-  NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured, PauseFade,
-  ReadingStateLoaded, ResetBookSettings, ResumeFade, SelectSearchResult,
-  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
-  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
-  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
-  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
-  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
-  ToggleGhostMode, ToggleJumpMenu, ToggleSettings, TouchCancel, TouchEnd,
-  TouchStart, Undo, UndoJump, ViewportResized,
+  ExecuteDelete, FetchSpeedTrendResult, FocusNext, FocusParagraphDown,
+  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
+  LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata,
+  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
+  ResumeFade, SelectSearchResult, SetEditMetadataAuthor, SetEditMetadataGenre,
+  SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
+  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
+  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
+  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, Undo,
+  UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
 import client/reducer
+import client/reducer/book as book_reducer
 import client/reducer/jump as jump_reducer
 import client/sample
 import client/search.{SearchResult}
@@ -78,6 +81,7 @@ import client/state.{
 import client/state/helpers as state_helpers
 import client/types.{type BookMeta, BookMeta}
 import client/view
+import client/view/library as library_view
 import client/view/reader as view_reader
 import client/view/stats as stats_view_module
 import shared/stats as shared_stats
@@ -192,6 +196,8 @@ fn empty_model() -> Model {
     editing_metadata: None,
     jump_search_query: "",
     jump_search_results: [],
+    sentence_word_indices: dict.new(),
+    speed_trend: [],
   )
 }
 
@@ -306,6 +312,7 @@ pub fn update_text_loaded_stores_segmented_text_and_resets_pagination_test() {
       flat_paragraphs: pagination.flatten(payload),
       total_sentence_count: 1,
       total_word_count: 1,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(payload),
     )
 }
 
@@ -1170,6 +1177,71 @@ pub fn update_undo_is_noop_when_stack_empty_test() {
   let #(updated, _effect) = reducer.update(prior, Undo)
 
   assert updated == prior
+}
+
+pub fn update_erase_sentence_projects_words_onto_erased_words_test() {
+  // The Manual-mode word-crediting contract: erasing a sentence
+  // folds the sentence's constituent words into `erased_words` via
+  // the `sentence_word_indices` projection. Without this, the
+  // closing PUT's `words_read` delta would always be zero for
+  // Manual-mode sessions whose erasures are sentence-level. Pinning
+  // the whole field surface (`erased`, `erased_words`, `undo_stack`)
+  // so a future regression on any of the three is caught here.
+  let prior =
+    Model(
+      ..empty_model(),
+      sentence_word_indices: dict.from_list([
+        #(0, [0, 1]),
+        #(1, [2, 3]),
+        #(2, [4]),
+      ]),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(1))
+
+  assert updated.erased == set.from_list([1])
+  assert updated.erased_words == set.from_list([2, 3])
+  assert updated.undo_stack == [1]
+}
+
+pub fn update_undo_removes_projected_words_from_erased_words_test() {
+  // The undo path is symmetric with `apply_erase`: the word indices
+  // that were folded into `erased_words` on the original erase must
+  // be removed on undo so the session's `words_read` counter does
+  // not grow on every erase-then-undo loop.
+  let prior =
+    Model(
+      ..empty_model(),
+      sentence_word_indices: dict.from_list([
+        #(0, [0, 1]),
+        #(1, [2, 3]),
+      ]),
+      erased: set.from_list([0, 1]),
+      erased_words: set.from_list([0, 1, 2, 3]),
+      undo_stack: [1, 0],
+    )
+
+  let #(updated, _effect) = reducer.update(prior, Undo)
+
+  assert updated.erased == set.from_list([0])
+  assert updated.erased_words == set.from_list([0, 1])
+  assert updated.undo_stack == [0]
+}
+
+pub fn update_erase_sentence_with_unknown_index_leaves_words_alone_test() {
+  // A defensive guard: a sentence index with no entry in
+  // `sentence_word_indices` (a synthetic dispatch from outside the
+  // loaded document, or a stale tap after a re-segmentation) still
+  // updates the sentence-level bitset but contributes no word
+  // changes. The reducer must not crash and must not insert any
+  // erroneous word index.
+  let prior = empty_model()
+
+  let #(updated, _effect) = reducer.update(prior, EraseSentence(42))
+
+  assert updated.erased == set.from_list([42])
+  assert updated.erased_words == set.new()
+  assert updated.undo_stack == [42]
 }
 
 // ---------------------------------------------------------------------------
@@ -5423,6 +5495,7 @@ pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
       flat_paragraphs: pagination.flatten(text),
       total_sentence_count: 3,
       total_word_count: 5,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(text),
     )
 }
 
@@ -5514,6 +5587,7 @@ pub fn update_open_book_consumes_cached_segments_and_skips_fetch_test() {
       total_sentence_count: 3,
       total_word_count: 5,
       created_book_segments: None,
+      sentence_word_indices: book_reducer.build_sentence_word_indices(text),
     )
 }
 
@@ -7765,6 +7839,172 @@ pub fn library_card_hides_stats_when_no_sessions_test() {
   assert !string.contains(rendered, "class=\"book-stats-line\"")
 }
 
+pub fn library_card_renders_session_count_singular_test() {
+  // A single recorded session reads as "1 session" (singular). The
+  // stats line therefore carries "10m • 1 session" rather than the
+  // misleading plural form a naive `<count> sessions` would produce.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 50,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "1 session")
+  // The pluralised form must not also appear ("1 session" is not a
+  // prefix of "1 sessions" but the substring check would still let
+  // through a future formatter that wrote "1 sessions" — pin both.)
+  assert !string.contains(rendered, "1 sessions")
+}
+
+pub fn library_card_renders_session_count_plural_test() {
+  // Multiple sessions render as "N sessions". The book is incomplete
+  // (50% covered) so the ETA also appears alongside the count, but
+  // this test pins the plural form in isolation.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 0,
+            total_duration_seconds: 600,
+            session_count: 4,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "4 sessions")
+}
+
+pub fn library_card_renders_eta_when_book_incomplete_test() {
+  // A 100-word book with 50 words read in 600 seconds (12 wpm) and 0
+  // words skipped — 50 words remain at the same pace, so ETA is
+  // 50 * 600 / 50 = 600 seconds = 10m. The ETA suffix appends to the
+  // stats line as "• ~10m left".
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 50,
+            total_words_skipped: 0,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "~10m left")
+}
+
+pub fn library_card_hides_eta_when_book_complete_test() {
+  // A book whose `words_read + words_skipped >= word_count` is
+  // complete; ETA is meaningless and must not render.
+  let book = sample_book("a", "Alpha", None)
+  let model =
+    Model(
+      ..library_model(),
+      books: [book],
+      library_book_stats: dict.from_list([
+        #(
+          "a",
+          shared_stats.BookStats(
+            total_words_read: 60,
+            total_words_skipped: 40,
+            total_duration_seconds: 600,
+            session_count: 1,
+          ),
+        ),
+      ]),
+    )
+  let rendered = view.view(model) |> element.to_string
+  assert !string.contains(rendered, "left")
+}
+
+pub fn estimate_remaining_returns_none_when_complete_test() {
+  // Pin the helper directly so a future regression in the view layer
+  // cannot mask a regression in the predicate.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 100,
+      total_words_skipped: 0,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_none_when_zero_words_read_test() {
+  // A reader who only Lock-In skipped — `total_words_read` is zero so
+  // dividing by it would either crash or produce a meaningless rate.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 0,
+      total_words_skipped: 50,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_none_when_zero_duration_test() {
+  // A degenerate stats record where duration is zero — the book has
+  // been touched but no time elapsed (or the data was malformed).
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 50,
+      total_words_skipped: 0,
+      total_duration_seconds: 0,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == None
+}
+
+pub fn estimate_remaining_returns_some_for_normal_case_test() {
+  // 50 words read in 600s, 50 remain → 50 * 600 / 50 = 600s = 10m.
+  let stats =
+    shared_stats.BookStats(
+      total_words_read: 50,
+      total_words_skipped: 0,
+      total_duration_seconds: 600,
+      session_count: 1,
+    )
+  assert library_view.estimate_remaining(stats, 100) == Some("~10m left")
+}
+
+pub fn format_session_count_singular_plural_examples_test() {
+  // Pin the singular / plural split — the only branch the production
+  // caller (`book_stats_summary`) can actually reach. The zero case
+  // is short-circuited by the caller before this helper runs, so no
+  // test pins it: the function's docstring documents that contract
+  // for anyone who needs the raw label, and pinning an unreachable
+  // path would just lock in dead behaviour.
+  assert library_view.format_session_count(1) == "1 session"
+  assert library_view.format_session_count(2) == "2 sessions"
+}
+
 pub fn stats_format_duration_examples_test() {
   // Pin the formatter behaviour at each boundary so future tweaks do
   // not silently change library / stats overlay copy.
@@ -7781,6 +8021,243 @@ pub fn stats_format_streak_examples_test() {
   assert stats_view_module.format_streak(0) == "None"
   assert stats_view_module.format_streak(1) == "1 day"
   assert stats_view_module.format_streak(7) == "7 days"
+}
+
+pub fn stats_view_renders_sparkline_when_speed_trend_present_test() {
+  // A populated `speed_trend` lights up the sparkline tile: an SVG
+  // surface with a `<polyline>` of the WPM values plus a fill
+  // polygon and an "N wpm avg" badge. Pinning the SVG namespace
+  // attribute alongside the polyline class catches both a missed
+  // `element.namespaced` call (the line would render as an unknown
+  // HTML tag) and a CSS-selector drift.
+  let model =
+    Model(..library_model(), stats_open: True, speed_trend: [
+      shared_stats.SessionSpeed(date: "2026-05-13T10:00:00Z", wpm: 240),
+      shared_stats.SessionSpeed(date: "2026-05-12T10:00:00Z", wpm: 200),
+      shared_stats.SessionSpeed(date: "2026-05-11T10:00:00Z", wpm: 160),
+    ])
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "stats-speed-trend")
+  assert string.contains(rendered, "stats-speed-trend-svg")
+  assert string.contains(rendered, "stats-speed-trend-line")
+  // Average of the three samples is (240 + 200 + 160) / 3 = 200.
+  assert string.contains(rendered, "200 wpm avg")
+}
+
+pub fn stats_view_renders_empty_state_when_speed_trend_empty_test() {
+  // An empty trend collapses to a placeholder message so the tile
+  // chrome stays present on first open. The SVG polyline must NOT
+  // render — an empty polyline would paint as a stray dot.
+  let model = Model(..library_model(), stats_open: True, speed_trend: [])
+  let rendered = view.view(model) |> element.to_string
+  assert string.contains(rendered, "stats-speed-trend-empty")
+  assert !string.contains(rendered, "stats-speed-trend-line")
+}
+
+pub fn stats_average_wpm_examples_test() {
+  // Pin the predicate at the boundaries the view layer cannot exercise:
+  // empty list, single sample, mixed values.
+  assert stats_view_module.average_wpm([]) == 0
+  assert stats_view_module.average_wpm([200]) == 200
+  assert stats_view_module.average_wpm([160, 200, 240]) == 200
+}
+
+pub fn toggle_stats_view_opens_and_chains_aggregate_fetches_test() {
+  // Opening the stats overlay must (a) flip `stats_open` to True and
+  // (b) chain a batch of fetches so the surface paints with current
+  // values rather than a stale snapshot from boot. We can't assert on
+  // the Effect contents directly (Lustre opaque), but we can assert
+  // that the model transition happens — the matching effect batch
+  // lives in `apply_toggle_stats_view` and is covered by the build /
+  // type check.
+  let prior = Model(..empty_model(), view: Library, stats_open: False)
+
+  let #(updated, _effect) = reducer.update(prior, ToggleStatsView)
+
+  assert updated == Model(..prior, stats_open: True)
+}
+
+pub fn fetch_speed_trend_result_ok_stamps_samples_test() {
+  // The decode path projects the wire JSON onto `model.speed_trend`.
+  // Pinning the whole field surface (the prior `speed_trend` value
+  // gets replaced wholesale; no other field is touched).
+  let prior = Model(..empty_model(), speed_trend: [])
+  let body =
+    "[{\"date\":\"2026-05-13T10:00:00.000Z\",\"wpm\":180},"
+    <> "{\"date\":\"2026-05-12T10:00:00.000Z\",\"wpm\":120}]"
+
+  let #(updated, _effect) =
+    reducer.update(prior, FetchSpeedTrendResult(Ok(body)))
+
+  assert updated.speed_trend
+    == [
+      shared_stats.SessionSpeed(date: "2026-05-13T10:00:00.000Z", wpm: 180),
+      shared_stats.SessionSpeed(date: "2026-05-12T10:00:00.000Z", wpm: 120),
+    ]
+}
+
+/// Normalised snapshot of the closing-PUT body the `pagehide`
+/// listener flushes. `ended_at` and `duration_seconds` are read off
+/// the live FFI wall clock and vary between runs; the parse step
+/// replaces them with sentinels (a fixed string and zero) so the
+/// whole-payload assertion below is stable. Defined here rather than
+/// in `effects` because the wire shape is the contract — the
+/// production code rolls its own JSON object inline; the test owns
+/// the decoder that mirrors it.
+type SnapshotBody {
+  SnapshotBody(
+    ended_at: String,
+    words_read: Int,
+    words_skipped: Int,
+    pages_turned: Int,
+    duration_seconds: Int,
+  )
+}
+
+fn snapshot_body_decoder() -> decode.Decoder(SnapshotBody) {
+  use ended_at <- decode.field("ended_at", decode.string)
+  use words_read <- decode.field("words_read", decode.int)
+  use words_skipped <- decode.field("words_skipped", decode.int)
+  use pages_turned <- decode.field("pages_turned", decode.int)
+  use duration_seconds <- decode.field("duration_seconds", decode.int)
+  decode.success(SnapshotBody(
+    ended_at: ended_at,
+    words_read: words_read,
+    words_skipped: words_skipped,
+    pages_turned: pages_turned,
+    duration_seconds: duration_seconds,
+  ))
+}
+
+/// Parse the snapshot body, assert the live-wall-clock fields look
+/// sane, then normalise them to sentinels so the caller can compare
+/// against an `expect == SnapshotBody(...)` literal without flaking
+/// on the millisecond clock. Returns both the normalised body and
+/// the top-level key set so the caller can pin the wire key list
+/// independently — a typed decoder permits stray extra keys, and the
+/// critic's note specifically called out that a substring-based
+/// check would not catch them.
+fn parse_and_normalise_snapshot_body(
+  body: String,
+) -> #(SnapshotBody, List(String)) {
+  let assert Ok(parsed) = json.parse(body, snapshot_body_decoder())
+  // Wall-clock sanity: `ended_at` is some non-empty ISO timestamp,
+  // and `duration_seconds` is a non-negative integer. Both come from
+  // `ffi.now_iso8601()` / `ffi.now_ms()` so we can't pin exact
+  // values, but the contract is "looks like a real wall-clock
+  // reading," not "is empty/garbage."
+  assert string.length(parsed.ended_at) > 0
+  assert parsed.duration_seconds >= 0
+  let normalised =
+    SnapshotBody(..parsed, ended_at: "<wall-clock>", duration_seconds: 0)
+
+  let assert Ok(key_dict) =
+    json.parse(body, decode.dict(decode.string, decode.dynamic))
+  let keys = dict.keys(key_dict) |> list.sort(string.compare)
+  #(normalised, keys)
+}
+
+pub fn session_snapshot_body_pins_full_wire_shape_test() {
+  // The snapshot body mirrors `end_reading_session`'s payload shape
+  // — the server's existing handler decodes both via the same
+  // `end_session_decoder`, so the wire form must carry the same five
+  // fields with no extras. `ended_at` and `duration_seconds` come
+  // from the live FFI wall clock and are normalised to sentinels by
+  // `parse_and_normalise_snapshot_body` so the assertion can pin
+  // the WHOLE payload rather than a field-by-field substring check.
+  // A stray extra key in the JSON would show up in the sorted key
+  // list and fail the second assertion.
+  let prior =
+    Model(
+      ..empty_model(),
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-y"),
+      session_start_page: 0,
+      session_start_erased_count: 0,
+      session_words_skipped: 2,
+      current_page: 5,
+      erased_words: set.from_list([0, 1, 2, 3, 4]),
+    )
+
+  let body = effects.build_session_snapshot_body(prior)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+
+  // `pages_turned` = 5 - 0 = 5.
+  // `words_read` = 5 erased - 0 baseline - 2 skipped = 3.
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 3,
+      words_skipped: 2,
+      pages_turned: 5,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+
+pub fn session_snapshot_body_clamps_negative_pages_to_zero_test() {
+  // A viewport-resize-driven re-pagination during the session could
+  // shrink `current_page` past `session_start_page`. In that case
+  // `pages_turned` collapses to zero rather than reporting a
+  // negative count — mirrors the same clamp `apply_end_session`
+  // performs. The remaining counters round-trip at zero too, so the
+  // whole-payload comparison pins both the clamp and the
+  // unmodified fields together.
+  let prior =
+    Model(
+      ..empty_model(),
+      active_book_id: Some("book-x"),
+      active_session_id: Some("session-y"),
+      session_start_page: 10,
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+      current_page: 3,
+    )
+
+  let body = effects.build_session_snapshot_body(prior)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: 0,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+
+pub fn fetch_speed_trend_result_error_clears_prior_samples_test() {
+  // A network error clears the in-memory trend so a stale snapshot
+  // from a previous open does not paint the new overlay alongside
+  // an error.
+  let prior =
+    Model(..empty_model(), speed_trend: [
+      shared_stats.SessionSpeed(date: "2026-05-13", wpm: 100),
+    ])
+
+  let #(updated, _effect) =
+    reducer.update(
+      prior,
+      FetchSpeedTrendResult(Error(ffi.NetworkError("offline"))),
+    )
+
+  assert updated.speed_trend == []
 }
 
 // ---------------------------------------------------------------------------

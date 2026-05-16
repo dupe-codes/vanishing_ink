@@ -28,12 +28,14 @@ import lustre/effect.{type Effect}
 import client/effects.{
   create_reading_session, describe_fetch_error, end_reading_session,
   fetch_book_stats, fetch_library_book_stats, fetch_library_stats,
+  fetch_speed_trend, refresh_session_snapshot,
 }
 import client/ffi
 import client/msg.{type Msg}
 import client/state.{type Model, Model, Reader}
 import shared/stats.{
   book_stats_decoder, book_stats_entry_decoder, library_stats_decoder,
+  session_speed_decoder,
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,15 @@ import shared/stats.{
 /// already-active session means the dispatch site missed the end
 /// hook; defaulting to "ignore the duplicate open" is safer than
 /// abandoning the live row.
+///
+/// Stamps the FFI session snapshot via `set_session_snapshot` so the
+/// `pagehide` listener has a payload to flush if the reader closes
+/// the tab before the session ends normally. The snapshot reads back
+/// the same closing-PUT body that `apply_end_session` would write,
+/// just with the deltas frozen at "session open" (zero everywhere
+/// except `ended_at`, which the beacon path stamps fresh from the
+/// browser at flush time — or rather, the reducer stamps the latest
+/// wall-clock value into the snapshot whenever it refreshes).
 pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
   case model.active_book_id, model.active_session_id {
     Some(book_id), None -> {
@@ -69,6 +80,7 @@ pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
           session_started_at: Some(started_at),
           session_started_at_ms: started_at_ms,
         )
+      refresh_session_snapshot(opened)
       #(
         opened,
         effect.batch([
@@ -80,6 +92,11 @@ pub fn apply_start_session(model: Model) -> #(Model, Effect(Msg)) {
     _, _ -> #(model, effect.none())
   }
 }
+
+// The session-snapshot helper used to live here; it has been moved
+// into `client/effects` so `save_reading_state` can call it inline
+// without forming a `effects → reducer/session → effects` import
+// cycle. The exported name (`refresh_session_snapshot`) is unchanged.
 
 // ---------------------------------------------------------------------------
 // Close
@@ -121,6 +138,18 @@ pub fn apply_end_session(model: Model) -> #(Model, Effect(Msg)) {
         delta if delta < 0 -> 0
         delta -> delta
       }
+      // Stamp the snapshot one last time from the pre-clear model so
+      // the slot carries the closing payload — same five fields the
+      // PUT below queues. Browsers commonly cancel in-flight `fetch()`
+      // on the unload path, so if a tab close fires `pagehide`
+      // between Lustre dispatching `put_effect` and the request
+      // landing, the beacon needs a body to flush. A duplicate write
+      // (PUT lands AND beacon lands) is benign — the server is
+      // last-write-wins and both payloads are identical at the
+      // millisecond level — but a lost write (PUT cancelled, beacon
+      // sees an empty slot) is not. `apply_session_ended` clears the
+      // snapshot after the PUT confirms.
+      refresh_session_snapshot(model)
       let closed =
         Model(
           ..model,
@@ -180,14 +209,15 @@ pub fn apply_visibility_changed(
 // Stats overlay
 // ---------------------------------------------------------------------------
 
-/// Flip `model.stats_open`. Opening chains a fresh
-/// `fetch_library_stats` so the overlay shows the latest aggregate
-/// values rather than a stale snapshot from boot. Closing has no
-/// side effect.
+/// Flip `model.stats_open`. Opening chains fresh aggregate fetches —
+/// `fetch_library_stats` for the tile values plus `fetch_speed_trend`
+/// for the sparkline — so the overlay always paints with the latest
+/// data rather than a stale snapshot from boot. Closing has no side
+/// effect.
 pub fn apply_toggle_stats_view(model: Model) -> #(Model, Effect(Msg)) {
   let opening = !model.stats_open
   let effect = case opening {
-    True -> fetch_library_stats()
+    True -> effect.batch([fetch_library_stats(), fetch_speed_trend()])
     False -> effect.none()
   }
   #(Model(..model, stats_open: opening), effect)
@@ -288,6 +318,39 @@ pub fn apply_fetch_library_book_stats_result(
   }
 }
 
+/// Apply a `FetchSpeedTrendResult` dispatch. The wire shape is a JSON
+/// array of `{date, wpm}` samples in reverse-chronological order; we
+/// decode it as-is and stamp it onto `model.speed_trend`. The view
+/// layer reverses the list when rendering so the polyline reads
+/// left-to-right in chronological order — keeping the on-model order
+/// the same as the wire order means the reducer stays a pure
+/// projection of the response.
+///
+/// A decode failure or network error clears `speed_trend` so a stale
+/// snapshot from the previous open does not paint the new overlay
+/// alongside an error. The console log carries the diagnostic so a
+/// future operator session can investigate without a UI banner that
+/// would compete with the rest of the stats surface.
+pub fn apply_fetch_speed_trend_result(
+  model: Model,
+  result: Result(String, ffi.FetchError),
+) -> #(Model, Effect(Msg)) {
+  case result {
+    Error(error) -> {
+      io.println("Failed to load speed trend: " <> describe_fetch_error(error))
+      #(Model(..model, speed_trend: []), effect.none())
+    }
+    Ok(body) ->
+      case json.parse(body, decode.list(session_speed_decoder())) {
+        Error(_) -> {
+          io.println("Failed to decode /api/stats/speed response")
+          #(Model(..model, speed_trend: []), effect.none())
+        }
+        Ok(samples) -> #(Model(..model, speed_trend: samples), effect.none())
+      }
+  }
+}
+
 /// Apply a `SessionCreated` dispatch. The success arm is a quiet no-op
 /// — the session row is created server-side and the client already
 /// stamped the id on the model. The error arm logs and clears the
@@ -308,18 +371,27 @@ pub fn apply_session_created(
       // the failed POST's book — a fresh session may have already
       // opened against a different book by the time this lands.
       case model.active_book_id == Some(book_id) {
-        True -> #(
-          Model(
-            ..model,
-            active_session_id: None,
-            session_started_at: None,
-            session_started_at_ms: 0,
-            session_start_page: 0,
-            session_start_erased_count: 0,
-            session_words_skipped: 0,
-          ),
-          effect.none(),
-        )
+        True -> {
+          let cleared =
+            Model(
+              ..model,
+              active_session_id: None,
+              session_started_at: None,
+              session_started_at_ms: 0,
+              session_start_page: 0,
+              session_start_erased_count: 0,
+              session_words_skipped: 0,
+            )
+          // Funnel through the snapshot helper so the FFI slot follows
+          // the cleared model — `apply_session_opened`'s prior stamp
+          // pointed at a session_id the server refused, and a
+          // subsequent `pagehide` would beacon a `POST` for a row
+          // that does not exist. The helper's "no active session"
+          // arm zeroes the slot. Mirrors the success-path funnelling
+          // of `apply_session_ended`.
+          refresh_session_snapshot(cleared)
+          #(cleared, effect.none())
+        }
         False -> #(model, effect.none())
       }
     }
@@ -332,12 +404,26 @@ pub fn apply_session_created(
 /// beyond what `apply_end_session` already wrote; the error arm logs
 /// and continues (the row was never closed; the next session-end
 /// retries will write fresher counters).
+///
+/// On success, clears the FFI snapshot slot — the closing PUT
+/// confirmed and the row is durable, so a subsequent `pagehide`
+/// must not re-flush the same payload. On failure, the snapshot
+/// stays in place so a `pagehide` racing the failed PUT can deliver
+/// the closing counters via `sendBeacon` as a fallback. The slot is
+/// cleared by going through `refresh_session_snapshot(model)`: the
+/// caller already cleared `active_session_id` in `apply_end_session`,
+/// so the helper's "no active session" arm fires and zeroes the
+/// slot — keeps both stamp and clear paths funnelling through one
+/// helper.
 pub fn apply_session_ended(
   model: Model,
   result: Result(String, ffi.FetchError),
 ) -> #(Model, Effect(Msg)) {
   let log_effect = case result {
-    Ok(_) -> effect.none()
+    Ok(_) -> {
+      refresh_session_snapshot(model)
+      effect.none()
+    }
     Error(error) ->
       effect.from(fn(_dispatch) {
         io.println(

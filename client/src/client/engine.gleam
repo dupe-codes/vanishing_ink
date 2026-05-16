@@ -41,7 +41,8 @@ import gleam/set.{type Set}
 import lustre/effect.{type Effect}
 
 import client/effects.{
-  measure_lines_after_paint, save_reading_state, schedule_advance_word,
+  measure_lines_after_paint, refresh_session_snapshot, save_reading_state,
+  schedule_advance_word,
 }
 import client/ffi
 import client/msg.{type Msg}
@@ -196,6 +197,16 @@ fn advance_with_current(
       // the overlay between rows as the engine crosses lines.
       let scheduled =
         Model(..with_next, active_line: resolve_active_line(with_next))
+      // Refresh the FFI snapshot in lockstep with `erased_words`.
+      // The per-tick `save_reading_state` is deliberately skipped
+      // here for cost reasons (a PUT per word would saturate the
+      // server), but the beacon snapshot is cheap module-level JS
+      // state — re-stamping it on every tick keeps a hard tab close
+      // mid-page flushing the in-flight `words_read` instead of the
+      // last cross-page save's count. Cross-page ticks already
+      // route through `save_reading_state`, which funnels through
+      // `refresh_session_snapshot` itself.
+      refresh_session_snapshot(scheduled)
       #(scheduled, schedule_advance_word(delay))
     }
     None -> advance_to_next_page(faded)
