@@ -234,7 +234,7 @@ pub fn apply_reading_state_loaded(
         Some(_) -> #(target_page, set.size(loaded_erased_words))
         None -> #(model.session_start_page, model.session_start_erased_count)
       }
-      #(
+      let updated =
         Model(
           ..model,
           mode: mode,
@@ -244,9 +244,12 @@ pub fn apply_reading_state_loaded(
           chapter_entries: chapter_entries,
           session_start_page: restamped_start_page,
           session_start_erased_count: restamped_start_erased_count,
-        ),
-        effect.none(),
-      )
+        )
+      // Route through the snapshot funnel so the FFI slot reflects
+      // the resumed counters. Without this, the pagehide beacon
+      // would PUT stale zeros until the next counter mutation.
+      effects.refresh_session_snapshot(updated)
+      #(updated, effect.none())
     }
     _, _ -> #(model, effect.none())
   }

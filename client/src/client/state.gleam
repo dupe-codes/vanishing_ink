@@ -833,9 +833,11 @@ pub type Model {
     /// must not bleed across book switches.
     sentence_word_indices: Dict(Int, List(Int)),
     /// Cached recent reading-speed snapshot for the library stats
-    /// sparkline. One entry per recent session, oldest at the head
-    /// of the list so the line in the SVG renders left-to-right in
-    /// chronological order. Populated by the `fetch_speed_trend`
+    /// sparkline. One entry per recent session, most-recent at the
+    /// head of the list (matching the SQL `ORDER BY started_at DESC`).
+    /// The view reverses the list before rendering so the sparkline
+    /// reads left-to-right in chronological order. Populated by the
+    /// `fetch_speed_trend`
     /// effect chained off `apply_toggle_stats_view`; cleared back
     /// to `[]` on the same fetch path's error branch so a stale
     /// snapshot never paints the new overlay.
