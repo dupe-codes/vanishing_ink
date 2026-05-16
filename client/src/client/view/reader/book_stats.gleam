@@ -18,7 +18,6 @@
 //// reader's recent-pace context is meaningful regardless of which
 //// specific book is open.
 
-import gleam/dynamic/decode
 import gleam/int
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
@@ -28,6 +27,7 @@ import lustre/event
 
 import client/msg.{type Msg, ToggleReaderStats}
 import client/state.{type Model}
+import client/view/overlay_helpers.{stop_click_propagation}
 import client/view/stats as stats_view
 import shared/stats.{type BookStats}
 
@@ -118,13 +118,4 @@ fn view_stat_tile(label: String, value: String) -> Element(Msg) {
     html.div([attribute.class("stats-tile-value")], [html.text(value)]),
     html.div([attribute.class("stats-tile-label")], [html.text(label)]),
   ])
-}
-
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Mirrors the same helper in `client/view/stats.gleam` —
-/// kept local so the per-book stats overlay doesn't depend on the
-/// library stats module's private propagation guard.
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleReaderStats, "stop-propagation"))
-  |> event.stop_propagation
 }

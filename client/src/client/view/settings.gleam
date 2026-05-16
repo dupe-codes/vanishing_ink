@@ -4,7 +4,6 @@
 //// button — so the reader can dismiss without aiming for a small
 //// target. Inside, every row maps to one setting on the model.
 
-import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/option.{None, Some}
@@ -25,6 +24,7 @@ import client/state.{
   min_paragraph_delay_ms, min_wpm,
 }
 import client/types.{type BookSettings}
+import client/view/overlay_helpers.{stop_click_propagation}
 
 /// Render the settings overlay (scrim + sheet).
 pub fn view(model: Model) -> Element(Msg) {
@@ -46,9 +46,8 @@ pub fn view(model: Model) -> Element(Msg) {
 /// Inner sheet for the settings panel. The sheet swallows click
 /// events so taps inside it don't bubble up to the scrim's close
 /// handler — without this guard, every slider drag and toggle press
-/// would also close the panel. The propagation guard is encapsulated
-/// in `stop_click_propagation` so the `Msg` ADT doesn't carry a
-/// `NoOp` variant just to satisfy Lustre's "handler required" rule.
+/// would also close the panel. The propagation guard is the shared
+/// `overlay_helpers.stop_click_propagation` helper.
 ///
 /// Visual structure (matching `mobile-reader-prototype.html`):
 ///
@@ -143,25 +142,6 @@ fn book_settings_has_overrides(settings: BookSettings) -> Bool {
   || option.is_some(settings.paragraph_delay_ms)
   || option.is_some(settings.page_delay_ms)
   || option.is_some(settings.ghost_opacity)
-}
-
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Used by the settings sheet to keep slider drags and
-/// toggle presses from bubbling up to the scrim's close handler.
-///
-/// Implementation note: Lustre's `event.stop_propagation` is an
-/// attribute modifier that operates on an `Event` attribute, not a
-/// standalone attribute — so the propagation guard needs a paired
-/// event handler to attach to. `event.on` takes a `Decoder(Msg)`;
-/// `decode.failure(...)` always fails, which means the runtime
-/// silently drops the event (see `reconciler.ffi.mjs#handleEvent` —
-/// `stopPropagation` runs unconditionally when the attribute carries
-/// `vattr.always`, but the model dispatch only fires on a successful
-/// decode). The placeholder `Msg` value is never returned and never
-/// dispatched.
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
-  |> event.stop_propagation
 }
 
 fn view_settings_header() -> Element(Msg) {

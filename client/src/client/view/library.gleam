@@ -12,7 +12,6 @@
 //// container so the chrome never reshuffles between states.
 
 import gleam/dict.{type Dict}
-import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/list
@@ -33,6 +32,7 @@ import client/state.{type Model, cover_color_for_title}
 import client/types.{type BookMeta}
 import client/view/library/add_book
 import client/view/library/edit_metadata
+import client/view/overlay_helpers.{stop_click_propagation}
 import client/view/stats as stats_view
 import shared/stats.{type BookStats}
 
@@ -642,16 +642,3 @@ fn take_split(
   }
 }
 
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Used by the delete-confirm overlay to keep taps inside
-/// the sheet from bubbling up to the scrim's close handler.
-///
-/// Duplicated in `client/view/settings.gleam` and
-/// `client/view/library/add_book.gleam` rather than imported across
-/// sibling view modules so the view-layer dependency graph stays a
-/// fan-in pattern (each view module is a leaf under
-/// `client/view.gleam`).
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleSettings, "stop-propagation"))
-  |> event.stop_propagation
-}

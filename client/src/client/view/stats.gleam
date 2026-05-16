@@ -12,7 +12,6 @@
 //// Values come from `model.library_stats`; a `None` value renders a
 //// dash so the overlay never paints a stale snapshot.
 
-import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/list
@@ -25,6 +24,7 @@ import lustre/event
 
 import client/msg.{type Msg, ToggleStatsView}
 import client/state.{type Model}
+import client/view/overlay_helpers.{stop_click_propagation}
 import shared/stats.{type LibraryStats, type SessionSpeed}
 
 /// SVG namespace for the sparkline tile. Pulled out so the `namespaced`
@@ -410,12 +410,3 @@ fn take_split(
   }
 }
 
-/// Attach a click listener that stops propagation but never dispatches
-/// a message. Pulled inline here so the stats overlay's panel can
-/// swallow taps without bubbling up to the scrim's close handler —
-/// mirrors the same helper in `client/view/settings.gleam` and
-/// `client/view/library.gleam`.
-fn stop_click_propagation() -> attribute.Attribute(Msg) {
-  event.on("click", decode.failure(ToggleStatsView, "stop-propagation"))
-  |> event.stop_propagation
-}
