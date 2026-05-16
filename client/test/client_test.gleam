@@ -72,6 +72,7 @@ import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/book as book_reducer
 import client/reducer/jump as jump_reducer
+import client/reducer/session as session_reducer
 import client/sample
 import client/search.{SearchResult}
 import client/state.{
@@ -9728,10 +9729,50 @@ pub fn toggle_reader_stats_opens_even_without_active_book_test() {
   // overlay paints the empty state rather than disappearing
   // silently. The fetch effect skips the book-stats GET (no id to
   // attach to) but still chains the speed-trend fetch so the
-  // sparkline reflects the library-wide pace.
+  // sparkline reflects the library-wide pace. Pin the classifier
+  // directly so the asymmetric branch (None → speed-trend alone,
+  // Some(_) → batched with book stats) is anchored in a test rather
+  // than implied by the test name. Lustre's `Effect` is opaque, but
+  // the classifier returns a typed enum we can compare.
   let prior = Model(..empty_model(), view: Reader, active_book_id: None)
+  assert session_reducer.classify_reader_stats_toggle(prior)
+    == session_reducer.ReaderStatsOpeningWithoutBook
   let #(updated, _effect) = reducer.update(prior, ToggleReaderStats)
   assert updated.reader_stats_open == True
+}
+
+pub fn toggle_reader_stats_with_active_book_batches_fetches_test() {
+  // Symmetric pin for the `Some(book_id)` branch: when an active book
+  // is present, opening fires the batched `fetch_book_stats(book_id) +
+  // fetch_speed_trend()` shape. Without this test, a regression that
+  // unconditionally fired `fetch_speed_trend()` alone (or fired
+  // `fetch_book_stats` with a stale id) would slip past the
+  // flag-flip assertion.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-abc"),
+      reader_stats_open: False,
+    )
+  assert session_reducer.classify_reader_stats_toggle(prior)
+    == session_reducer.ReaderStatsOpeningWithBook("book-abc")
+}
+
+pub fn toggle_reader_stats_closing_classifies_as_closing_test() {
+  // Closing a currently-open overlay is a no-fetch transition — the
+  // model carries every value the panel needs from the previous open.
+  // Pin this branch explicitly so a regression that re-fetched on
+  // close cannot drift in unnoticed.
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-abc"),
+      reader_stats_open: True,
+    )
+  assert session_reducer.classify_reader_stats_toggle(prior)
+    == session_reducer.ReaderStatsClosing
 }
 
 // ---------------------------------------------------------------------------
