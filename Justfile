@@ -12,15 +12,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list --unsorted
 
-# Build the client bundle, then start the BEAM server with file
-# watching. On any source change the client is rebuilt and the
-# server restarted — single process, single origin (port 3000).
-dev: client-build
-    watchexec -r -w server/src -w shared/src -w client/src \
-        -- just client-build server-run
-
-# Start only the BEAM server (no file watching).
-server-run:
+# Build the client bundle, then start the BEAM server (port 3000).
+run: client-build
     cd server && gleam run
 
 # Build the server and the client bundle.
