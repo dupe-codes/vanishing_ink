@@ -5,10 +5,14 @@
 # self-contained Erlang shipment. The runtime stage carries only the
 # shipment plus the static client assets — no Gleam toolchain.
 #
-# The client build runs an embedded Bun runtime fetched by
-# lustre_dev_tools. Bun is glibc-linked, so the builder uses the
-# Debian-based Gleam image (not Alpine) to avoid musl incompatibility.
-# The runtime stage stays on Alpine — it only runs the Erlang VM.
+# Both stages use the Debian-based Gleam image (not Alpine), and they
+# must match: the client build runs an embedded glibc-linked Bun runtime
+# fetched by lustre_dev_tools (musl-incompatible), and — more subtly —
+# the server shipment bundles esqlite's compiled NIF (`esqlite3_nif.so`).
+# That NIF is built against the builder's libc; loading a glibc NIF on a
+# musl runtime fails at boot with `fcntl64: symbol not found`. Keeping
+# both stages on glibc Debian avoids both traps. (Verified: an Alpine
+# runtime stage builds fine but crashes on first DB open.)
 ARG GLEAM_VERSION=v1.16.0
 
 # ---- builder ----
@@ -23,7 +27,7 @@ RUN cd /build/client && gleam run -m lustre/dev build --minify
 RUN cd /build/server && gleam export erlang-shipment
 
 # ---- runtime ----
-FROM ghcr.io/gleam-lang/gleam:${GLEAM_VERSION}-erlang-alpine
+FROM ghcr.io/gleam-lang/gleam:${GLEAM_VERSION}-erlang
 COPY --from=builder /build/server/build/erlang-shipment /app
 COPY --from=builder /build/client/dist /app/static
 WORKDIR /app
