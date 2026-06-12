@@ -1,9 +1,15 @@
-//// Unit tests for `server/config`. These exercise the `parse_port`
-//// seam in isolation: the env-parse branching used to be inlined in
-//// `server.main` and had no test coverage, so the three meaningful
-//// cases — unset, malformed, out-of-range — went unverified. The
-//// function takes the raw `Result(String, Nil)` directly, so no
-//// environment manipulation is needed and the tests stay deterministic.
+//// Unit tests for `server/config`. These exercise the pure parse seams
+//// in isolation: the env-parse branching used to be inlined in
+//// `server.main` and had no test coverage. Each seam takes the raw
+//// `Result(String, Nil)` directly, so no environment manipulation is
+//// needed and the tests stay deterministic.
+////
+//// Coverage spans three seams, each with the same fail-fast contract
+//// (unset -> default, set-but-invalid -> Error, set-valid -> value):
+////   - `parse_port`           — unset, valid, both range edges,
+////                              malformed, zero, negative, too-large.
+////   - `parse_non_empty`      — unset, explicitly-empty, set value.
+////   - `parse_secret_key_base`— unset (random mint), empty, set value.
 
 import server/config
 
@@ -48,4 +54,44 @@ pub fn parse_port_negative_rejected_test() {
 pub fn parse_port_too_large_rejected_test() {
   assert config.parse_port(Ok("70000"))
     == Error("PORT must be in 1..65535, got: 70000")
+}
+
+// An unset string var falls back to its supplied default rather than
+// erroring — this is the path `load_config` takes in dev with no env set.
+pub fn parse_non_empty_unset_uses_default_test() {
+  assert config.parse_non_empty("HOST", Error(Nil), "0.0.0.0") == Ok("0.0.0.0")
+}
+
+// An explicitly-empty value fails fast instead of passing through to blow
+// up later (e.g. at `mist.bind`). The var name is echoed so the operator
+// can see which one is wrong.
+pub fn parse_non_empty_empty_rejected_test() {
+  assert config.parse_non_empty("HOST", Ok(""), "0.0.0.0")
+    == Error("HOST must not be empty")
+}
+
+// A non-empty set value is used as-is, overriding the default.
+pub fn parse_non_empty_set_test() {
+  assert config.parse_non_empty("HOST", Ok("127.0.0.1"), "0.0.0.0")
+    == Ok("127.0.0.1")
+}
+
+// An unset SECRET_KEY_BASE mints a random dev key. The value is random so
+// it cannot be asserted exactly; we assert only that a non-empty key is
+// produced, which is the property that matters for signing cookies.
+pub fn parse_secret_key_base_unset_mints_random_test() {
+  let assert Ok(secret) = config.parse_secret_key_base(Error(Nil))
+  assert secret != ""
+}
+
+// An explicitly-empty SECRET_KEY_BASE is a security hole, not a usable
+// default, so it fails fast rather than minting one or passing through.
+pub fn parse_secret_key_base_empty_rejected_test() {
+  assert config.parse_secret_key_base(Ok(""))
+    == Error("SECRET_KEY_BASE must not be empty")
+}
+
+// A set SECRET_KEY_BASE is used as-is so it survives restarts.
+pub fn parse_secret_key_base_set_test() {
+  assert config.parse_secret_key_base(Ok("deadbeef")) == Ok("deadbeef")
 }
