@@ -47,6 +47,16 @@ fn with_context(f: fn(web.Context) -> Nil) -> Nil {
   Nil
 }
 
+// SPA shell tests need a real index.html on disk. The production
+// static_dir points at client/dist which is gitignored and absent in
+// CI. These tests use a checked-in fixture so they are self-contained.
+fn with_spa_context(f: fn(web.Context) -> Nil) -> Nil {
+  let assert Ok(conn) = db.initialize(":memory:")
+  f(web.Context(db: conn, static_dir: "test/fixtures"))
+  let assert Ok(_) = sqlight.close(conn)
+  Nil
+}
+
 // ---------------------------------------------------------------------------
 // Wire-format decoders. Inverse of the encoders in `server/types`; kept
 // inline in the test module because the production code never decodes
@@ -234,7 +244,7 @@ pub fn status_route_returns_ok_json_test() {
 }
 
 pub fn spa_fallback_serves_index_html_test() {
-  use ctx <- with_context
+  use ctx <- with_spa_context
   let response =
     router.handle_request(simulate.browser_request(http.Get, "/"), ctx)
   assert response.status == 200
@@ -242,7 +252,7 @@ pub fn spa_fallback_serves_index_html_test() {
 }
 
 pub fn unknown_route_serves_spa_shell_test() {
-  use ctx <- with_context
+  use ctx <- with_spa_context
   let response =
     router.handle_request(simulate.browser_request(http.Get, "/nope"), ctx)
   // Non-API routes get the SPA shell so client-side view routing works.
