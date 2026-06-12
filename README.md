@@ -76,7 +76,7 @@ env at all):
 
 | Variable          | Default                  | Notes                                              |
 | ----------------- | ------------------------ | -------------------------------------------------- |
-| `PORT`            | `3000`                   | HTTP listen port (`8080` in the container).        |
+| `PORT`            | `3000`                   | HTTP listen port (`8080` in the container). Must be a `1..65535` integer if set; an invalid value fails the boot rather than silently defaulting. |
 | `HOST`            | `0.0.0.0`                | Bind address.                                      |
 | `DATABASE_PATH`   | `./vanishing_ink.db`     | SQLite file; on Fly this lives on the volume.      |
 | `STATIC_DIR`      | `../client/dist`         | Lustre bundle; `/app/static` in the container.     |
