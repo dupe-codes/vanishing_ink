@@ -14,12 +14,25 @@ concurrency:
   group: deploy
   cancel-in-progress: false
 
+# This job authenticates to Fly with FLY_API_TOKEN, never the
+# GITHUB_TOKEN, so it needs no repo scopes. An empty block drops the
+# default token to zero permissions and hardens the workflow.
+permissions: {}
+
 jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
+      # Check out the exact commit the `test` workflow attested as green,
+      # not the current branch HEAD. Without an explicit `ref`,
+      # `flyctl deploy` would build whatever is at the tip of `main` —
+      # under a rapid double-push, commit B could deploy while only commit
+      # A was gated. Pinning to the triggering run's head SHA guarantees
+      # we deploy exactly the tested commit.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: flyctl deploy --remote-only
         env:
