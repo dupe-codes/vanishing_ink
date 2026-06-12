@@ -58,3 +58,54 @@ file server (or open `index.html` after adjusting the script path) to
 see the bundled sample text rendered as per-word `<span>`s under
 `#vi-shell` — a brief `Loading...` placeholder is replaced once the
 hardcoded sample has been dispatched through the update loop.
+
+## Deployment
+
+The app deploys to [Fly.io](https://fly.io) as a single-origin BEAM
+server. The `Dockerfile` builds the minified client bundle and the
+server Erlang shipment into one image; `fly.toml` runs a single machine
+with a SQLite volume and scale-to-zero. A push to `main` triggers
+`.github/workflows/deploy.yml`, which deploys via Fly's remote builder
+**only after** the `test` workflow passes for that commit.
+
+### Configuration
+
+The server reads its configuration from the environment, falling back to
+the dev defaults baked in for `just run` (so local development needs no
+env at all):
+
+| Variable          | Default                  | Notes                                              |
+| ----------------- | ------------------------ | -------------------------------------------------- |
+| `PORT`            | `3000`                   | HTTP listen port (`8080` in the container).        |
+| `HOST`            | `0.0.0.0`                | Bind address.                                      |
+| `DATABASE_PATH`   | `./vanishing_ink.db`     | SQLite file; on Fly this lives on the volume.      |
+| `STATIC_DIR`      | `../client/dist`         | Lustre bundle; `/app/static` in the container.     |
+| `SECRET_KEY_BASE` | random per boot          | Signed-cookie key. **Must** be set in production.  |
+
+`SECRET_KEY_BASE` defaults to a fresh random string each boot, which is
+fine in dev but would invalidate every signed cookie on restart (and on
+every scale-to-zero wake) in production. Set it once as a Fly secret so
+it stays stable across machine restarts.
+
+### First deploy (manual, one time)
+
+```sh
+# 1. Create the app without deploying (reads the committed fly.toml).
+fly launch --no-deploy
+
+# 2. Create the SQLite volume in the same region as primary_region.
+fly volumes create vanishing_ink_data --region iad --size 1
+
+# 3. Set a stable signed-cookie key (generate any 64+ char secret).
+fly secrets set SECRET_KEY_BASE="$(openssl rand -hex 64)"
+
+# 4. First deploy from your machine.
+fly deploy
+
+# 5. Mint a deploy token and add it to GitHub as the FLY_API_TOKEN
+#    repository secret so CI can deploy on subsequent pushes to main.
+fly tokens create deploy
+```
+
+After the one-time setup, every push to `main` that passes tests deploys
+automatically.

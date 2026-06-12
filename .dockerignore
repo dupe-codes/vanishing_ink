@@ -1,0 +1,7 @@
+**/build
+**/.lustre
+client/dist
+*.db
+*.db-wal
+*.db-shm
+.git

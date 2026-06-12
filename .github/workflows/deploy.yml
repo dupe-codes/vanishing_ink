@@ -1,0 +1,26 @@
+name: deploy
+
+# Deploys to Fly.io on every push to main, but only after the `test`
+# workflow for that commit has finished successfully. The build itself
+# runs entirely on Fly's remote builder (the Dockerfile), so this job
+# needs no Gleam or Docker toolchain — just flyctl and a token.
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
