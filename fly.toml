@@ -1,0 +1,35 @@
+app = "vanishing-ink"
+primary_region = "iad"  # placeholder — change at launch time
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  STATIC_DIR = "/app/static"
+  DATABASE_PATH = "/data/vanishing_ink.db"
+
+[[mounts]]
+  source = "vanishing_ink_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # Wire Fly's readiness probe to the existing liveness route
+  # (`router.gleam` -> `/api/status` returns `{"status":"ok"}`). Without
+  # this, scale-to-zero auto-start works only off the raw TCP listener;
+  # an HTTP check gives Fly a true application-level readiness signal
+  # before routing traffic to a freshly-woken machine.
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/api/status"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

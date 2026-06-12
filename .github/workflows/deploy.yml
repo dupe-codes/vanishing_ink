@@ -1,0 +1,43 @@
+name: deploy
+
+# Deploys to Fly.io on every push to main, but only after the `test`
+# workflow for that commit has finished successfully. The build itself
+# runs entirely on Fly's remote builder (the Dockerfile), so this job
+# needs no Gleam or Docker toolchain — just flyctl and a token.
+on:
+  workflow_run:
+    workflows: ["test"]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+# This job authenticates to Fly with FLY_API_TOKEN, never the
+# GITHUB_TOKEN, so it needs no repo scopes. An empty block drops the
+# default token to zero permissions and hardens the workflow.
+permissions: {}
+
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      # Check out the exact commit the `test` workflow attested as green,
+      # not the current branch HEAD. Without an explicit `ref`,
+      # `flyctl deploy` would build whatever is at the tip of `main` —
+      # under a rapid double-push, commit B could deploy while only commit
+      # A was gated. Pinning to the triggering run's head SHA guarantees
+      # we deploy exactly the tested commit.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      # Pinned to the immutable commit SHA behind the 1.5 release rather
+      # than the moving `@master` ref: a third-party action on `@master`
+      # could ship a malicious update that runs with this job's secrets.
+      # `# 1.5` documents which release the SHA corresponds to.
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
