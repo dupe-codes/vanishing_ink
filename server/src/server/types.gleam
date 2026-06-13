@@ -122,6 +122,17 @@ pub type ReadingState {
     /// pagination the client's viewport produced at PUT time — not
     /// viewport-agnostic.
     percent_progress: Float,
+    /// Random destructive deletion settings, persisted per book. The
+    /// page-per-page toggle and the once-per-book full-sweep guard are
+    /// stored as `INTEGER` booleans; granularity and intensity as a
+    /// closed `TEXT` vocabulary the router validates on write. Columns
+    /// land on fresh databases via `schema_sql` and on existing ones via
+    /// `db.ensure_reading_state_random_delete_columns`, defaulting to
+    /// "feature off, gentlest settings".
+    random_page_delete_on: Bool,
+    deletion_granularity: String,
+    deletion_intensity: String,
+    full_sweep_applied: Bool,
     updated_at: Option(String),
   )
 }
@@ -235,6 +246,10 @@ pub fn reading_state_to_json(state: ReadingState) -> json.Json {
     #("word_bitset", json.nullable(state.word_bitset, bit_array_to_json)),
     #("current_page", json.int(state.current_page)),
     #("percent_progress", json.float(state.percent_progress)),
+    #("random_page_delete_on", json.bool(state.random_page_delete_on)),
+    #("deletion_granularity", json.string(state.deletion_granularity)),
+    #("deletion_intensity", json.string(state.deletion_intensity)),
+    #("full_sweep_applied", json.bool(state.full_sweep_applied)),
     #("updated_at", json.nullable(state.updated_at, json.string)),
   ])
 }

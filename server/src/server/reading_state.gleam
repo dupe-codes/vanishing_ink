@@ -30,6 +30,17 @@ import wisp.{type Request, type Response}
 /// values must be added here before the router will accept them.
 const reading_state_modes: List(String) = ["manual", "ghost"]
 
+/// Closed vocabulary for `reading_state.deletion_granularity`. The
+/// schema defaults to `'word'`; the client mirrors the same strings in
+/// `state.deletion_granularity_to_wire`. New values must be added here
+/// before the router will accept them.
+const deletion_granularities: List(String) = ["word", "phrase", "sentence"]
+
+/// Closed vocabulary for `reading_state.deletion_intensity`. The schema
+/// defaults to `'low'`; mirrors `state.deletion_intensity_to_wire` on
+/// the client.
+const deletion_intensities: List(String) = ["low", "medium", "high"]
+
 /// Dispatcher for `/api/books/:id/state`. Routes GET / PUT to the
 /// matching handler and returns 405 for anything else.
 pub fn handle(req: Request, ctx: Context, id: String) -> Response {
@@ -64,6 +75,10 @@ fn put_reading_state_handler(
                 word_bitset,
                 validated.current_page,
                 validated.percent_progress,
+                validated.random_page_delete_on,
+                validated.deletion_granularity,
+                validated.deletion_intensity,
+                validated.full_sweep_applied,
                 validated.updated_at,
               )
           }
@@ -88,6 +103,12 @@ fn validate_reading_state_input(
   use percent_progress <- result.try(validate_percent_progress(
     input.percent_progress,
   ))
+  use deletion_granularity <- result.try(validate_deletion_granularity(
+    input.deletion_granularity,
+  ))
+  use deletion_intensity <- result.try(validate_deletion_intensity(
+    input.deletion_intensity,
+  ))
   Ok(
     ReadingStateInput(
       ..input,
@@ -95,6 +116,8 @@ fn validate_reading_state_input(
       updated_at: updated_at,
       current_page: current_page,
       percent_progress: percent_progress,
+      deletion_granularity: deletion_granularity,
+      deletion_intensity: deletion_intensity,
     ),
   )
 }
@@ -104,6 +127,28 @@ fn validate_mode(mode: String) -> Result(String, String) {
     True -> Ok(mode)
     False ->
       Error("mode must be one of: " <> string.join(reading_state_modes, ", "))
+  }
+}
+
+fn validate_deletion_granularity(value: String) -> Result(String, String) {
+  case list.contains(deletion_granularities, value) {
+    True -> Ok(value)
+    False ->
+      Error(
+        "deletion_granularity must be one of: "
+        <> string.join(deletion_granularities, ", "),
+      )
+  }
+}
+
+fn validate_deletion_intensity(value: String) -> Result(String, String) {
+  case list.contains(deletion_intensities, value) {
+    True -> Ok(value)
+    False ->
+      Error(
+        "deletion_intensity must be one of: "
+        <> string.join(deletion_intensities, ", "),
+      )
   }
 }
 
@@ -155,6 +200,10 @@ fn persist_reading_state(
   word_bitset: Option(BitArray),
   current_page: Int,
   percent_progress: Float,
+  random_page_delete_on: Bool,
+  deletion_granularity: String,
+  deletion_intensity: String,
+  full_sweep_applied: Bool,
   updated_at: String,
 ) -> Response {
   // Existence-check the book first so the FK violation never reaches
@@ -183,6 +232,10 @@ fn persist_reading_state(
             word_bitset: word_bitset,
             current_page: current_page,
             percent_progress: percent_progress,
+            random_page_delete_on: random_page_delete_on,
+            deletion_granularity: deletion_granularity,
+            deletion_intensity: deletion_intensity,
+            full_sweep_applied: full_sweep_applied,
             updated_at: updated_at,
           ))
           db.set_book_last_read_at(ctx.db, id: id, last_read_at: updated_at)
@@ -253,6 +306,10 @@ fn empty_reading_state(book_id: shared.BookId) -> ReadingState {
     word_bitset: None,
     current_page: 0,
     percent_progress: 0.0,
+    random_page_delete_on: False,
+    deletion_granularity: "word",
+    deletion_intensity: "low",
+    full_sweep_applied: False,
     updated_at: None,
   )
 }
@@ -264,6 +321,10 @@ type ReadingStateInput {
     word_bitset: Option(String),
     current_page: Int,
     percent_progress: Float,
+    random_page_delete_on: Bool,
+    deletion_granularity: String,
+    deletion_intensity: String,
+    full_sweep_applied: Bool,
     updated_at: String,
   )
 }
@@ -291,6 +352,31 @@ fn reading_state_input_decoder() -> decode.Decoder(ReadingStateInput) {
     0.0,
     decode.float,
   )
+  // The random-deletion fields are `optional_field` with defaults so a
+  // client that predates the feature can still PUT a reading state — the
+  // server persists "feature off, gentlest settings" until a
+  // feature-aware client overwrites them. Same backwards-compatible
+  // shape the `percent_progress` rollout used.
+  use random_page_delete_on <- decode.optional_field(
+    "random_page_delete_on",
+    False,
+    decode.bool,
+  )
+  use deletion_granularity <- decode.optional_field(
+    "deletion_granularity",
+    "word",
+    decode.string,
+  )
+  use deletion_intensity <- decode.optional_field(
+    "deletion_intensity",
+    "low",
+    decode.string,
+  )
+  use full_sweep_applied <- decode.optional_field(
+    "full_sweep_applied",
+    False,
+    decode.bool,
+  )
   use updated_at <- decode.field("updated_at", decode.string)
   decode.success(ReadingStateInput(
     mode: mode,
@@ -298,6 +384,10 @@ fn reading_state_input_decoder() -> decode.Decoder(ReadingStateInput) {
     word_bitset: word_bitset,
     current_page: current_page,
     percent_progress: percent_progress,
+    random_page_delete_on: random_page_delete_on,
+    deletion_granularity: deletion_granularity,
+    deletion_intensity: deletion_intensity,
+    full_sweep_applied: full_sweep_applied,
     updated_at: updated_at,
   ))
 }

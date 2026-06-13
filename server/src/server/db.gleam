@@ -31,6 +31,7 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
   use _ <- result.try(sqlight.exec(schema_sql, connection))
   use _ <- result.try(ensure_books_genre_column(connection))
   use _ <- result.try(ensure_reading_state_percent_progress_column(connection))
+  use _ <- result.try(ensure_reading_state_random_delete_columns(connection))
   use _ <- result.try(ensure_default_settings(connection))
   Ok(connection)
 }
@@ -100,6 +101,60 @@ pub fn ensure_reading_state_percent_progress_column(
         Error(error) -> Error(error)
       }
   }
+}
+
+/// Add the four `reading_state` random-destructive-deletion columns to
+/// databases created before that quest. Mirrors the established
+/// `ensure_*_column` migration pattern: probe `PRAGMA table_info` per
+/// column and only `ALTER TABLE` the ones that are missing, so the path
+/// is idempotent and safe to run on every boot. Fresh databases pick the
+/// columns up inline from `schema_sql` and skip every ALTER cleanly.
+///
+/// Each `DEFAULT` matches the schema declaration so existing rows (which
+/// predate the feature) land at "feature off, gentlest settings" rather
+/// than a value SQLite would otherwise synthesise. The next save from a
+/// feature-aware client overwrites the defaults with the reader's real
+/// choices.
+///
+/// Exposed as `pub` so tests can drive the upgrade path directly off a
+/// hand-built pre-feature `reading_state` table.
+pub fn ensure_reading_state_random_delete_columns(
+  connection: sqlight.Connection,
+) -> Result(Nil, sqlight.Error) {
+  use columns <- result.try(table_column_names(connection, "reading_state"))
+  let additions = [
+    #(
+      "random_page_delete_on",
+      "ALTER TABLE reading_state
+         ADD COLUMN random_page_delete_on INTEGER NOT NULL DEFAULT 0;",
+    ),
+    #(
+      "deletion_granularity",
+      "ALTER TABLE reading_state
+         ADD COLUMN deletion_granularity TEXT NOT NULL DEFAULT 'word';",
+    ),
+    #(
+      "deletion_intensity",
+      "ALTER TABLE reading_state
+         ADD COLUMN deletion_intensity TEXT NOT NULL DEFAULT 'low';",
+    ),
+    #(
+      "full_sweep_applied",
+      "ALTER TABLE reading_state
+         ADD COLUMN full_sweep_applied INTEGER NOT NULL DEFAULT 0;",
+    ),
+  ]
+  list.try_each(additions, fn(addition) {
+    let #(name, alter_sql) = addition
+    case list.contains(columns, name) {
+      True -> Ok(Nil)
+      False ->
+        case sqlight.exec(alter_sql, connection) {
+          Ok(_) -> Ok(Nil)
+          Error(error) -> Error(error)
+        }
+    }
+  })
 }
 
 /// Read column names from any table via `PRAGMA table_info`. Centralised
@@ -188,6 +243,10 @@ CREATE TABLE IF NOT EXISTS reading_state (
   word_bitset BLOB,
   current_page INTEGER NOT NULL DEFAULT 0,
   percent_progress REAL NOT NULL DEFAULT 0.0,
+  random_page_delete_on INTEGER NOT NULL DEFAULT 0,
+  deletion_granularity TEXT NOT NULL DEFAULT 'word',
+  deletion_intensity TEXT NOT NULL DEFAULT 'low',
+  full_sweep_applied INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
 
@@ -576,19 +635,29 @@ pub fn update_reading_state(
   word_bitset word_bitset: Option(BitArray),
   current_page current_page: Int,
   percent_progress percent_progress: Float,
+  random_page_delete_on random_page_delete_on: Bool,
+  deletion_granularity deletion_granularity: String,
+  deletion_intensity deletion_intensity: String,
+  full_sweep_applied full_sweep_applied: Bool,
   updated_at updated_at: String,
 ) -> Result(Nil, sqlight.Error) {
   let sql =
     "INSERT INTO reading_state
        (book_id, mode, sentence_bitset, word_bitset,
-        current_page, percent_progress, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+        current_page, percent_progress, random_page_delete_on,
+        deletion_granularity, deletion_intensity, full_sweep_applied,
+        updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(book_id) DO UPDATE SET
        mode = excluded.mode,
        sentence_bitset = excluded.sentence_bitset,
        word_bitset = excluded.word_bitset,
        current_page = excluded.current_page,
        percent_progress = excluded.percent_progress,
+       random_page_delete_on = excluded.random_page_delete_on,
+       deletion_granularity = excluded.deletion_granularity,
+       deletion_intensity = excluded.deletion_intensity,
+       full_sweep_applied = excluded.full_sweep_applied,
        updated_at = excluded.updated_at
      WHERE excluded.updated_at >= reading_state.updated_at;"
   case
@@ -602,6 +671,10 @@ pub fn update_reading_state(
         sqlight.nullable(sqlight.blob, word_bitset),
         sqlight.int(current_page),
         sqlight.float(percent_progress),
+        sqlight.bool(random_page_delete_on),
+        sqlight.text(deletion_granularity),
+        sqlight.text(deletion_intensity),
+        sqlight.bool(full_sweep_applied),
         sqlight.text(updated_at),
       ],
       expecting: decode.dynamic,
@@ -621,7 +694,9 @@ pub fn get_reading_state(
 ) -> Result(Option(ReadingState), sqlight.Error) {
   let sql =
     "SELECT book_id, mode, sentence_bitset, word_bitset,
-            current_page, percent_progress, updated_at
+            current_page, percent_progress, random_page_delete_on,
+            deletion_granularity, deletion_intensity, full_sweep_applied,
+            updated_at
        FROM reading_state
       WHERE book_id = ?;"
   case
@@ -645,11 +720,15 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   use word_bitset <- decode.field(3, decode.optional(decode.bit_array))
   use current_page <- decode.field(4, decode.int)
   use percent_progress <- decode.field(5, decode.float)
+  use random_page_delete_on <- decode.field(6, sqlight.decode_bool())
+  use deletion_granularity <- decode.field(7, decode.string)
+  use deletion_intensity <- decode.field(8, decode.string)
+  use full_sweep_applied <- decode.field(9, sqlight.decode_bool())
   // The column is `NOT NULL` so the value is always present; wrap in
   // `Some` to match the `Option(String)` shape of `ReadingState.updated_at`,
   // which the wire layer needs to distinguish a persisted row from a
   // synthesised empty default.
-  use updated_at <- decode.field(6, decode.string)
+  use updated_at <- decode.field(10, decode.string)
   decode.success(ReadingState(
     book_id: book_id,
     mode: mode,
@@ -657,6 +736,10 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
     word_bitset: word_bitset,
     current_page: current_page,
     percent_progress: percent_progress,
+    random_page_delete_on: random_page_delete_on,
+    deletion_granularity: deletion_granularity,
+    deletion_intensity: deletion_intensity,
+    full_sweep_applied: full_sweep_applied,
     updated_at: Some(updated_at),
   ))
 }
