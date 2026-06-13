@@ -54,6 +54,7 @@ import lustre/effect.{type Effect}
 
 import prng/random.{type Seed}
 
+import client/deletion
 import client/effects.{save_reading_state}
 import client/msg.{type Msg}
 import client/pagination.{type Page}
@@ -149,7 +150,7 @@ fn delete_words(
   erased_words: Set(Int),
 ) -> #(Set(Int), Set(Int)) {
   let candidates = list.flat_map(units, fn(unit) { unit.word_indices })
-  let target = state.deletion_count(intensity, list.length(candidates))
+  let target = deletion.deletion_count(intensity, list.length(candidates))
   // `sample` is single-pass reservoir sampling — O(n) over the whole
   // book on a full sweep, which the codebase prefers over re-flattening
   // and re-picking per unit.
@@ -167,7 +168,7 @@ fn delete_sentences(
   erased: Set(Int),
   erased_words: Set(Int),
 ) -> #(Set(Int), Set(Int)) {
-  let target = state.deletion_count(intensity, list.length(units))
+  let target = deletion.deletion_count(intensity, list.length(units))
   let #(picked, _seed) = random.step(random.sample(units, target), seed)
   list.fold(picked, #(erased, erased_words), fn(acc, unit) {
     let #(erased_acc, words_acc) = acc
@@ -190,7 +191,7 @@ fn delete_phrases(
 ) -> #(Set(Int), Set(Int)) {
   // Only sentences with at least one word can host a phrase.
   let candidates = list.filter(units, fn(unit) { unit.word_indices != [] })
-  let target = state.deletion_count(intensity, list.length(candidates))
+  let target = deletion.deletion_count(intensity, list.length(candidates))
   let #(picked, after_sample) =
     random.step(random.sample(candidates, target), seed)
   // Thread the seed through each picked sentence so every window draw is
@@ -249,7 +250,7 @@ pub fn apply_page_deletion(model: Model) -> Model {
     pagination.nth(model.pages, model.current_page)
   {
     True, Some(book_id), Some(page) -> {
-      let seed = state.derive_deletion_seed(book_id, model.current_page)
+      let seed = deletion.derive_deletion_seed(book_id, model.current_page)
       let #(erased, erased_words) =
         delete_units(
           page_units(page),
@@ -305,7 +306,8 @@ pub fn apply_set_deletion_intensity(
 pub fn apply_full_sweep(model: Model) -> #(Model, Effect(Msg)) {
   case model.full_sweep_applied, model.text, model.active_book_id {
     False, Some(text), Some(book_id) -> {
-      let seed = state.derive_deletion_seed(book_id, state.full_sweep_seed_salt)
+      let seed =
+        deletion.derive_deletion_seed(book_id, deletion.full_sweep_seed_salt)
       let #(erased, erased_words) =
         delete_units(
           book_units(text),

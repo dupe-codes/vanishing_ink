@@ -23,6 +23,7 @@ import gleam/result
 import gleam/set.{type Set}
 import lustre/effect.{type Effect}
 
+import client/deletion
 import client/epub
 import client/ffi
 import client/msg.{
@@ -248,13 +249,13 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
           #("random_page_delete_on", json.bool(model.random_page_delete_on)),
           #(
             "deletion_granularity",
-            json.string(state.deletion_granularity_to_wire(
+            json.string(deletion.deletion_granularity_to_wire(
               model.deletion_granularity,
             )),
           ),
           #(
             "deletion_intensity",
-            json.string(state.deletion_intensity_to_wire(
+            json.string(deletion.deletion_intensity_to_wire(
               model.deletion_intensity,
             )),
           ),

@@ -14,6 +14,9 @@ import gleam/option.{None, Some}
 import gleam/set
 import lustre/effect.{type Effect}
 
+import client/deletion.{
+  deletion_granularity_from_wire, deletion_intensity_from_wire,
+}
 import client/effects.{decode_base64_to_indices, repaginate_after_paint}
 import client/ffi
 import client/msg.{type Msg}
@@ -25,8 +28,7 @@ import client/reducer/settings.{
 import client/state.{
   type Model, Manual, Model, Reader, RealTime, body_class_ghost_mode,
   body_class_light_mode, css_var_font_size, css_var_ghost_opacity,
-  css_var_line_height, deletion_granularity_from_wire,
-  deletion_intensity_from_wire,
+  css_var_line_height,
 }
 import client/state/helpers.{compute_chapter_entries}
 import client/types.{type BookSettings, type ReadingState, type UserSettings}

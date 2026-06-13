@@ -44,6 +44,7 @@ import shared/segmenter.{
 import gleam/dynamic
 import gleam/dynamic/decode
 
+import client/deletion
 import client/effects
 import client/epub.{
   DrmEncrypted, EmptyText, EpubExtract, ParseFailed, UnsupportedFormat,
@@ -10040,11 +10041,11 @@ pub fn set_deletion_granularity_and_intensity_persist_to_model_test() {
 }
 
 pub fn deletion_count_maps_intensity_to_fraction_test() {
-  assert state.deletion_count(Low, 100) == 10
-  assert state.deletion_count(Medium, 100) == 25
-  assert state.deletion_count(High, 100) == 50
+  assert deletion.deletion_count(Low, 100) == 10
+  assert deletion.deletion_count(Medium, 100) == 25
+  assert deletion.deletion_count(High, 100) == 50
   // A scope smaller than the divisor deletes nothing.
-  assert state.deletion_count(Low, 5) == 0
+  assert deletion.deletion_count(Low, 5) == 0
 }
 
 pub fn delete_units_zero_target_deletes_nothing_test() {
@@ -10057,7 +10058,7 @@ pub fn delete_units_zero_target_deletes_nothing_test() {
   let tiny = [SentenceUnit(sentence_index: 0, word_indices: [0, 1, 2, 3, 4])]
   let e = set.new()
   let w = set.new()
-  assert state.deletion_count(Low, 5) == 0
+  assert deletion.deletion_count(Low, 5) == 0
 
   let #(we, ww) = delete_units(tiny, DeleteWord, Low, 42, e, w)
   assert we == set.new()
@@ -10075,42 +10076,42 @@ pub fn delete_units_zero_target_deletes_nothing_test() {
 pub fn derive_deletion_seed_is_deterministic_test() {
   // Same book + salt → same seed (the determinism the feature depends
   // on); a different salt or book → a different stream.
-  assert state.derive_deletion_seed("book-x", 0)
-    == state.derive_deletion_seed("book-x", 0)
-  assert state.derive_deletion_seed("book-x", 0)
-    != state.derive_deletion_seed("book-x", 1)
-  assert state.derive_deletion_seed("book-x", 0)
-    != state.derive_deletion_seed("book-y", 0)
+  assert deletion.derive_deletion_seed("book-x", 0)
+    == deletion.derive_deletion_seed("book-x", 0)
+  assert deletion.derive_deletion_seed("book-x", 0)
+    != deletion.derive_deletion_seed("book-x", 1)
+  assert deletion.derive_deletion_seed("book-x", 0)
+    != deletion.derive_deletion_seed("book-y", 0)
 }
 
 pub fn deletion_wire_conversions_round_trip_test() {
-  assert state.deletion_granularity_from_wire(
-      state.deletion_granularity_to_wire(DeleteWord),
+  assert deletion.deletion_granularity_from_wire(
+      deletion.deletion_granularity_to_wire(DeleteWord),
     )
     == DeleteWord
-  assert state.deletion_granularity_from_wire(
-      state.deletion_granularity_to_wire(DeletePhrase),
+  assert deletion.deletion_granularity_from_wire(
+      deletion.deletion_granularity_to_wire(DeletePhrase),
     )
     == DeletePhrase
-  assert state.deletion_granularity_from_wire(
-      state.deletion_granularity_to_wire(DeleteSentence),
+  assert deletion.deletion_granularity_from_wire(
+      deletion.deletion_granularity_to_wire(DeleteSentence),
     )
     == DeleteSentence
-  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
-      Low,
-    ))
+  assert deletion.deletion_intensity_from_wire(
+      deletion.deletion_intensity_to_wire(Low),
+    )
     == Low
-  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
-      Medium,
-    ))
+  assert deletion.deletion_intensity_from_wire(
+      deletion.deletion_intensity_to_wire(Medium),
+    )
     == Medium
-  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
-      High,
-    ))
+  assert deletion.deletion_intensity_from_wire(
+      deletion.deletion_intensity_to_wire(High),
+    )
     == High
   // Unknown wire values fall back to the safe default.
-  assert state.deletion_granularity_from_wire("paragraph") == DeleteWord
-  assert state.deletion_intensity_from_wire("nuclear") == Low
+  assert deletion.deletion_granularity_from_wire("paragraph") == DeleteWord
+  assert deletion.deletion_intensity_from_wire("nuclear") == Low
 }
 
 pub fn reading_state_load_restores_deletion_settings_without_reprocessing_test() {
