@@ -16,15 +16,29 @@
 //// per-book seed (derived from the book id, never the wall clock) over
 //// the *full* candidate set in scope — NOT over the set of currently
 //// visible units. Computing the count and the sample against the full,
-//// erase-independent unit list is what makes re-applying a page's
-//// deletion (e.g. on revisit, or after a re-pagination) reproduce the
-//// identical pick: the same indices are re-written into the `erased` /
-//// `erased_words` sets, which is a no-op against what is already there.
-//// Filtering candidates by current visibility before sampling would
-//// shrink the candidate set on every revisit, change the pick, and
-//// reintroduce the compounding (revisits deleting more and more) the
-//// determinism is designed to prevent. The selection helpers are pure
-//// (seed in, index sets out) so the determinism is directly testable.
+//// erase-independent unit list is what makes re-applying a deletion
+//// reproduce the identical pick: the same indices are re-written into
+//// the `erased` / `erased_words` sets, which is a no-op against what is
+//// already there. Filtering candidates by current visibility before
+//// sampling would shrink the candidate set on every revisit, change the
+//// pick, and reintroduce the compounding (revisits deleting more and
+//// more) the determinism is designed to prevent. The selection helpers
+//// are pure (seed in, index sets out) so the determinism is directly
+//// testable.
+////
+//// **Scope of the idempotence guarantee.** It holds unconditionally for
+//// the full-sweep path: `book_units` walks the whole document in reading
+//// order, so its candidate set is pagination-independent and the pick is
+//// stable for the life of the book. The page-per-page path is only
+//// idempotent *within a fixed pagination*: its seed salts the book seed
+//// with the page *index* (`derive_deletion_seed(book_id, current_page)`)
+//// over whatever units currently fall on that index. A re-pagination —
+//// a font-size or line-spacing change re-flows the pages — moves
+//// different content onto page N, so revisiting page N after a re-flow
+//// draws a fresh pick and grows the erased sets. This is a deliberate
+//// trade (a content-stable page seed would have to hash the page's units
+//// rather than its index); same-pagination revisits, the common case,
+//// stay perfectly idempotent.
 ////
 //// Rendering is free: writing a word's `global_index` into
 //// `erased_words`, or a sentence's `global_index` into `erased`, hides
