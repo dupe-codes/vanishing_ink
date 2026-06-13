@@ -12,11 +12,10 @@
 //// padding and the warm chrome background. Outside the preview
 //// state, the inner row swaps shape with `model.mode`:
 ////
-//// * Manual — `[↩ Undo]   Page N of M   [Jump]   [Turn Page →]`
+//// * Manual — `Page N of M   [Jump]   [Turn Page →]`
 //// * RealTime — `WPM readout   [▶ / ⏸]   [Jump]`
 
 import gleam/int
-import gleam/list
 import gleam/option.{None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
@@ -25,7 +24,7 @@ import lustre/event
 
 import client/msg.{
   type Msg, LockInJump, NextPage, PauseFade, ResumeFade, StartFade,
-  ToggleJumpMenu, Undo, UndoJump,
+  ToggleJumpMenu, UndoJump,
 }
 import client/state.{type Model, Manual, Paused, RealTime, Running, Stopped}
 
@@ -99,10 +98,8 @@ fn view_jump_button(model: Model, total: Int) -> Element(Msg) {
 
 /// Manual-mode bottom bar inner row.
 ///
-/// Layout: `[↩ Undo]   Page N of M   [Turn Page →]`.
+/// Layout: `Page N of M   [Jump]   [Turn Page →]`.
 ///
-/// * Undo button — disabled when the undo stack is empty. Dispatches
-///   `Undo`.
 /// * Page label — `Page N of M` text; renders an empty string when no
 ///   pages are available yet, so the bar's frame stays the same height
 ///   before pagination has produced its first result.
@@ -124,19 +121,8 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
       <> " of "
       <> int.to_string(total)
   }
-  let undo_disabled = list.is_empty(model.undo_stack)
 
   html.div([attribute.class("reader-bottom-manual")], [
-    html.button(
-      [
-        attribute.class("btn-bar"),
-        attribute.type_("button"),
-        attribute.disabled(undo_disabled),
-        attribute.aria_label("Undo last erase"),
-        event.on_click(Undo),
-      ],
-      [html.text("↩ Undo")],
-    ),
     html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
     view_jump_button(model, total),
     html.button(

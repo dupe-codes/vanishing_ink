@@ -56,7 +56,7 @@ import client/effects.{
 import client/ffi
 import client/msg.{
   type Msg, FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious,
-  NextPage, SpacePressed, Undo, ViewportResized, VisibilityChanged,
+  NextPage, SpacePressed, ViewportResized, VisibilityChanged,
 }
 import client/reducer
 import client/state.{
@@ -103,7 +103,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       pages: [],
       current_page: 0,
       erased: set.new(),
-      undo_stack: [],
       touch_start: None,
       focused_sentence: None,
       dark_mode: dark_mode,
@@ -186,8 +185,8 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
   //   the source of truth and the sample fixture is no longer wired
   //   into production code (it stays around for tests as a
   //   well-shaped segmented-text fixture).
-  // - The four listener effects (`resize`, `arrow`, `undo`, `vim`)
-  //   wire keyboard navigation and the debounced resize handler.
+  // - The listener effects (`resize`, `arrow`, `vim`) wire keyboard
+  //   navigation and the debounced resize handler.
   let viewport_meta =
     effect.from(fn(_dispatch) { ffi.ensure_viewport_fit_cover() })
   let body_classes =
@@ -201,8 +200,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
     })
   let arrow_listener =
     effect.from(fn(dispatch) { ffi.on_arrow_key(fn() { dispatch(NextPage) }) })
-  let undo_listener =
-    effect.from(fn(dispatch) { ffi.on_undo_key(fn() { dispatch(Undo) }) })
   let vim_listener =
     effect.from(fn(dispatch) {
       ffi.on_vim_keys(
@@ -211,7 +208,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
         focus_paragraph_up_callback: fn() { dispatch(FocusParagraphUp) },
         focus_next_callback: fn() { dispatch(FocusNext) },
         space_callback: fn() { dispatch(SpacePressed) },
-        undo_callback: fn() { dispatch(Undo) },
       )
     })
   // `visibilitychange` boots the reading-session lifecycle's
@@ -246,7 +242,6 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       fetch_library_book_stats(),
       resize_listener,
       arrow_listener,
-      undo_listener,
       vim_listener,
       visibility_listener,
       pagehide_listener,

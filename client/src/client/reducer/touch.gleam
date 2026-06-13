@@ -1,10 +1,8 @@
-//// Touch gesture handling plus the shared sentence-erase / undo
-//// primitives. `apply_erase` and `apply_undo` are the pure
-//// model-mutation helpers behind every reducer arm that erases a
-//// sentence or rewinds one — clicks, vim keys, swipes, undo
-//// dispatches all converge on these two. `apply_touch_end` reads the
-//// stashed `touch_start`, classifies the gesture, and routes the
-//// result.
+//// Touch gesture handling plus the shared sentence-erase primitive.
+//// `apply_erase` is the pure model-mutation helper behind every
+//// reducer arm that erases a sentence — clicks, vim keys, taps all
+//// converge on it. `apply_touch_end` reads the stashed `touch_start`,
+//// classifies the gesture, and routes the result.
 
 import gleam/dict
 import gleam/list
@@ -15,52 +13,12 @@ import lustre/effect.{type Effect}
 import client/effects.{save_reading_state}
 import client/gestures
 import client/msg.{type Msg}
-import client/state.{type Model, Manual, Model, RealTime, undo_stack_depth}
+import client/state.{type Model, Manual, Model, RealTime}
 import client/state/helpers.{go_to_page}
 
-/// Pop the most recent erase off `undo_stack` and remove its index
-/// from `erased`. Returns the model unchanged when the stack is
-/// empty. Shared between the `Undo` reducer arm and the SwipeRight
-/// branch of `apply_touch_end` — both consume the head of the stack
-/// in identical ways, and a copy-and-paste here would let the two
-/// branches drift apart on a future refactor (e.g. one of them
-/// growing a "max-undo-count" cap that the other forgot).
-///
-/// Mirrors `apply_erase`: the word indices the original erase folded
-/// into `erased_words` are removed alongside the sentence index so an
-/// undo fully restores the pre-erase counters. Without this, the
-/// session's `words_read` delta would grow on every erase-then-undo
-/// loop because the words would stay in the set after the sentence
-/// returned to view.
-pub fn apply_undo(model: Model) -> Model {
-  case model.undo_stack {
-    [] -> model
-    [last, ..rest] -> {
-      let word_indices = case dict.get(model.sentence_word_indices, last) {
-        Ok(indices) -> indices
-        Error(_) -> []
-      }
-      let updated_erased_words =
-        list.fold(word_indices, model.erased_words, fn(acc, idx) {
-          set.delete(acc, idx)
-        })
-      Model(
-        ..model,
-        erased: set.delete(model.erased, last),
-        erased_words: updated_erased_words,
-        undo_stack: rest,
-      )
-    }
-  }
-}
-
-/// Insert `global_index` into `erased` and push it onto the
-/// `undo_stack`, capped to `undo_stack_depth` entries. A repeat
-/// erase on an already-erased sentence is a no-op so the undo
-/// stack never carries duplicate entries — without that guard, an
-/// `EraseFocused` press on a sentence the reader had earlier
-/// clicked would push a second copy and force two undo presses to
-/// restore one sentence. Shared between `EraseSentence` (from
+/// Insert `global_index` into `erased`. A repeat erase on an
+/// already-erased sentence is a no-op. Erasure is permanent — there
+/// is no recovery path. Shared between `EraseSentence` (from
 /// click/tap) and `EraseFocused` (from the keyboard cursor).
 ///
 /// Project the erased sentence onto its constituent words via
@@ -90,8 +48,6 @@ pub fn apply_erase(model: Model, global_index: Int) -> Model {
         ..model,
         erased: set.insert(model.erased, global_index),
         erased_words: updated_erased_words,
-        undo_stack: [global_index, ..model.undo_stack]
-          |> list.take(undo_stack_depth),
       )
     }
   }
@@ -99,8 +55,10 @@ pub fn apply_erase(model: Model, global_index: Int) -> Model {
 
 /// Resolve a `TouchEnd` into the next model state. Clears
 /// `touch_start` unconditionally, then classifies the gesture
-/// (`Tap` / `SwipeLeft` / `SwipeRight`) and routes the swipe to a
-/// page navigation or an undo. A `Tap` in `Manual` mode is a
+/// (`Tap` / `SwipeLeft` / `SwipeRight`) and routes a `SwipeLeft` to a
+/// page navigation. `SwipeRight` is a no-op — it used to trigger
+/// erase-undo, which has been removed; erasure is now permanent. A
+/// `Tap` in `Manual` mode is a
 /// no-op — sentence erasure flows through the synthesised `click`
 /// event on the `.sentence` span. A `Tap` in `RealTime` mode is
 /// routed through the caller-supplied `on_realtime_tap` callback,
@@ -135,10 +93,11 @@ pub fn apply_touch_end(
           }
           #(advanced, save_effect)
         }
-        gestures.SwipeRight -> {
-          let undone = apply_undo(cleared)
-          #(undone, save_reading_state(undone))
-        }
+        // `SwipeRight` once triggered erase-undo. Erasure is now
+        // permanent, so a right swipe carries no meaning — it leaves
+        // the model untouched rather than dispatching a removed
+        // action. Backward page navigation is intentionally not wired.
+        gestures.SwipeRight -> #(cleared, effect.none())
       }
   }
 }

@@ -73,16 +73,6 @@ import shared/segmenter.{type SegmentedText}
 import shared/stats.{type BookStats, type LibraryStats, type SessionSpeed}
 
 // ---------------------------------------------------------------------------
-// Undo
-// ---------------------------------------------------------------------------
-
-/// Cap on the depth of the per-page undo stack. The stack only holds
-/// erases on the current page (cleared on every page navigation), so
-/// five generations is plenty without giving the reader a free pass
-/// to undo a whole rapid-erase run by mistake.
-pub const undo_stack_depth: Int = 5
-
-// ---------------------------------------------------------------------------
 // Reader settings — defaults and bounds
 // ---------------------------------------------------------------------------
 //
@@ -447,10 +437,6 @@ pub type LineBox {
 ///   non-members render as visible. A `Set` rather than a
 ///   `Dict(Int, Bool)` so the "no `False` value ever stored"
 ///   invariant is type-encoded rather than enforced by convention.
-/// * `undo_stack` — last erases on the *current* page, most recent
-///   first. Bounded to `undo_stack_depth` entries; cleared whenever
-///   the reader navigates between pages, so erases commit when the
-///   page turns.
 /// * `touch_start` — `(clientX, clientY)` of the in-flight touch
 ///   between `touchstart` and `touchend`. `None` when there is no
 ///   active gesture. Cleared on every `TouchEnd`.
@@ -637,7 +623,6 @@ pub type Model {
     pages: List(Page),
     current_page: Int,
     erased: Set(Int),
-    undo_stack: List(Int),
     touch_start: Option(#(Float, Float)),
     focused_sentence: Option(Int),
     dark_mode: Bool,

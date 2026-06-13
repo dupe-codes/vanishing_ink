@@ -158,12 +158,9 @@ pub fn chapter_title_at(text: SegmentedText, chapter_index: Int) -> String {
 }
 
 /// Lower-level page change: clamps `candidate` into the valid
-/// page range and clears the undo stack only when the page
-/// actually changes. Shared between `go_to_page` (the
-/// touch/arrow-key path) and `move_focus` (the vim path) — both
-/// need the same "no page change, no undo-stack clear" invariant
-/// and pulling the logic into one helper stops the two callers
-/// from drifting apart.
+/// page range. Shared between `go_to_page` (the touch/arrow-key
+/// path) and `move_focus` (the vim path) — pulling the logic into
+/// one helper stops the two callers from drifting apart.
 ///
 /// Refreshes both `current_chapter_title` (the page may have
 /// crossed a chapter boundary) and `chapter_entries` (the Jump
@@ -194,7 +191,6 @@ pub fn change_page(model: Model, candidate: Int) -> Model {
       Model(
         ..model,
         current_page: clamped,
-        undo_stack: [],
         current_chapter_title: chapter_title,
         chapter_entries: chapter_entries,
       )
@@ -205,11 +201,7 @@ pub fn change_page(model: Model, candidate: Int) -> Model {
 /// Move the reader to `candidate` after clamping to the current
 /// `pages` range. Rejects any `candidate` less than `current_page`
 /// — backward page navigation is disabled; only forward movement is
-/// permitted. Clears `undo_stack` only when `clamped` differs from
-/// `current_page` — a real page change commits every erase that has
-/// not yet been undone, but a clamp-to-self (ArrowRight on the last
-/// page) must leave the undo stack intact so a reader's stray reflex
-/// tap does not silently destroy undoable erases.
+/// permitted.
 ///
 /// Used by `NextPage`/swipes — input modes where the reader pages
 /// forward through the book. When `focused_sentence` is `Some(_)`

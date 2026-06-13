@@ -7,7 +7,7 @@
 //// reading area is the flex-grow child between two `flex: 0 0 auto`
 //// frames. The header carries the back glyph, current book title,
 //// and settings gear; the bottom bar swaps shape with `model.mode`
-//// — Manual gets undo / page indicator / turn-page, RealTime gets
+//// — Manual gets page indicator / turn-page, RealTime gets
 //// WPM readout / play-pause / spacer. Bottom-bar markup lives in
 //// the sibling `client/view/reader/bottom_bar` module so this file
 //// stays under the 800-line hard budget while subsequent reader
