@@ -65,7 +65,7 @@ import client/msg.{
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
   ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
   ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
-  TouchStart, Undo, UndoJump, ViewportResized,
+  TouchStart, UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
@@ -126,7 +126,6 @@ fn empty_model() -> Model {
     pages: [],
     current_page: 0,
     erased: set.new(),
-    undo_stack: [],
     touch_start: None,
     focused_sentence: None,
     dark_mode: True,
@@ -968,7 +967,7 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   //
   // Pinned alongside the page label: the reader header (with its
   // back glyph, book title, and settings gear) and the manual
-  // bottom bar's undo / turn-page controls — these chrome surfaces
+  // bottom bar's turn-page control — these chrome surfaces
   // are part of the visual-polish surface and a refactor that drops
   // any of them should land here loudly.
   let text = two_chapter_text()
@@ -1007,7 +1006,8 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   assert string.contains(rendered, "class=\"reader-bottom-bar\"")
   assert string.contains(rendered, "class=\"reader-bottom-manual\"")
   assert string.contains(rendered, "Turn Page →")
-  assert string.contains(rendered, "↩ Undo")
+  // The undo control has been removed — erasure is permanent.
+  assert !string.contains(rendered, "↩ Undo")
 
   assert string.contains(rendered, "<div class=\"page\" data-page-index=\"1\">")
   // The visible page (#1) renders paragraph 1 — but not 0 or 2.
@@ -1096,88 +1096,26 @@ pub fn view_emits_one_word_span_per_word_on_visible_page_test() {
 // update — EraseSentence
 // ---------------------------------------------------------------------------
 
-pub fn update_erase_sentence_marks_sentence_and_pushes_undo_test() {
-  // Tapping a fresh sentence must (a) insert the sentence's
-  // `global_index` into `erased` and (b) push that index onto the
-  // front of `undo_stack`. Both halves are pinned together because
-  // erase without undo entry would orphan the undo handler, and
-  // undo entry without erase would make Undo a visible no-op.
-  // Whole-Model comparison so an incidental mutation of any other
-  // field (e.g. a future bug that resets `current_page` on erase)
-  // also fails here.
+pub fn update_erase_sentence_marks_sentence_test() {
+  // Tapping a fresh sentence inserts the sentence's `global_index`
+  // into `erased`. Erasure is permanent — there is no undo entry to
+  // record. Whole-Model comparison so an incidental mutation of any
+  // other field (e.g. a future bug that resets `current_page` on
+  // erase) also fails here.
   let prior = empty_model()
 
   let #(updated, _effect) = reducer.update(prior, EraseSentence(7))
 
-  assert updated == Model(..prior, erased: set.from_list([7]), undo_stack: [7])
+  assert updated == Model(..prior, erased: set.from_list([7]))
 }
 
 pub fn update_erase_sentence_is_idempotent_on_already_erased_test() {
-  // Re-tapping a sentence already in `erased` must be a no-op. The
-  // undo stack would otherwise grow with duplicate entries — undo
-  // would then have to be pressed N times to actually restore a
-  // sentence the reader meant to erase once.
-  let prior =
-    Model(..empty_model(), erased: set.from_list([3]), undo_stack: [3])
+  // Re-tapping a sentence already in `erased` must be a no-op — the
+  // membership set never carries duplicates and no other field
+  // bounces on the repeat tap.
+  let prior = Model(..empty_model(), erased: set.from_list([3]))
 
   let #(updated, _effect) = reducer.update(prior, EraseSentence(3))
-
-  assert updated == prior
-}
-
-pub fn update_erase_sentence_caps_undo_stack_at_five_entries_test() {
-  // Rapidly erasing six sentences must leave only the most recent
-  // five in `undo_stack`; the earliest erase commits and becomes
-  // permanent for the duration of the current page. Pinning the
-  // exact stack contents catches both off-by-one truncation and
-  // accidental reversal of the recency order. Whole-Model
-  // comparison so an unrelated field bouncing during the six-step
-  // run also fails here — `erased` carries all six indices
-  // (including the one that fell off the undo stack), and no
-  // other field is touched by EraseSentence.
-  let after_5 =
-    list.fold([0, 1, 2, 3, 4], empty_model(), fn(model, index) {
-      let #(updated, _) = reducer.update(model, EraseSentence(index))
-      updated
-    })
-
-  let #(after_6, _) = reducer.update(after_5, EraseSentence(5))
-
-  assert after_6
-    == Model(
-      ..empty_model(),
-      erased: set.from_list([0, 1, 2, 3, 4, 5]),
-      undo_stack: [5, 4, 3, 2, 1],
-    )
-}
-
-// ---------------------------------------------------------------------------
-// update — Undo
-// ---------------------------------------------------------------------------
-
-pub fn update_undo_restores_most_recent_erase_and_pops_stack_test() {
-  // Undo with a non-empty stack must (a) remove the top index from
-  // `undo_stack` and (b) delete its `erased` entry — restoring the
-  // sentence to visible. Earlier entries on the stack stay intact.
-  // Whole-Model comparison so an incidental mutation of any other
-  // field (page index, touch_start, etc.) by a future Undo refactor
-  // is caught here too.
-  let prior =
-    Model(..empty_model(), erased: set.from_list([2, 7]), undo_stack: [7, 2])
-
-  let #(updated, _effect) = reducer.update(prior, Undo)
-
-  assert updated == Model(..prior, erased: set.from_list([2]), undo_stack: [2])
-}
-
-pub fn update_undo_is_noop_when_stack_empty_test() {
-  // The reader can press Cmd+Z (or swipe right with nothing to
-  // undo) before any erases have happened. The reducer must hold
-  // the model unchanged — in particular, it must not touch
-  // `erased` or accidentally introduce a phantom undo entry.
-  let prior = empty_model()
-
-  let #(updated, _effect) = reducer.update(prior, Undo)
 
   assert updated == prior
 }
@@ -1188,8 +1126,8 @@ pub fn update_erase_sentence_projects_words_onto_erased_words_test() {
   // the `sentence_word_indices` projection. Without this, the
   // closing PUT's `words_read` delta would always be zero for
   // Manual-mode sessions whose erasures are sentence-level. Pinning
-  // the whole field surface (`erased`, `erased_words`, `undo_stack`)
-  // so a future regression on any of the three is caught here.
+  // the field surface (`erased`, `erased_words`) so a future
+  // regression on either is caught here.
   let prior =
     Model(
       ..empty_model(),
@@ -1204,31 +1142,6 @@ pub fn update_erase_sentence_projects_words_onto_erased_words_test() {
 
   assert updated.erased == set.from_list([1])
   assert updated.erased_words == set.from_list([2, 3])
-  assert updated.undo_stack == [1]
-}
-
-pub fn update_undo_removes_projected_words_from_erased_words_test() {
-  // The undo path is symmetric with `apply_erase`: the word indices
-  // that were folded into `erased_words` on the original erase must
-  // be removed on undo so the session's `words_read` counter does
-  // not grow on every erase-then-undo loop.
-  let prior =
-    Model(
-      ..empty_model(),
-      sentence_word_indices: dict.from_list([
-        #(0, [0, 1]),
-        #(1, [2, 3]),
-      ]),
-      erased: set.from_list([0, 1]),
-      erased_words: set.from_list([0, 1, 2, 3]),
-      undo_stack: [1, 0],
-    )
-
-  let #(updated, _effect) = reducer.update(prior, Undo)
-
-  assert updated.erased == set.from_list([0])
-  assert updated.erased_words == set.from_list([0, 1])
-  assert updated.undo_stack == [0]
 }
 
 pub fn update_erase_sentence_with_unknown_index_leaves_words_alone_test() {
@@ -1244,20 +1157,19 @@ pub fn update_erase_sentence_with_unknown_index_leaves_words_alone_test() {
 
   assert updated.erased == set.from_list([42])
   assert updated.erased_words == set.new()
-  assert updated.undo_stack == [42]
 }
 
 // ---------------------------------------------------------------------------
 // update — page commitment
 // ---------------------------------------------------------------------------
 
-pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
-  // Navigating forward must clear `undo_stack` — erases on the
-  // page being left commit and are no longer undoable. The
-  // `erased` map keeps every prior entry so the sentences stay
-  // invisible when the reader pages back later. Whole-Model
-  // comparison so an unintended mutation of `pages`, `text`, or
-  // `touch_start` on a page turn also fails here.
+pub fn update_next_page_advances_and_keeps_erased_test() {
+  // Navigating forward advances `current_page` and keeps every
+  // `erased` entry so the sentences stay invisible when the reader
+  // pages back later. Erasure is permanent — there is no per-page
+  // stack to clear on a page turn. Whole-Model comparison so an
+  // unintended mutation of `pages`, `text`, or `touch_start` on a
+  // page turn also fails here.
   let prior =
     Model(
       ..empty_model(),
@@ -1265,20 +1177,17 @@ pub fn update_next_page_clears_undo_stack_but_keeps_erased_test() {
       current_page: 0,
       total_pages: 2,
       erased: set.from_list([0, 1]),
-      undo_stack: [1, 0],
     )
 
   let #(updated, _effect) = reducer.update(prior, NextPage)
 
-  assert updated == Model(..prior, current_page: 1, undo_stack: [])
+  assert updated == Model(..prior, current_page: 1)
 }
 
-pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
-  // A reader on the last page has unfinished erase work and presses
-  // ArrowRight (or swipes left) by reflex. `current_page` clamps to
-  // itself — no actual page boundary is crossed — so the undo stack
-  // must survive. The previous implementation cleared it
-  // unconditionally and silently destroyed undoable erases.
+pub fn update_next_page_at_last_page_is_noop_test() {
+  // A reader on the last page presses ArrowRight (or swipes left) by
+  // reflex. `current_page` clamps to itself — no actual page
+  // boundary is crossed — so the model is unchanged.
   let prior =
     Model(
       ..empty_model(),
@@ -1286,7 +1195,6 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
       current_page: 1,
       total_pages: 2,
       erased: set.from_list([8]),
-      undo_stack: [8],
     )
 
   let #(updated, _effect) = reducer.update(prior, NextPage)
@@ -1294,10 +1202,10 @@ pub fn update_next_page_at_last_page_preserves_undo_stack_test() {
   assert updated == prior
 }
 
-pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
+pub fn update_swipe_left_at_last_page_is_noop_test() {
   // The touch-gesture path threads through `go_to_page` too — a
-  // SwipeLeft on the last page must not clear the undo stack any
-  // more than a keyboard ArrowRight does.
+  // SwipeLeft on the last page clamps to itself just like a keyboard
+  // ArrowRight, leaving everything but `touch_start` untouched.
   let prior =
     Model(
       ..empty_model(),
@@ -1305,7 +1213,6 @@ pub fn update_swipe_left_at_last_page_preserves_undo_stack_test() {
       current_page: 1,
       total_pages: 2,
       erased: set.from_list([5]),
-      undo_stack: [5],
       touch_start: Some(#(300.0, 200.0)),
     )
 
@@ -1362,11 +1269,11 @@ pub fn update_touch_end_swipe_left_advances_page_test() {
   assert updated == Model(..prior, current_page: 1, touch_start: None)
 }
 
-pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
-  // A right swipe with a non-empty undo stack must call Undo. The
-  // reader has unfinished erase work on the current page — losing
-  // it via any other backward action would not be what the user
-  // asked for.
+pub fn update_touch_end_swipe_right_is_noop_test() {
+  // Swipe-right is a no-op. It once triggered erase-undo, which has
+  // been removed (erasure is permanent), and backward page
+  // navigation is disabled — so a right swipe leaves `erased` intact
+  // and only clears `touch_start`.
   let prior =
     Model(
       ..empty_model(),
@@ -1374,29 +1281,10 @@ pub fn update_touch_end_swipe_right_with_undo_stack_undoes_test() {
       current_page: 1,
       total_pages: 2,
       erased: set.from_list([9]),
-      undo_stack: [9],
       touch_start: Some(#(100.0, 200.0)),
     )
 
   // +200px horizontal → SwipeRight.
-  let #(updated, _effect) = reducer.update(prior, TouchEnd(300.0, 198.0))
-
-  assert updated
-    == Model(..prior, erased: set.new(), undo_stack: [], touch_start: None)
-}
-
-pub fn update_touch_end_swipe_right_with_empty_undo_is_noop_test() {
-  // Swipe-right with an empty undo stack is a no-op — backward page
-  // navigation is disabled. The only effect is clearing `touch_start`.
-  let prior =
-    Model(
-      ..empty_model(),
-      pages: [Page(index: 0, paragraphs: []), Page(index: 1, paragraphs: [])],
-      current_page: 1,
-      total_pages: 2,
-      touch_start: Some(#(100.0, 200.0)),
-    )
-
   let #(updated, _effect) = reducer.update(prior, TouchEnd(300.0, 198.0))
 
   assert updated == Model(..prior, touch_start: None)
@@ -1417,7 +1305,6 @@ pub fn update_touch_cancel_clears_stale_touch_start_test() {
       current_page: 0,
       total_pages: 2,
       erased: set.from_list([3]),
-      undo_stack: [3],
       touch_start: Some(#(100.0, 200.0)),
     )
 
@@ -1508,7 +1395,6 @@ pub fn view_renders_opacity_zero_on_erased_sentence_test() {
       current_page: 1,
       total_pages: list.length(pages),
       erased: set.from_list([1]),
-      undo_stack: [1],
     )
 
   let rendered = view.view(model) |> element.to_string
@@ -1853,8 +1739,7 @@ pub fn update_focus_next_initialises_skipping_erased_test() {
   // First press with sentence 0 already erased (e.g. via click)
   // must initialise to sentence 1, not land on the invisible
   // erased sentence.
-  let prior =
-    Model(..vim_model_on_page(0), erased: set.from_list([0]), undo_stack: [0])
+  let prior = Model(..vim_model_on_page(0), erased: set.from_list([0]))
 
   let #(updated, _) = reducer.update(prior, FocusNext)
 
@@ -1881,7 +1766,6 @@ pub fn update_focus_next_skips_erased_sentence_test() {
     Model(
       ..vim_model_on_page(0),
       erased: set.from_list([1]),
-      undo_stack: [1],
       focused_sentence: Some(0),
     )
 
@@ -1945,31 +1829,6 @@ pub fn update_focus_previous_at_page_start_stops_test() {
   assert updated == prior
 }
 
-pub fn update_focus_next_crossing_page_clears_undo_stack_test() {
-  // The vim path through `change_page` shares the same undo-stack
-  // contract as the arrow-key path: a real page change commits
-  // every undoable erase on the page being left. Pinning this means
-  // a future vim-handler that forgot to thread through `change_page`
-  // (and skipped the undo clear) fails here.
-  let prior =
-    Model(
-      ..vim_model_on_page(0),
-      erased: set.from_list([1]),
-      undo_stack: [1],
-      focused_sentence: Some(2),
-    )
-
-  let #(updated, _) = reducer.update(prior, FocusNext)
-
-  assert updated
-    == Model(
-      ..prior,
-      current_page: 1,
-      undo_stack: [],
-      focused_sentence: Some(3),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // update — FocusParagraphDown / FocusParagraphUp
 // ---------------------------------------------------------------------------
@@ -2023,26 +1882,18 @@ pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
   // Paragraph 1 is fully erased (sentence 2). `j` from paragraph 0
   // must skip past paragraph 1 and land on the first sentence of
   // paragraph 2 — the cursor doesn't stall on a paragraph with no
-  // remaining visible text. The page advance from 0 → 1 also
-  // clears the undo stack: page changes commit erases regardless of
-  // what triggered them.
+  // remaining visible text. The page advances from 0 → 1; erased
+  // entries are preserved across the turn.
   let prior =
     Model(
       ..vim_model_on_page(0),
       erased: set.from_list([2]),
-      undo_stack: [2],
       focused_sentence: Some(0),
     )
 
   let #(updated, _) = reducer.update(prior, FocusParagraphDown)
 
-  assert updated
-    == Model(
-      ..prior,
-      current_page: 1,
-      undo_stack: [],
-      focused_sentence: Some(3),
-    )
+  assert updated == Model(..prior, current_page: 1, focused_sentence: Some(3))
 }
 
 // ---------------------------------------------------------------------------
@@ -2051,40 +1902,28 @@ pub fn update_focus_paragraph_down_skips_fully_erased_paragraph_test() {
 
 pub fn update_erase_focused_erases_and_advances_test() {
   // Space on a focused sentence must (a) insert that sentence's
-  // index into `erased`, (b) push it onto `undo_stack`, and (c)
-  // advance the cursor forward to the next non-erased sentence.
-  // Pinning all three together as one whole-Model comparison stops
-  // a future refactor from separating them — losing any one of the
-  // three would break the keyboard-erase flow.
+  // index into `erased` and (b) advance the cursor forward to the
+  // next non-erased sentence. Pinning both together as one
+  // whole-Model comparison stops a future refactor from separating
+  // them — losing either would break the keyboard-erase flow.
   let prior = Model(..vim_model_on_page(0), focused_sentence: Some(0))
 
   let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated
-    == Model(
-      ..prior,
-      erased: set.from_list([0]),
-      undo_stack: [0],
-      focused_sentence: Some(1),
-    )
+    == Model(..prior, erased: set.from_list([0]), focused_sentence: Some(1))
 }
 
 pub fn update_erase_focused_advances_page_when_last_visible_test() {
   // Erasing the focused sentence when it's the last visible
   // sentence on the page must advance the cursor (and the page) to
   // the first non-erased sentence on the next page. The reader's
-  // erase flow doesn't get wedged at the end of a page.
-  //
-  // The undo stack clears on the page advance — every page change
-  // commits every erase on the page being left, including the one
-  // that just triggered the advance. This is consistent with
-  // ArrowRight: any page change commits, regardless of what
-  // triggered it.
+  // erase flow doesn't get wedged at the end of a page. Erased
+  // entries are preserved across the page advance.
   let prior =
     Model(
       ..vim_model_on_page(0),
       erased: set.from_list([0, 1]),
-      undo_stack: [1, 0],
       focused_sentence: Some(2),
     )
 
@@ -2095,7 +1934,6 @@ pub fn update_erase_focused_advances_page_when_last_visible_test() {
       ..prior,
       current_page: 1,
       erased: set.from_list([0, 1, 2]),
-      undo_stack: [],
       focused_sentence: Some(3),
     )
 }
@@ -2120,12 +1958,7 @@ pub fn update_erase_focused_at_end_of_document_clears_cursor_test() {
   let #(updated, _) = reducer.update(prior, EraseFocused)
 
   assert updated
-    == Model(
-      ..prior,
-      erased: set.from_list([5]),
-      undo_stack: [5],
-      focused_sentence: None,
-    )
+    == Model(..prior, erased: set.from_list([5]), focused_sentence: None)
 }
 
 // ---------------------------------------------------------------------------
@@ -2146,7 +1979,6 @@ pub fn update_erase_sentence_does_not_move_focused_cursor_test() {
     == Model(
       ..prior,
       erased: set.from_list([1]),
-      undo_stack: [1],
       // focused_sentence stays at Some(0), untouched.
     )
 }
@@ -4631,7 +4463,7 @@ pub fn view_sentence_level_erase_subsumes_word_level_opacity_test() {
 // (page indicator + settings gear) with a three-row chrome: a sticky
 // header at the top (back glyph, book title, settings gear), a thin
 // progress bar between header and content, and a mode-aware bottom
-// bar (manual gets undo / page label / turn-page; realtime gets WPM
+// bar (manual gets page label / turn-page; realtime gets WPM
 // readout / play button / spacer). The tests below pin the rendered
 // structure so a future refactor cannot quietly drop any of those
 // elements.
@@ -5013,7 +4845,7 @@ pub fn view_progress_bar_carries_aria_progressbar_semantics_test() {
 }
 
 pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
-  // Manual mode bottom bar: undo button, page label, turn-page
+  // Manual mode bottom bar: page label, Jump button, turn-page
   // button. The realtime bottom-bar classes must be entirely
   // absent — the bar is mode-conditional, not just CSS-toggled.
   let text = two_chapter_text()
@@ -5032,7 +4864,8 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
   let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-bottom-manual\"")
-  assert string.contains(rendered, "↩ Undo")
+  // The undo control has been removed — erasure is permanent.
+  assert !string.contains(rendered, "↩ Undo")
   assert string.contains(rendered, "Turn Page →")
   // Realtime-only chrome must not appear in Manual mode.
   assert !string.contains(rendered, "reader-bottom-realtime")
@@ -5046,7 +4879,7 @@ pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
   // jump affordance — the trailing spacer was replaced by the Jump
   // button when the Jump Ahead surface landed, so the inner row now
   // carries three real children rather than two children plus a
-  // ghost spacer. Manual chrome (undo, turn-page) must not appear —
+  // ghost spacer. Manual chrome (turn-page) must not appear —
   // the bar is mode-conditional.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
 
@@ -5063,90 +4896,12 @@ pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
   assert !string.contains(rendered, "Turn Page →")
 }
 
-pub fn view_manual_bottom_undo_button_disabled_when_stack_empty_test() {
-  // Undo button is `disabled` when `undo_stack` is empty so the
-  // reader sees the disabled visual state. The `Disabled` HTML
-  // attribute is the contract — CSS reads `:disabled` for the
-  // dimmed-pill rendering.
-  //
-  // The substring below depends on Lustre's alphabetical
-  // attribute ordering (`aria-label` < `class` < `disabled` < ...)
-  // — the same contract noted in
-  // `view_paginated_attaches_touch_handlers_to_reading_area_test`.
-  // A Lustre version bump that changed the sort order would
-  // break this assertion without breaking the underlying
-  // rendering; a follow-up could replace the substring with a
-  // tree-walking assertion that names attributes explicitly
-  // (`find_element_by_id` + an attribute lookup), matching the
-  // shape used for touch listeners.
-  let text = two_chapter_text()
-  let flat = pagination.flatten(text)
-  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
-  let model =
-    Model(
-      ..empty_model(),
-      text: Some(text),
-      flat_paragraphs: flat,
-      pages: pages,
-      total_pages: list.length(pages),
-      undo_stack: [],
-    )
-
-  let rendered = view.view(model) |> element.to_string
-
-  // The undo button carries its aria-label so we can grep around
-  // it; the same span must contain the disabled attribute.
-  assert string.contains(
-    rendered,
-    "aria-label=\"Undo last erase\" class=\"btn-bar\" disabled",
-  )
-}
-
-pub fn view_manual_bottom_undo_button_enabled_when_stack_populated_test() {
-  // Mirror of the above: with at least one entry on the undo
-  // stack, the button is enabled (no `disabled` attribute).
-  //
-  // Same Lustre-alphabetical-ordering caveat as the disabled
-  // sibling test — the substring contract carries the
-  // `aria-label` < `class` < `type` ordering and would break
-  // under a Lustre attribute-sort change without the underlying
-  // rendering changing. A tree-walking assertion would be more
-  // robust; this assertion stays consistent with the suite's
-  // existing pattern for the moment.
-  let text = two_chapter_text()
-  let flat = pagination.flatten(text)
-  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
-  let model =
-    Model(
-      ..empty_model(),
-      text: Some(text),
-      flat_paragraphs: flat,
-      pages: pages,
-      total_pages: list.length(pages),
-      erased: set.from_list([0]),
-      undo_stack: [0],
-    )
-
-  let rendered = view.view(model) |> element.to_string
-
-  // Undo button is enabled: aria-label present, but no `disabled`
-  // attribute on the same button. We pin the absence of
-  // `disabled` immediately after the aria-label of the undo
-  // button — the turn-page button comes later in the markup with
-  // its own aria-label, so this substring is unambiguous.
-  assert string.contains(
-    rendered,
-    "aria-label=\"Undo last erase\" class=\"btn-bar\" type=\"button\">↩ Undo",
-  )
-}
-
 pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
   // On the last page the turn-page button reads "✓ Finished"
   // (instead of "Turn Page →") and is disabled — there is nowhere
   // forward to go.
   //
-  // Same Lustre-alphabetical-ordering caveat as the undo button
-  // assertions above: this substring depends on
+  // Lustre-alphabetical-ordering caveat: this substring depends on
   // `aria-label` < `class` < `disabled` sorting on the rendered
   // attribute list. A Lustre version bump that changed the sort
   // order would break the assertion without breaking the
@@ -5570,7 +5325,7 @@ pub fn update_books_loaded_error_unsets_loading_and_surfaces_error_test() {
 pub fn update_book_loaded_ok_stamps_text_and_flips_view_to_reader_test() {
   // BookLoaded success delegates the per-text reset to the same
   // `apply_text_load` helper TextLoaded uses (flat_paragraphs cache,
-  // total counts, reset undo / focus / line boxes / bitsets) and
+  // total counts, reset focus / line boxes / bitsets) and
   // additionally flips `view` to `Reader`, records the active book
   // id, clears `library_error`, and resets the fade engine.
   //
@@ -7524,8 +7279,8 @@ pub fn view_omits_jump_overlay_when_menu_closed_test() {
 pub fn view_renders_preview_banner_when_jump_preview_some_test() {
   // The preview banner replaces the regular bottom-bar inner row
   // when `jump_preview` is `Some(_)`. Both action labels and the
-  // page indicator must appear; the regular Manual chrome (Undo,
-  // Turn Page) must not, so the reader has a clean Lock In / Go
+  // page indicator must appear; the regular Manual chrome (Turn
+  // Page) must not, so the reader has a clean Lock In / Go
   // Back surface.
   let preview =
     JumpPreview(
