@@ -13,6 +13,7 @@ import lustre/effect.{type Effect}
 import client/effects.{save_reading_state}
 import client/gestures
 import client/msg.{type Msg}
+import client/reducer/random_delete.{apply_page_deletion}
 import client/state.{type Model, Manual, Model, RealTime}
 import client/state/helpers.{go_to_page}
 
@@ -84,14 +85,21 @@ pub fn apply_touch_end(
           }
         gestures.SwipeLeft -> {
           let advanced = go_to_page(cleared, cleared.current_page + 1)
-          let save_effect = case advanced.current_page == cleared.current_page {
+          case advanced.current_page == cleared.current_page {
             // Clamped to the last page — no real navigation, so no
             // state change to persist. Matches the `NextPage` arm's
             // own "no-op when already on the last page" branch.
-            True -> effect.none()
-            False -> save_reading_state(advanced)
+            True -> #(advanced, effect.none())
+            // A real page turn. Page-per-page random deletion fires on
+            // arrival (a no-op when the toggle is off), mirroring the
+            // `apply_next_page` hook so a swipe and an arrow key delete
+            // the same page identically. The save persists the
+            // freshly-deleted sets with the new page.
+            False -> {
+              let deleted = apply_page_deletion(advanced)
+              #(deleted, save_reading_state(deleted))
+            }
           }
-          #(advanced, save_effect)
         }
         // `SwipeRight` once triggered erase-undo. Erasure is now
         // permanent, so a right swipe carries no meaning — it leaves

@@ -14,6 +14,9 @@ import gleam/option.{None, Some}
 import gleam/set
 import lustre/effect.{type Effect}
 
+import client/deletion.{
+  deletion_granularity_from_wire, deletion_intensity_from_wire,
+}
 import client/effects.{decode_base64_to_indices, repaginate_after_paint}
 import client/ffi
 import client/msg.{type Msg}
@@ -244,6 +247,21 @@ pub fn apply_reading_state_loaded(
           chapter_entries: chapter_entries,
           session_start_page: restamped_start_page,
           session_start_erased_count: restamped_start_erased_count,
+          // Restore the random-deletion settings. The toggle state is
+          // restored but deliberately NOT re-applied here: the loaded
+          // `erased` / `erased_words` sets already carry whatever prior
+          // pages deleted, so re-running the page deletion on load would
+          // at best be a no-op (the seed is deterministic) and at worst
+          // muddy the "don't retroactively re-process on load" contract
+          // the fade engine also honours by loading `Stopped`.
+          random_page_delete_on: state.random_page_delete_on,
+          deletion_granularity: deletion_granularity_from_wire(
+            state.deletion_granularity,
+          ),
+          deletion_intensity: deletion_intensity_from_wire(
+            state.deletion_intensity,
+          ),
+          full_sweep_applied: state.full_sweep_applied,
         )
       // Route through the snapshot funnel so the FFI slot reflects
       // the resumed counters. Without this, the pagehide beacon

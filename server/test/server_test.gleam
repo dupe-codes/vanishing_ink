@@ -164,6 +164,16 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
   use percent_progress <- decode.field("percent_progress", decode.float)
+  use random_page_delete_on <- decode.field(
+    "random_page_delete_on",
+    decode.bool,
+  )
+  use deletion_granularity <- decode.field(
+    "deletion_granularity",
+    decode.string,
+  )
+  use deletion_intensity <- decode.field("deletion_intensity", decode.string)
+  use full_sweep_applied <- decode.field("full_sweep_applied", decode.bool)
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   // Bitsets in `ReadingState` are `BitArray`, but the wire form is
   // base64. Decoding through the `String` and re-base64-decoding keeps
@@ -177,6 +187,10 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
     word_bitset: word,
     current_page: current_page,
     percent_progress: percent_progress,
+    random_page_delete_on: random_page_delete_on,
+    deletion_granularity: deletion_granularity,
+    deletion_intensity: deletion_intensity,
+    full_sweep_applied: full_sweep_applied,
     updated_at: updated_at,
   ))
 }
@@ -411,6 +425,10 @@ pub fn get_reading_state_for_unwritten_book_returns_empty_default_test() {
       word_bitset: None,
       current_page: 0,
       percent_progress: 0.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: None,
     )
 }
@@ -455,6 +473,10 @@ pub fn put_reading_state_round_trips_through_http_test() {
       word_bitset: None,
       current_page: 5,
       percent_progress: 60.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       // Canonicalised to millisecond precision so all timestamps
       // share width — `parse_iso8601` always emits `.sss`.
       updated_at: Some("2026-05-12T02:00:00.000Z"),
@@ -516,6 +538,10 @@ pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
       word_bitset: None,
       current_page: 7,
       percent_progress: 0.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T03:00:00.000Z"),
     )
 
@@ -674,6 +700,10 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
       word_bitset: None,
       current_page: 4,
       percent_progress: 42.5,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T02:00:00.000Z"),
     )
   assert mid_decoded == mid_expected
@@ -708,6 +738,10 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
       word_bitset: None,
       current_page: 9,
       percent_progress: 100.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T03:00:00.000Z"),
     )
   assert upper_decoded == upper_expected
@@ -744,6 +778,10 @@ pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
       word_bitset: None,
       current_page: 3,
       percent_progress: 0.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T02:00:00.000Z"),
     )
   assert decoded == expected
@@ -751,6 +789,101 @@ pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
   let get_response = http_get_reading_state(ctx, created.book.id)
   let reloaded = decode_body(get_response, reading_state_wire_decoder())
   assert reloaded == expected
+}
+
+/// Round-trip the random destructive deletion settings end-to-end. The
+/// PUT body carries non-default values for all four fields, the response
+/// echoes them, and a subsequent GET resurfaces them from the
+/// `reading_state` columns. Pinning the whole `ReadingState` keeps a
+/// silent drop of any one field from slipping through.
+pub fn put_reading_state_round_trips_random_delete_settings_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(2)),
+      #("percent_progress", json.float(20.0)),
+      #("random_page_delete_on", json.bool(True)),
+      #("deletion_granularity", json.string("phrase")),
+      #("deletion_intensity", json.string("high")),
+      #("full_sweep_applied", json.bool(True)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  let expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 2,
+      percent_progress: 20.0,
+      random_page_delete_on: True,
+      deletion_granularity: "phrase",
+      deletion_intensity: "high",
+      full_sweep_applied: True,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert decoded == expected
+
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let reloaded = decode_body(get_response, reading_state_wire_decoder())
+  assert reloaded == expected
+}
+
+/// A PUT with an unknown `deletion_granularity` is refused with a 400 —
+/// the column is a free `TEXT`, so the closed-vocabulary guard at the
+/// handler boundary is what keeps a garbage value off disk. The
+/// intensity vocabulary is guarded the same way.
+pub fn put_reading_state_rejects_unknown_deletion_granularity_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("percent_progress", json.float(0.0)),
+      #("deletion_granularity", json.string("paragraph")),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 400
+}
+
+/// A PUT that omits the random-deletion fields lands with the
+/// schema-default "feature off, gentlest settings" — the optional-field
+/// decode keeps a client that predates the feature from 400-ing.
+pub fn put_reading_state_defaults_random_delete_when_absent_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body = put_reading_state_body("manual", 1, "2026-05-12T02:00:00Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  assert decoded
+    == ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 1,
+      percent_progress: 0.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
 }
 
 /// A PUT with a `percent_progress` outside `[0, 100]` is refused with
@@ -822,6 +955,10 @@ pub fn reading_state_upsert_last_write_wins_test() {
       word_bitset: None,
       current_page: 3,
       percent_progress: 30.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: "2026-05-12T02:00:00Z",
     )
 
@@ -836,6 +973,10 @@ pub fn reading_state_upsert_last_write_wins_test() {
       word_bitset: None,
       current_page: 99,
       percent_progress: 99.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: "2026-05-12T01:00:00Z",
     )
 
@@ -851,6 +992,10 @@ pub fn reading_state_upsert_last_write_wins_test() {
       word_bitset: None,
       current_page: 3,
       percent_progress: 30.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T02:00:00Z"),
     )
 
@@ -864,6 +1009,10 @@ pub fn reading_state_upsert_last_write_wins_test() {
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
       percent_progress: 70.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: "2026-05-12T03:00:00Z",
     )
   let assert Ok(Some(state)) = db.get_reading_state(ctx.db, "book-1")
@@ -875,6 +1024,10 @@ pub fn reading_state_upsert_last_write_wins_test() {
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
       percent_progress: 70.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
       updated_at: Some("2026-05-12T03:00:00Z"),
     )
 }
@@ -2300,6 +2453,101 @@ pub fn ensure_reading_state_percent_progress_column_migrates_pre_percent_progres
       with: [],
       expecting: row_decoder,
     )
+
+  let assert Ok(_) = sqlight.close(conn)
+}
+
+pub fn ensure_reading_state_random_delete_columns_migrates_pre_random_delete_schema_test() {
+  // Mirror the precedent set by `ensure_reading_state_percent_progress_
+  // column_migrates_pre_percent_progress_schema_test` above. The four
+  // ALTER TABLE branches in `ensure_reading_state_random_delete_columns`
+  // only fire against tables created before the random-deletion columns
+  // landed; every test that goes through `db.initialize` on a fresh
+  // `:memory:` database picks the columns up from the inline
+  // `CREATE TABLE IF NOT EXISTS` and never drives the migration. This
+  // test hand-builds a pre-random-delete `reading_state` table, seeds a
+  // row, runs the migration, and asserts both that all four columns
+  // appear AND that the seeded row reads back at the schema defaults
+  // ("feature off, gentlest settings": `random_page_delete_on = 0`,
+  // `deletion_granularity = 'word'`, `deletion_intensity = 'low'`,
+  // `full_sweep_applied = 0`) — not a backfill, not an error. Idempotency
+  // is then asserted: a second call leaves the row's defaults undisturbed.
+  let assert Ok(conn) = sqlight.open(":memory:")
+  // The pre-random-delete schema carries `percent_progress` (it post-
+  // dates that migration) but omits the four random-deletion columns and
+  // the FK reference (FK enforcement is off by default, so a hand-built
+  // standalone `reading_state` table is sufficient for the migration
+  // path under test).
+  let pre_random_delete_schema =
+    "CREATE TABLE reading_state (
+       book_id TEXT PRIMARY KEY,
+       mode TEXT NOT NULL DEFAULT 'manual',
+       sentence_bitset BLOB,
+       word_bitset BLOB,
+       current_page INTEGER NOT NULL DEFAULT 0,
+       percent_progress REAL NOT NULL DEFAULT 0.0,
+       updated_at TEXT NOT NULL
+     );"
+  let assert Ok(_) = sqlight.exec(pre_random_delete_schema, conn)
+
+  // Seed a row at the pre-random-delete schema so the migration runs
+  // against non-empty data. The contract under test: after the ALTER
+  // TABLE ADD COLUMN passes, this pre-existing row must read back at the
+  // declared column defaults.
+  let seed_row_sql =
+    "INSERT INTO reading_state (book_id, mode, sentence_bitset, word_bitset,
+      current_page, percent_progress, updated_at)
+     VALUES ('legacy-1', 'manual', NULL, NULL, 3, 0.0,
+       '2026-04-01T12:00:00Z');"
+  let assert Ok(_) = sqlight.exec(seed_row_sql, conn)
+
+  // Sanity: the table starts without the random-deletion columns. A
+  // SELECT touching one must fail with a column-missing error — confirms
+  // the seed schema is genuinely pre-random-delete.
+  let assert Error(_) =
+    sqlight.exec("SELECT random_page_delete_on FROM reading_state;", conn)
+
+  // First run: the migration adds all four columns.
+  let assert Ok(Nil) = db.ensure_reading_state_random_delete_columns(conn)
+  let assert Ok(_) =
+    sqlight.exec(
+      "SELECT random_page_delete_on, deletion_granularity,
+        deletion_intensity, full_sweep_applied FROM reading_state;",
+      conn,
+    )
+
+  // The pre-existing row reads back at the schema defaults — each column
+  // default lands on every existing row, and the seeded row is still
+  // there with its original `book_id` and `current_page`.
+  let row_decoder = {
+    use book_id <- decode.field(0, decode.string)
+    use current_page <- decode.field(1, decode.int)
+    use random_page_delete_on <- decode.field(2, decode.int)
+    use deletion_granularity <- decode.field(3, decode.string)
+    use deletion_intensity <- decode.field(4, decode.string)
+    use full_sweep_applied <- decode.field(5, decode.int)
+    decode.success(#(
+      book_id,
+      current_page,
+      random_page_delete_on,
+      deletion_granularity,
+      deletion_intensity,
+      full_sweep_applied,
+    ))
+  }
+  let select_sql =
+    "SELECT book_id, current_page, random_page_delete_on,
+      deletion_granularity, deletion_intensity, full_sweep_applied
+     FROM reading_state;"
+  let assert Ok([#("legacy-1", 3, 0, "word", "low", 0)]) =
+    sqlight.query(select_sql, on: conn, with: [], expecting: row_decoder)
+
+  // Second run: the per-column probe sees every column already present
+  // and skips all four ALTERs. Still `Ok(Nil)`, still leaves the columns
+  // intact, and the seeded row's defaults are undisturbed.
+  let assert Ok(Nil) = db.ensure_reading_state_random_delete_columns(conn)
+  let assert Ok([#("legacy-1", 3, 0, "word", "low", 0)]) =
+    sqlight.query(select_sql, on: conn, with: [], expecting: row_decoder)
 
   let assert Ok(_) = sqlight.close(conn)
 }

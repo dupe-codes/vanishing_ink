@@ -310,6 +310,16 @@ pub fn cover_color_for_title(title: String) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Random destructive deletion
+// ---------------------------------------------------------------------------
+//
+// The `DeletionGranularity` / `DeletionIntensity` types live below by
+// type-gravity (the `Model` carries them). The wire vocabulary, seed
+// derivation, and intensity-to-count maths that operate on them were
+// extracted to `client/deletion` to keep this module within the file
+// budget — see that module's header.
+
+// ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 
@@ -335,6 +345,35 @@ pub type View {
 pub type Mode {
   Manual
   RealTime
+}
+
+/// Granularity of a random destructive deletion — the size of the
+/// unit that vanishes when the page-per-page toggle or the full-sweep
+/// action fires. A fixed reader setting, persisted per book.
+///
+/// * `DeleteWord` — individual words vanish.
+/// * `DeletePhrase` — an N-consecutive-word window *within a single
+///   sentence* vanishes (N is a deterministic 3–7 bounded to the
+///   sentence; the window never crosses a sentence boundary).
+///   There is no phrase segmenter in the codebase; this windowing
+///   definition is the phrase. Punctuation-clause splitting is out of
+///   scope.
+/// * `DeleteSentence` — whole sentences vanish, projected onto their
+///   constituent words the same way `apply_erase` does so session
+///   word-counts stay correct.
+pub type DeletionGranularity {
+  DeleteWord
+  DeletePhrase
+  DeleteSentence
+}
+
+/// Reader-facing intensity of a random destructive deletion. Maps to a
+/// fraction of the units in the relevant scope: `Low` ≈ 10%,
+/// `Medium` ≈ 25%, `High` ≈ 50%. Persisted per book.
+pub type DeletionIntensity {
+  Low
+  Medium
+  High
 }
 
 /// Lifecycle state of the real-time fade engine. `Stopped` means
@@ -634,6 +673,28 @@ pub type Model {
     reduced_motion: Bool,
     settings_open: Bool,
     mode: Mode,
+    /// Page-per-page random deletion toggle. While `True`, every page
+    /// that loads (a page turn, or the moment the toggle flips on)
+    /// immediately deletes a subportion of *that page's* units before
+    /// the reader reads them. Toggling off stops future pages from
+    /// being touched; already-deleted text stays deleted (deletion is
+    /// permanent). Persisted per book, but — like the fade engine,
+    /// which always loads `Stopped` — a resumed session does not
+    /// retroactively re-process loaded pages: the `erased` /
+    /// `erased_words` sets already carry whatever was deleted before.
+    random_page_delete_on: Bool,
+    /// Granularity of both random-deletion affordances. Default
+    /// `DeleteWord`. Persisted per book.
+    deletion_granularity: DeletionGranularity,
+    /// Intensity of both random-deletion affordances. Default `Low`.
+    /// Persisted per book.
+    deletion_intensity: DeletionIntensity,
+    /// Per-book once-only guard for the full-sweep action. Set `True`
+    /// after a successful "Sweep this book", which disables the button
+    /// for that book forever. Persisted. The deterministic seed makes a
+    /// re-sweep idempotent even without this guard, but the guard is
+    /// what the UI reads to disable the irreversible action.
+    full_sweep_applied: Bool,
     wpm: Int,
     engine_state: EngineState,
     next_word_index: Option(Int),

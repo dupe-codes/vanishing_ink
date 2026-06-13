@@ -45,7 +45,7 @@ import client/engine.{
   resolve_active_line,
 }
 import client/msg.{
-  type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
+  type Msg, AdvanceWord, ApplyFullSweep, BookCreated, BookDeleted, BookLoaded,
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
   EraseSentence, ExecuteDelete, FetchBookStatsResult,
@@ -54,14 +54,15 @@ import client/msg.{
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
   ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
-  SessionEnded, SetEditMetadataAuthor, SetEditMetadataGenre,
-  SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
-  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
-  ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
-  TouchStart, UndoJump, ViewportResized, VisibilityChanged,
+  SessionEnded, SetDeletionGranularity, SetDeletionIntensity,
+  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
+  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleJumpMenu, TogglePageDelete, ToggleReaderStats,
+  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, UndoJump,
+  ViewportResized, VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -83,6 +84,10 @@ import client/reducer/metadata.{
   apply_open_edit_metadata, apply_set_edit_metadata_author,
   apply_set_edit_metadata_genre, apply_set_edit_metadata_title,
   apply_submit_edit_metadata,
+}
+import client/reducer/random_delete.{
+  apply_full_sweep, apply_page_deletion, apply_set_deletion_granularity,
+  apply_set_deletion_intensity, apply_toggle_page_delete,
 }
 import client/reducer/session.{
   apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,
@@ -142,25 +147,29 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(new_model, save_reading_state(new_model))
     }
 
-    FocusPrevious -> #(
-      focus_sentence_step(model, navigation.Backward),
-      effect.none(),
-    )
+    FocusPrevious ->
+      apply_focus_navigation(
+        model,
+        focus_sentence_step(model, navigation.Backward),
+      )
 
-    FocusNext -> #(
-      focus_sentence_step(model, navigation.Forward),
-      effect.none(),
-    )
+    FocusNext ->
+      apply_focus_navigation(
+        model,
+        focus_sentence_step(model, navigation.Forward),
+      )
 
-    FocusParagraphUp -> #(
-      focus_paragraph_step(model, navigation.Backward),
-      effect.none(),
-    )
+    FocusParagraphUp ->
+      apply_focus_navigation(
+        model,
+        focus_paragraph_step(model, navigation.Backward),
+      )
 
-    FocusParagraphDown -> #(
-      focus_paragraph_step(model, navigation.Forward),
-      effect.none(),
-    )
+    FocusParagraphDown ->
+      apply_focus_navigation(
+        model,
+        focus_paragraph_step(model, navigation.Forward),
+      )
 
     EraseFocused -> {
       let new_model = apply_erase_focused(model)
@@ -194,6 +203,16 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     ToggleDyslexiaFont -> apply_toggle_dyslexia_font(model)
 
     SetMode(mode) -> apply_set_mode(model, mode)
+
+    TogglePageDelete -> apply_toggle_page_delete(model)
+
+    SetDeletionGranularity(granularity) ->
+      apply_set_deletion_granularity(model, granularity)
+
+    SetDeletionIntensity(intensity) ->
+      apply_set_deletion_intensity(model, intensity)
+
+    ApplyFullSweep -> apply_full_sweep(model)
 
     SpacePressed -> apply_space_pressed(model)
 
@@ -615,8 +634,15 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
       // `go_to_page` (via `change_page`) already refreshed the
       // chapter list against the new page; only the overlay caches
       // remain to clear here.
+      //
+      // Page-per-page random deletion fires here, on page arrival: when
+      // the toggle is on, the page the reader just turned to loses a
+      // subportion of its units before they read it. A no-op when the
+      // toggle is off. The save below persists the freshly-deleted sets
+      // alongside the new `current_page`.
+      let deleted = apply_page_deletion(updated)
       let with_cleared_overlay =
-        Model(..updated, line_boxes: [], active_line: None)
+        Model(..deleted, line_boxes: [], active_line: None)
       #(
         with_cleared_overlay,
         effect.batch([
@@ -625,6 +651,29 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
         ]),
       )
     }
+  }
+}
+
+/// Commit the result of a vim focus-navigation step, persisting the
+/// reading state only when the move crossed onto a different page.
+///
+/// Vim navigation reaches new pages through `move_focus`/`change_page`
+/// rather than through `NextPage`, and `move_focus` now fires
+/// page-per-page random deletion on every page arrival (see
+/// `client/reducer/focus.move_focus`). A reader advancing forward past a
+/// page boundary with vim keys would otherwise land on an un-decimated
+/// page — the gap Critic Lockwood flagged. Because deletion can only run
+/// when the page actually changed, the persistence is gated on the same
+/// condition: an intra-page cursor step grows nothing and stays
+/// effect-free, exactly as before, so per-keystroke saves are not
+/// introduced for ordinary same-page navigation.
+fn apply_focus_navigation(
+  model: Model,
+  stepped: Model,
+) -> #(Model, Effect(Msg)) {
+  case stepped.current_page == model.current_page {
+    True -> #(stepped, effect.none())
+    False -> #(stepped, save_reading_state(stepped))
   }
 }
 

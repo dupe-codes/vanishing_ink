@@ -23,6 +23,7 @@ import gleam/result
 import gleam/set.{type Set}
 import lustre/effect.{type Effect}
 
+import client/deletion
 import client/epub
 import client/ffi
 import client/msg.{
@@ -245,6 +246,20 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
           // server view of progress in lock-step with the bar the
           // reader sees rendered on screen.
           #("percent_progress", json.float(helpers.progress_percentage(model))),
+          #("random_page_delete_on", json.bool(model.random_page_delete_on)),
+          #(
+            "deletion_granularity",
+            json.string(deletion.deletion_granularity_to_wire(
+              model.deletion_granularity,
+            )),
+          ),
+          #(
+            "deletion_intensity",
+            json.string(deletion.deletion_intensity_to_wire(
+              model.deletion_intensity,
+            )),
+          ),
+          #("full_sweep_applied", json.bool(model.full_sweep_applied)),
           #("updated_at", json.string(ffi.now_iso8601())),
         ])
         |> json.to_string

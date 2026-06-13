@@ -2358,3 +2358,67 @@ body.vi-light-mode .btn-edit-metadata:focus-visible {
 .edit-metadata-field {
   display: block;
 }
+
+/* ---------------------------------------------------------------------------
+ * Random destructive deletion controls (settings panel)
+ * ------------------------------------------------------------------------- */
+
+.settings-random-delete {
+  /* Groups the page-per-page toggle, the granularity / intensity
+   * segmented selectors, and the once-per-book sweep button under one
+   * labelled section. Spacing matches the per-book override block so the
+   * two reader-only sections read as siblings. */
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-row-hint {
+  /* Explanatory copy under a section header — muted so it reads as a
+   * caption, not a control. Shared with the per-book override section. */
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--vi-fg-muted);
+}
+
+.settings-segmented {
+  /* A row of mutually-exclusive choice pills (granularity / intensity).
+   * Each child stretches to share the width evenly. */
+  display: flex;
+  gap: 8px;
+}
+
+.settings-segment {
+  flex: 1 1 0;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  background-color: var(--vi-surface);
+  border: 1px solid var(--vi-surface-border);
+  border-radius: 10px;
+  height: 40px;
+  color: var(--vi-fg-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  transition: color var(--vi-chrome-transition),
+              background-color var(--vi-chrome-transition),
+              border-color var(--vi-chrome-transition);
+}
+
+.settings-segment:hover,
+.settings-segment:focus-visible {
+  color: var(--vi-fg);
+  outline: none;
+}
+
+.settings-segment.is-active {
+  /* The selected choice inverts to the accent so the current
+   * granularity / intensity is unambiguous at a glance. */
+  background-color: var(--vi-accent);
+  border-color: var(--vi-accent);
+  color: #ffffff;
+  font-weight: 600;
+}

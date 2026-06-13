@@ -25,6 +25,7 @@ import client/state.{
 }
 import client/types.{type BookSettings}
 import client/view/overlay_helpers.{stop_click_propagation}
+import client/view/random_delete
 
 /// Render the settings overlay (scrim + sheet).
 pub fn view(model: Model) -> Element(Msg) {
@@ -85,6 +86,7 @@ fn view_settings_sheet(model: Model) -> Element(Msg) {
     view_ghost_mode_toggle(model),
     view_ghost_opacity_slider(model),
     view_dyslexia_font_toggle(model),
+    random_delete.view_section(model),
     view_book_override_section(model),
   ])
 }
