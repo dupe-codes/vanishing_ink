@@ -164,7 +164,10 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
   use percent_progress <- decode.field("percent_progress", decode.float)
-  use random_page_delete_on <- decode.field("random_page_delete_on", decode.bool)
+  use random_page_delete_on <- decode.field(
+    "random_page_delete_on",
+    decode.bool,
+  )
   use deletion_granularity <- decode.field(
     "deletion_granularity",
     decode.string,

@@ -335,7 +335,9 @@ pub const full_sweep_seed_salt: Int = 2_654_435_761
 /// the feature's tests depend on.
 const seed_modulus: Int = 2_147_483_647
 
-pub fn deletion_granularity_to_wire(granularity: DeletionGranularity) -> String {
+pub fn deletion_granularity_to_wire(
+  granularity: DeletionGranularity,
+) -> String {
   case granularity {
     DeleteWord -> "word"
     DeletePhrase -> "phrase"

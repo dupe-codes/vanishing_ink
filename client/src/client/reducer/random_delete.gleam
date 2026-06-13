@@ -140,7 +140,10 @@ fn delete_words(
   // book on a full sweep, which the codebase prefers over re-flattening
   // and re-picking per unit.
   let #(picked, _seed) = random.step(random.sample(candidates, target), seed)
-  #(erased, list.fold(picked, erased_words, fn(acc, idx) { set.insert(acc, idx) }))
+  #(
+    erased,
+    list.fold(picked, erased_words, fn(acc, idx) { set.insert(acc, idx) }),
+  )
 }
 
 fn delete_sentences(

@@ -54,16 +54,15 @@ import client/msg.{
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
   ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
-  SessionEnded, SetEditMetadataAuthor, SetEditMetadataGenre,
-  SetDeletionGranularity, SetDeletionIntensity, SetEditMetadataTitle,
-  SetFontSize, SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery,
-  SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay, SetPasteText,
-  SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
-  SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, TogglePageDelete,
-  ToggleJumpMenu, ToggleReaderStats, ToggleSettings, ToggleStatsView,
-  TouchCancel, TouchEnd, TouchStart, UndoJump, ViewportResized,
-  VisibilityChanged,
+  SessionEnded, SetDeletionGranularity, SetDeletionIntensity,
+  SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
+  SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
+  SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
+  SettingsLoaded, SpacePressed, StartFade, SubmitEditMetadata, SubmitJumpPage,
+  SubmitPaste, TextLoaded, ToggleAddBook, ToggleDarkMode, ToggleDyslexiaFont,
+  ToggleGhostMode, ToggleJumpMenu, TogglePageDelete, ToggleReaderStats,
+  ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd, TouchStart, UndoJump,
+  ViewportResized, VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -80,15 +79,15 @@ import client/reducer/jump.{
   apply_set_jump_search_query, apply_submit_jump_page, apply_toggle_jump_menu,
   apply_undo_jump,
 }
-import client/reducer/random_delete.{
-  apply_full_sweep, apply_page_deletion, apply_set_deletion_granularity,
-  apply_set_deletion_intensity, apply_toggle_page_delete,
-}
 import client/reducer/metadata.{
   apply_book_metadata_updated, apply_close_edit_metadata,
   apply_open_edit_metadata, apply_set_edit_metadata_author,
   apply_set_edit_metadata_genre, apply_set_edit_metadata_title,
   apply_submit_edit_metadata,
+}
+import client/reducer/random_delete.{
+  apply_full_sweep, apply_page_deletion, apply_set_deletion_granularity,
+  apply_set_deletion_intensity, apply_toggle_page_delete,
 }
 import client/reducer/session.{
   apply_fetch_book_stats_result, apply_fetch_library_book_stats_result,

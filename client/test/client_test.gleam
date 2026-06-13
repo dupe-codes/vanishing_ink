@@ -37,8 +37,8 @@ import lustre/vdom/vattr
 import lustre/vdom/vnode
 import shared
 import shared/segmenter.{
-  type Paragraph, type SegmentedText, type Sentence, Chapter, Paragraph,
-  SegmentedText, Sentence, Word,
+  type Paragraph, type SegmentedText, type Sentence, type Word, Chapter,
+  Paragraph, SegmentedText, Sentence, Word,
 }
 
 import gleam/dynamic
@@ -51,27 +51,32 @@ import client/epub.{
 import client/ffi
 import client/gestures
 import client/msg.{
-  AdvanceWord, BookCreated, BookDeleted, BookLoaded, BookMetadataUpdated,
-  BookSettingsLoaded, BooksLoaded, CancelDelete, CloseEditMetadata,
-  ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused, EraseSentence,
-  ExecuteDelete, FetchSpeedTrendResult, FocusNext, FocusParagraphDown,
-  FocusParagraphUp, FocusPrevious, GoToLibrary, JumpToChapter, JumpToPage,
-  LinesMeasured, LockInJump, NextPage, NoOp, OpenBook, OpenEditMetadata,
-  ParagraphsMeasured, PauseFade, ReadingStateLoaded, ResetBookSettings,
-  ResumeFade, SelectSearchResult, SetEditMetadataAuthor, SetEditMetadataGenre,
+  AdvanceWord, ApplyFullSweep, BookCreated, BookDeleted, BookLoaded,
+  BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
+  CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
+  EraseSentence, ExecuteDelete, FetchSpeedTrendResult, FocusNext,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
+  OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
+  ResetBookSettings, ResumeFade, SelectSearchResult, SetDeletionGranularity,
+  SetDeletionIntensity, SetEditMetadataAuthor, SetEditMetadataGenre,
   SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
   SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
   SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
   ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
-  ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
-  TouchStart, UndoJump, ViewportResized,
+  TogglePageDelete, ToggleReaderStats, ToggleSettings, ToggleStatsView,
+  TouchCancel, TouchEnd, TouchStart, UndoJump, ViewportResized,
 }
 import client/numeric
 import client/pagination.{type Page, Page}
 import client/reducer
 import client/reducer/book as book_reducer
 import client/reducer/jump as jump_reducer
+import client/reducer/random_delete.{
+  type SentenceUnit, SentenceUnit, apply_full_sweep, apply_page_deletion,
+  book_units, delete_units, page_units,
+}
 import client/reducer/session as session_reducer
 import client/sample
 import client/search.{SearchResult}
@@ -9648,4 +9653,480 @@ fn search_test_page(index: Int, word_texts: List(String)) -> Page {
       paragraph: paragraph,
     )
   Page(index: index, paragraphs: [page_paragraph])
+}
+
+// ---------------------------------------------------------------------------
+// Random destructive deletion
+// ---------------------------------------------------------------------------
+//
+// Two fixtures:
+//
+//   * `delete_fixture_units` — four sentences of five words each (20
+//     words, global indices 0..19) fed straight into the pure
+//     `delete_units` so the deterministic pick can be pinned exactly
+//     against a fixed seed.
+//   * `deletion_model` — a two-page book (page 0 = words 0..9, page 1 =
+//     words 10..19), each page one paragraph of one ten-word sentence,
+//     so the page-scope / full-sweep reducer arms can be exercised with
+//     a real `Model`.
+
+fn delete_fixture_units() -> List(SentenceUnit) {
+  [
+    SentenceUnit(sentence_index: 0, word_indices: [0, 1, 2, 3, 4]),
+    SentenceUnit(sentence_index: 1, word_indices: [5, 6, 7, 8, 9]),
+    SentenceUnit(sentence_index: 2, word_indices: [10, 11, 12, 13, 14]),
+    SentenceUnit(sentence_index: 3, word_indices: [15, 16, 17, 18, 19]),
+  ]
+}
+
+fn ten_words(base: Int) -> List(Word) {
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+  |> list.map(fn(i) { Word(index: i, global_index: base + i, text: "w") })
+}
+
+fn deletion_text() -> SegmentedText {
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      Paragraph(index: 0, sentences: [
+        Sentence(index: 0, global_index: 0, words: ten_words(0)),
+      ]),
+      Paragraph(index: 1, sentences: [
+        Sentence(index: 1, global_index: 1, words: ten_words(10)),
+      ]),
+    ]),
+  ])
+}
+
+fn deletion_pages() -> List(Page) {
+  pagination.flatten(deletion_text())
+  |> list.index_map(fn(page_paragraph, i) {
+    Page(index: i, paragraphs: [page_paragraph])
+  })
+}
+
+fn deletion_model() -> Model {
+  let text = deletion_text()
+  Model(
+    ..empty_model(),
+    text: Some(text),
+    flat_paragraphs: pagination.flatten(text),
+    pages: deletion_pages(),
+    total_pages: 2,
+    active_book_id: Some("seed-book"),
+  )
+}
+
+fn sorted(s: set.Set(Int)) -> List(Int) {
+  s |> set.to_list |> list.sort(int.compare)
+}
+
+pub fn delete_units_word_granularity_is_deterministic_and_exact_test() {
+  // Pinned against seed 42 over the 20-word fixture. The exact picks are
+  // a regression lock on the PCG stream — `Low` deletes 10% (2 words),
+  // `Medium` 25% (5), `High` 50% (10). No sentence is ever inserted into
+  // `erased` at word granularity.
+  let e = set.new()
+  let w = set.new()
+
+  let #(le, lw) =
+    delete_units(delete_fixture_units(), DeleteWord, Low, 42, e, w)
+  assert le == set.new()
+  assert sorted(lw) == [8, 19]
+
+  let #(_me, mw) =
+    delete_units(delete_fixture_units(), DeleteWord, Medium, 42, e, w)
+  assert sorted(mw) == [1, 8, 12, 15, 16]
+
+  let #(_he, hw) =
+    delete_units(delete_fixture_units(), DeleteWord, High, 42, e, w)
+  assert sorted(hw) == [1, 6, 8, 9, 10, 12, 13, 15, 17, 18]
+}
+
+pub fn delete_units_count_matches_intensity_fraction_test() {
+  let e = set.new()
+  let w = set.new()
+  let #(_, lw) = delete_units(delete_fixture_units(), DeleteWord, Low, 1, e, w)
+  let #(_, mw) =
+    delete_units(delete_fixture_units(), DeleteWord, Medium, 1, e, w)
+  let #(_, hw) = delete_units(delete_fixture_units(), DeleteWord, High, 1, e, w)
+  assert set.size(lw) == 2
+  assert set.size(mw) == 5
+  assert set.size(hw) == 10
+}
+
+pub fn delete_units_is_deterministic_across_calls_test() {
+  let a =
+    delete_units(
+      delete_fixture_units(),
+      DeleteWord,
+      Medium,
+      7,
+      set.new(),
+      set.new(),
+    )
+  let b =
+    delete_units(
+      delete_fixture_units(),
+      DeleteWord,
+      Medium,
+      7,
+      set.new(),
+      set.new(),
+    )
+  assert a == b
+}
+
+pub fn delete_units_sentence_granularity_projects_words_test() {
+  // Sentence granularity inserts the picked sentence's `global_index`
+  // into `erased` AND projects every one of its words into
+  // `erased_words` — mirroring `apply_erase` so session word-counts
+  // stay correct. High over four sentences picks two (4 / 2).
+  let #(es, ws) =
+    delete_units(
+      delete_fixture_units(),
+      DeleteSentence,
+      High,
+      42,
+      set.new(),
+      set.new(),
+    )
+  assert sorted(es) == [1, 3]
+  // Sentences 1 (words 5..9) and 3 (words 15..19) projected in full.
+  assert sorted(ws) == [5, 6, 7, 8, 9, 15, 16, 17, 18, 19]
+}
+
+pub fn delete_units_phrase_granularity_stays_within_sentences_test() {
+  // Phrase granularity deletes a contiguous within-sentence window and
+  // never erases a whole sentence (so `erased` stays empty). Pinned:
+  // seed 42 picks sentences 1 and 3, each yielding a 3-word window that
+  // sits inside the sentence's own range — no cross-sentence-boundary
+  // bleed.
+  let #(es, ws) =
+    delete_units(
+      delete_fixture_units(),
+      DeletePhrase,
+      High,
+      42,
+      set.new(),
+      set.new(),
+    )
+  assert es == set.new()
+  assert sorted(ws) == [6, 7, 8, 16, 17, 18]
+}
+
+pub fn delete_units_is_idempotent_test() {
+  // Re-applying a deletion by feeding its own result back in re-computes
+  // the identical pick (fixed seed, full candidate set) and re-writes the
+  // same indices — a no-op against the sets that already hold them. This
+  // is what prevents revisits from compounding.
+  let fixture = delete_fixture_units()
+  let #(e1, w1) =
+    delete_units(fixture, DeleteWord, High, 99, set.new(), set.new())
+  let #(e2, w2) = delete_units(fixture, DeleteWord, High, 99, e1, w1)
+  assert e2 == e1
+  assert w2 == w1
+
+  // Same property at sentence granularity.
+  let #(se1, sw1) =
+    delete_units(fixture, DeleteSentence, High, 99, set.new(), set.new())
+  let #(se2, sw2) = delete_units(fixture, DeleteSentence, High, 99, se1, sw1)
+  assert se2 == se1
+  assert sw2 == sw1
+}
+
+pub fn page_deletion_only_touches_current_page_test() {
+  // Page-per-page deletion enumerates only the current page's units, so a
+  // deletion on page 0 can never reach page 1's word indices (10..19).
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let updated = apply_page_deletion(model)
+  assert set.size(updated.erased_words) == 5
+  assert list.all(set.to_list(updated.erased_words), fn(i) { i < 10 })
+}
+
+pub fn page_deletion_is_noop_when_toggle_off_test() {
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: False,
+      deletion_intensity: High,
+    )
+  let updated = apply_page_deletion(model)
+  assert updated.erased_words == set.new()
+  assert updated.erased == set.new()
+}
+
+pub fn next_page_applies_page_deletion_when_toggle_on_test() {
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let #(updated, _eff) = reducer.update(model, NextPage)
+  assert updated.current_page == 1
+  // The arrived page (page 1, words 10..19) is what loses text.
+  assert set.size(updated.erased_words) == 5
+  assert list.all(set.to_list(updated.erased_words), fn(i) {
+    i >= 10 && i <= 19
+  })
+}
+
+pub fn next_page_does_not_delete_when_toggle_off_test() {
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: False,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let #(updated, _eff) = reducer.update(model, NextPage)
+  assert updated.current_page == 1
+  assert updated.erased_words == set.new()
+}
+
+pub fn toggle_page_delete_on_deletes_current_page_test() {
+  // Enabling the toggle acts immediately on the page already loaded.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: False,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let #(updated, _eff) = reducer.update(model, TogglePageDelete)
+  assert updated.random_page_delete_on
+  assert set.size(updated.erased_words) == 5
+  assert list.all(set.to_list(updated.erased_words), fn(i) { i < 10 })
+}
+
+pub fn full_sweep_touches_whole_book_and_locks_guard_test() {
+  // The full sweep enumerates the whole book, so its pick spans both
+  // pages, and it latches the once-per-book guard.
+  let model =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+    )
+  let #(updated, _eff) = apply_full_sweep(model)
+  assert updated.full_sweep_applied
+  assert set.size(updated.erased_words) == 10
+  assert list.any(set.to_list(updated.erased_words), fn(i) { i < 10 })
+  assert list.any(set.to_list(updated.erased_words), fn(i) { i >= 10 })
+}
+
+pub fn full_sweep_is_once_per_book_test() {
+  // With the guard already set, a sweep deletes nothing — even via the
+  // pure arm.
+  let model =
+    Model(
+      ..deletion_model(),
+      deletion_intensity: High,
+      full_sweep_applied: True,
+    )
+  let #(updated, _eff) = apply_full_sweep(model)
+  assert updated.erased_words == set.new()
+  assert updated.erased == set.new()
+}
+
+pub fn apply_full_sweep_msg_then_second_is_noop_test() {
+  let model =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+    )
+  let #(after_first, _e1) = reducer.update(model, ApplyFullSweep)
+  assert after_first.full_sweep_applied
+  let #(after_second, _e2) = reducer.update(after_first, ApplyFullSweep)
+  // The second sweep is a no-op: the erased set is unchanged.
+  assert after_second.erased_words == after_first.erased_words
+}
+
+pub fn set_deletion_granularity_and_intensity_persist_to_model_test() {
+  let #(g, _ge) =
+    reducer.update(deletion_model(), SetDeletionGranularity(DeleteSentence))
+  assert g.deletion_granularity == DeleteSentence
+  let #(i, _ie) = reducer.update(deletion_model(), SetDeletionIntensity(Medium))
+  assert i.deletion_intensity == Medium
+}
+
+pub fn deletion_count_maps_intensity_to_fraction_test() {
+  assert state.deletion_count(Low, 100) == 10
+  assert state.deletion_count(Medium, 100) == 25
+  assert state.deletion_count(High, 100) == 50
+  // A scope smaller than the divisor deletes nothing.
+  assert state.deletion_count(Low, 5) == 0
+}
+
+pub fn derive_deletion_seed_is_deterministic_test() {
+  // Same book + salt → same seed (the determinism the feature depends
+  // on); a different salt or book → a different stream.
+  assert state.derive_deletion_seed("book-x", 0)
+    == state.derive_deletion_seed("book-x", 0)
+  assert state.derive_deletion_seed("book-x", 0)
+    != state.derive_deletion_seed("book-x", 1)
+  assert state.derive_deletion_seed("book-x", 0)
+    != state.derive_deletion_seed("book-y", 0)
+}
+
+pub fn deletion_wire_conversions_round_trip_test() {
+  assert state.deletion_granularity_from_wire(
+      state.deletion_granularity_to_wire(DeleteWord),
+    )
+    == DeleteWord
+  assert state.deletion_granularity_from_wire(
+      state.deletion_granularity_to_wire(DeletePhrase),
+    )
+    == DeletePhrase
+  assert state.deletion_granularity_from_wire(
+      state.deletion_granularity_to_wire(DeleteSentence),
+    )
+    == DeleteSentence
+  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
+      Low,
+    ))
+    == Low
+  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
+      Medium,
+    ))
+    == Medium
+  assert state.deletion_intensity_from_wire(state.deletion_intensity_to_wire(
+      High,
+    ))
+    == High
+  // Unknown wire values fall back to the safe default.
+  assert state.deletion_granularity_from_wire("paragraph") == DeleteWord
+  assert state.deletion_intensity_from_wire("nuclear") == Low
+}
+
+pub fn reading_state_load_restores_deletion_settings_without_reprocessing_test() {
+  // A reading-state payload carrying deletion settings restores them onto
+  // the model, but loading does NOT re-run any deletion — the bitsets are
+  // null here, so the erased sets stay empty even with the page toggle on.
+  let prior =
+    Model(..empty_model(), view: Reader, active_book_id: Some("book-1"))
+  let body =
+    "{\"book_id\":\"book-1\",\"mode\":\"manual\",\"sentence_bitset\":null,"
+    <> "\"word_bitset\":null,\"current_page\":0,\"percent_progress\":0.0,"
+    <> "\"random_page_delete_on\":true,\"deletion_granularity\":\"sentence\","
+    <> "\"deletion_intensity\":\"high\",\"full_sweep_applied\":true,"
+    <> "\"updated_at\":\"2026-05-13T10:00:00.000Z\"}"
+  let #(updated, _eff) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+  assert updated.random_page_delete_on == True
+  assert updated.deletion_granularity == DeleteSentence
+  assert updated.deletion_intensity == High
+  assert updated.full_sweep_applied == True
+  assert updated.erased == set.new()
+  assert updated.erased_words == set.new()
+}
+
+pub fn reading_state_load_defaults_deletion_settings_for_old_rows_test() {
+  // A payload that predates the feature (no deletion keys) still decodes:
+  // the optional-field defaults land "feature off, gentlest settings".
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-1"),
+      random_page_delete_on: True,
+      full_sweep_applied: True,
+    )
+  let body =
+    "{\"book_id\":\"book-1\",\"mode\":\"manual\",\"sentence_bitset\":null,"
+    <> "\"word_bitset\":null,\"current_page\":0,\"percent_progress\":0.0,"
+    <> "\"updated_at\":\"2026-05-13T10:00:00.000Z\"}"
+  let #(updated, _eff) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+  assert updated.random_page_delete_on == False
+  assert updated.deletion_granularity == DeleteWord
+  assert updated.deletion_intensity == Low
+  assert updated.full_sweep_applied == False
+}
+
+pub fn page_units_enumerate_in_reading_order_test() {
+  let assert Some(page) = pagination.nth(deletion_pages(), 0)
+  let units = page_units(page)
+  assert units
+    == [
+      SentenceUnit(sentence_index: 0, word_indices: [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+      ]),
+    ]
+}
+
+pub fn book_units_span_the_whole_document_test() {
+  let units = book_units(deletion_text())
+  assert units
+    == [
+      SentenceUnit(sentence_index: 0, word_indices: [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+      ]),
+      SentenceUnit(sentence_index: 1, word_indices: [
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      ]),
+    ]
+}
+
+pub fn settings_renders_random_delete_controls_in_reader_test() {
+  // The settings overlay (reader view, active book) surfaces the
+  // page-per-page section: the granularity selector and an enabled
+  // "Sweep this book" button.
+  let model = Model(..deletion_model(), settings_open: True)
+  let tree = view.view(model)
+  assert lustre_query.has(
+    in: tree,
+    matching: lustre_query.attribute("aria-label", "Deletion granularity"),
+  )
+  assert lustre_query.has(
+    in: tree,
+    matching: lustre_query.attribute(
+      "aria-label",
+      "Sweep this book — delete a portion of the whole book at once",
+    ),
+  )
+}
+
+pub fn settings_sweep_button_disabled_after_sweep_test() {
+  // Once the book has been swept, the irreversible action renders
+  // disabled — the once-per-book guard surfaced in the UI.
+  let model =
+    Model(..deletion_model(), settings_open: True, full_sweep_applied: True)
+  let tree = view.view(model)
+  assert lustre_query.has(
+    in: tree,
+    matching: lustre_query.attribute(
+      "aria-label",
+      "Sweep this book — delete a portion of the whole book at once",
+    )
+      |> lustre_query.and(lustre_query.attribute("disabled", "")),
+  )
+}
+
+pub fn settings_random_delete_hidden_in_library_test() {
+  // No active book in the library view → no random-deletion section
+  // (the seed and full-sweep scope both need a loaded book).
+  let model =
+    Model(
+      ..deletion_model(),
+      settings_open: True,
+      view: Library,
+      active_book_id: None,
+    )
+  let tree = view.view(model)
+  assert !lustre_query.has(
+    in: tree,
+    matching: lustre_query.attribute("aria-label", "Deletion granularity"),
+  )
 }
