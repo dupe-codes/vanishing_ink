@@ -60,10 +60,10 @@ import client/msg.{
 }
 import client/reducer
 import client/state.{
-  type Model, Library, Manual, Model, Stopped, body_class_light_mode,
-  body_class_reduced_motion, default_font_size, default_ghost_opacity,
-  default_line_spacing, default_page_delay_ms, default_paragraph_delay_ms,
-  default_wpm, fallback_user_settings,
+  type Model, DeleteWord, Library, Low, Manual, Model, Stopped,
+  body_class_light_mode, body_class_reduced_motion, default_font_size,
+  default_ghost_opacity, default_line_spacing, default_page_delay_ms,
+  default_paragraph_delay_ms, default_wpm, fallback_user_settings,
 }
 import client/view
 
@@ -114,6 +114,10 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       reduced_motion: reduced_motion,
       settings_open: False,
       mode: Manual,
+      random_page_delete_on: False,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: Low,
+      full_sweep_applied: False,
       wpm: default_wpm,
       engine_state: Stopped,
       next_word_index: None,

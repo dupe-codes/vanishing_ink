@@ -76,7 +76,8 @@ import client/reducer/session as session_reducer
 import client/sample
 import client/search.{SearchResult}
 import client/state.{
-  type LineBox, type Model, ChapterEntry, JumpPreview, Library, LineBox, Manual,
+  type LineBox, type Model, ChapterEntry, DeletePhrase, DeleteSentence,
+  DeleteWord, High, JumpPreview, Library, LineBox, Low, Manual, Medium,
   MetadataEdit, Model, Paused, Reader, RealTime, Running, Stopped,
 }
 import client/state/helpers as state_helpers
@@ -137,6 +138,10 @@ fn empty_model() -> Model {
     reduced_motion: False,
     settings_open: False,
     mode: Manual,
+    random_page_delete_on: False,
+    deletion_granularity: DeleteWord,
+    deletion_intensity: Low,
+    full_sweep_applied: False,
     wpm: state.default_wpm,
     engine_state: Stopped,
     next_word_index: None,

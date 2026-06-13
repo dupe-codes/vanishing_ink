@@ -17,7 +17,9 @@ import gleam/dynamic.{type Dynamic}
 
 import client/epub.{type EpubError, type EpubExtract}
 import client/ffi
-import client/state.{type LineBox, type Mode}
+import client/state.{
+  type DeletionGranularity, type DeletionIntensity, type LineBox, type Mode,
+}
 import client/types.{type BookMeta}
 import shared/segmenter.{type SegmentedText}
 
@@ -166,6 +168,34 @@ pub type Msg {
   /// start). The bitsets are not converted — both modes share
   /// the same `Model` and any prior erasures persist.
   SetMode(Mode)
+
+  /// Reader flipped the page-per-page random-deletion toggle in the
+  /// settings panel. Flips `random_page_delete_on`. Turning it on
+  /// immediately deletes a subportion of the *current* page's units
+  /// (the page that is already loaded) so the affordance acts the
+  /// moment it is enabled; every subsequent page turn then deletes from
+  /// the page it lands on. Turning it off leaves prior deletions in
+  /// place — deletion is permanent — and simply stops touching future
+  /// pages. Persisted.
+  TogglePageDelete
+
+  /// Reader picked a deletion granularity (word / phrase / sentence) in
+  /// the settings panel. Writes `deletion_granularity` and persists it.
+  /// Does not retroactively change prior deletions; it governs the next
+  /// page-per-page or full-sweep deletion only.
+  SetDeletionGranularity(DeletionGranularity)
+
+  /// Reader picked a deletion intensity (low / medium / high) in the
+  /// settings panel. Writes `deletion_intensity` and persists it. Like
+  /// `SetDeletionGranularity`, it governs future deletions only.
+  SetDeletionIntensity(DeletionIntensity)
+
+  /// Reader tapped "Sweep this book". Deletes a subportion across the
+  /// whole book at once at the current granularity / intensity, sets
+  /// `full_sweep_applied: True`, and persists. Once per book, ever — a
+  /// no-op when `full_sweep_applied` is already `True` (the button is
+  /// also rendered disabled in that state). Irreversible.
+  ApplyFullSweep
 
   /// Reader pressed Space (desktop) or tapped the reader page
   /// (mobile). In `Manual` mode this is forwarded to

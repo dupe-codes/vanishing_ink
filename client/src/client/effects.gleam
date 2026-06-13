@@ -245,6 +245,20 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
           // server view of progress in lock-step with the bar the
           // reader sees rendered on screen.
           #("percent_progress", json.float(helpers.progress_percentage(model))),
+          #("random_page_delete_on", json.bool(model.random_page_delete_on)),
+          #(
+            "deletion_granularity",
+            json.string(state.deletion_granularity_to_wire(
+              model.deletion_granularity,
+            )),
+          ),
+          #(
+            "deletion_intensity",
+            json.string(state.deletion_intensity_to_wire(
+              model.deletion_intensity,
+            )),
+          ),
+          #("full_sweep_applied", json.bool(model.full_sweep_applied)),
           #("updated_at", json.string(ffi.now_iso8601())),
         ])
         |> json.to_string

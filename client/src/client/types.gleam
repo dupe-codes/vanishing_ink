@@ -215,6 +215,15 @@ pub type ReadingState {
     /// `state/helpers.gleam:percent_progress` for the helper-purity
     /// vs system-purity distinction.
     percent_progress: Float,
+    /// Random destructive deletion settings, persisted per book. The
+    /// page-per-page toggle and the once-per-book full-sweep guard ride
+    /// as booleans; granularity / intensity ride as a closed string
+    /// vocabulary the reducer maps onto the typed enums (with a safe
+    /// fallback for an unknown value, same shape as `mode`).
+    random_page_delete_on: Bool,
+    deletion_granularity: String,
+    deletion_intensity: String,
+    full_sweep_applied: Bool,
     updated_at: Option(String),
   )
 }
@@ -233,6 +242,31 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
   use percent_progress <- decode.field("percent_progress", decode.float)
+  // The four random-deletion fields decode through `optional_field` with
+  // defaults so a reading-state payload that predates the feature (an
+  // older server, or a row migrated without the columns) still decodes —
+  // the missing keys fall back to "feature off, gentlest defaults"
+  // rather than failing the whole decode.
+  use random_page_delete_on <- decode.optional_field(
+    "random_page_delete_on",
+    False,
+    decode.bool,
+  )
+  use deletion_granularity <- decode.optional_field(
+    "deletion_granularity",
+    "word",
+    decode.string,
+  )
+  use deletion_intensity <- decode.optional_field(
+    "deletion_intensity",
+    "low",
+    decode.string,
+  )
+  use full_sweep_applied <- decode.optional_field(
+    "full_sweep_applied",
+    False,
+    decode.bool,
+  )
   use updated_at <- decode.field("updated_at", decode.optional(decode.string))
   decode.success(ReadingState(
     book_id: book_id,
@@ -241,6 +275,10 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
     word_bitset: word_bitset,
     current_page: current_page,
     percent_progress: percent_progress,
+    random_page_delete_on: random_page_delete_on,
+    deletion_granularity: deletion_granularity,
+    deletion_intensity: deletion_intensity,
+    full_sweep_applied: full_sweep_applied,
     updated_at: updated_at,
   ))
 }

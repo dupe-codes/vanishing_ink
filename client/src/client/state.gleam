@@ -310,6 +310,109 @@ pub fn cover_color_for_title(title: String) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Random destructive deletion — wire vocab, seed, intensity mapping
+// ---------------------------------------------------------------------------
+//
+// The deletion settings persist through the reading-state wire as a
+// closed string vocabulary (granularity / intensity) plus two booleans
+// (`random_page_delete_on`, `full_sweep_applied`). The conversions live
+// here so the encode side (`effects.save_reading_state`) and the decode
+// side (`settings_load.apply_reading_state_loaded`) share one source of
+// truth and a rename surfaces as a compile error rather than a silent
+// drift.
+
+/// Salt mixed into the per-book seed for the full-sweep action so its
+/// pick does not correlate with any single page's page-per-page pick.
+/// A prime chosen to be far outside any realistic `page_index` range —
+/// page-per-page salts with the raw page index, so a distinct constant
+/// keeps the two affordances' RNG streams independent on the same book.
+pub const full_sweep_seed_salt: Int = 2_654_435_761
+
+/// Modulus bounding the derived seed into a 31-bit range. Keeps the
+/// fold below inside JavaScript's safe-integer range on every step
+/// (the JS target represents `Int` as a 64-bit float) so the same seed
+/// is produced on both the Erlang and JS backends — the determinism
+/// the feature's tests depend on.
+const seed_modulus: Int = 2_147_483_647
+
+pub fn deletion_granularity_to_wire(granularity: DeletionGranularity) -> String {
+  case granularity {
+    DeleteWord -> "word"
+    DeletePhrase -> "phrase"
+    DeleteSentence -> "sentence"
+  }
+}
+
+/// Inverse of `deletion_granularity_to_wire`. Unknown values fall back
+/// to `DeleteWord` so a future wire-vocabulary expansion (or a row that
+/// predates a value) cannot strand the reader on an undecodable
+/// granularity — the same defensive shape `ReadingState.mode` uses.
+pub fn deletion_granularity_from_wire(value: String) -> DeletionGranularity {
+  case value {
+    "phrase" -> DeletePhrase
+    "sentence" -> DeleteSentence
+    _ -> DeleteWord
+  }
+}
+
+pub fn deletion_intensity_to_wire(intensity: DeletionIntensity) -> String {
+  case intensity {
+    Low -> "low"
+    Medium -> "medium"
+    High -> "high"
+  }
+}
+
+/// Inverse of `deletion_intensity_to_wire`. Unknown values fall back to
+/// `Low` — the gentlest exposure — for the same reason
+/// `deletion_granularity_from_wire` falls back to `DeleteWord`.
+pub fn deletion_intensity_from_wire(value: String) -> DeletionIntensity {
+  case value {
+    "medium" -> Medium
+    "high" -> High
+    _ -> Low
+  }
+}
+
+/// How many units to delete from a scope of `total` candidate units at
+/// the given intensity. Integer division floors the result so the
+/// count is deterministic across both compile targets — no float
+/// rounding to disagree on. `Low` ≈ 10%, `Medium` ≈ 25%, `High` ≈ 50%.
+/// A scope smaller than the divisor deletes nothing, which is the right
+/// behaviour for a one- or two-unit page at low intensity.
+pub fn deletion_count(intensity: DeletionIntensity, total: Int) -> Int {
+  case intensity {
+    Low -> total / 10
+    Medium -> total / 4
+    High -> total / 2
+  }
+}
+
+/// Derive a deterministic PRNG seed from a book id and a salt. The
+/// per-book seed is what makes the same units vanish on every read of a
+/// given book; the salt decorrelates the page-per-page stream (salted
+/// with `page_index`) from the full-sweep stream (salted with
+/// `full_sweep_seed_salt`). Never seeded from the wall clock — the
+/// determinism is the feature, and the test suite guards against
+/// introduced randomness.
+///
+/// The fold is a polynomial rolling hash (`acc * 31 + codepoint`) taken
+/// modulo `seed_modulus` on every step so no intermediate overflows the
+/// JS safe-integer range; the salt is folded in last the same way.
+pub fn derive_deletion_seed(book_id: String, salt: Int) -> Int {
+  let base =
+    book_id
+    |> string.to_utf_codepoints
+    |> list.fold(0, fn(acc, cp) {
+      let mixed = acc * 31 + string.utf_codepoint_to_int(cp)
+      let assert Ok(bounded) = int.modulo(mixed, seed_modulus)
+      bounded
+    })
+  let assert Ok(seed) = int.modulo(base * 31 + salt, seed_modulus)
+  seed
+}
+
+// ---------------------------------------------------------------------------
 // Application state
 // ---------------------------------------------------------------------------
 
@@ -335,6 +438,35 @@ pub type View {
 pub type Mode {
   Manual
   RealTime
+}
+
+/// Granularity of a random destructive deletion — the size of the
+/// unit that vanishes when the page-per-page toggle or the full-sweep
+/// action fires. A fixed reader setting, persisted per book.
+///
+/// * `DeleteWord` — individual words vanish.
+/// * `DeletePhrase` — an N-consecutive-word window *within a single
+///   sentence* vanishes (N is a deterministic 3–7 bounded to the
+///   sentence; the window never crosses a sentence boundary).
+///   There is no phrase segmenter in the codebase; this windowing
+///   definition is the phrase. Punctuation-clause splitting is out of
+///   scope.
+/// * `DeleteSentence` — whole sentences vanish, projected onto their
+///   constituent words the same way `apply_erase` does so session
+///   word-counts stay correct.
+pub type DeletionGranularity {
+  DeleteWord
+  DeletePhrase
+  DeleteSentence
+}
+
+/// Reader-facing intensity of a random destructive deletion. Maps to a
+/// fraction of the units in the relevant scope: `Low` ≈ 10%,
+/// `Medium` ≈ 25%, `High` ≈ 50%. Persisted per book.
+pub type DeletionIntensity {
+  Low
+  Medium
+  High
 }
 
 /// Lifecycle state of the real-time fade engine. `Stopped` means
@@ -634,6 +766,28 @@ pub type Model {
     reduced_motion: Bool,
     settings_open: Bool,
     mode: Mode,
+    /// Page-per-page random deletion toggle. While `True`, every page
+    /// that loads (a page turn, or the moment the toggle flips on)
+    /// immediately deletes a subportion of *that page's* units before
+    /// the reader reads them. Toggling off stops future pages from
+    /// being touched; already-deleted text stays deleted (deletion is
+    /// permanent). Persisted per book, but — like the fade engine,
+    /// which always loads `Stopped` — a resumed session does not
+    /// retroactively re-process loaded pages: the `erased` /
+    /// `erased_words` sets already carry whatever was deleted before.
+    random_page_delete_on: Bool,
+    /// Granularity of both random-deletion affordances. Default
+    /// `DeleteWord`. Persisted per book.
+    deletion_granularity: DeletionGranularity,
+    /// Intensity of both random-deletion affordances. Default `Low`.
+    /// Persisted per book.
+    deletion_intensity: DeletionIntensity,
+    /// Per-book once-only guard for the full-sweep action. Set `True`
+    /// after a successful "Sweep this book", which disables the button
+    /// for that book forever. Persisted. The deterministic seed makes a
+    /// re-sweep idempotent even without this guard, but the guard is
+    /// what the UI reads to disable the irreversible action.
+    full_sweep_applied: Bool,
     wpm: Int,
     engine_state: EngineState,
     next_word_index: Option(Int),

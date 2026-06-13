@@ -45,7 +45,7 @@ import client/engine.{
   resolve_active_line,
 }
 import client/msg.{
-  type Msg, AdvanceWord, BookCreated, BookDeleted, BookLoaded,
+  type Msg, AdvanceWord, ApplyFullSweep, BookCreated, BookDeleted, BookLoaded,
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
   EraseSentence, ExecuteDelete, FetchBookStatsResult,
@@ -55,13 +55,15 @@ import client/msg.{
   OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
   ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
   SessionEnded, SetEditMetadataAuthor, SetEditMetadataGenre,
-  SetEditMetadataTitle, SetFontSize, SetGhostOpacity, SetJumpPageInput,
-  SetJumpSearchQuery, SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay,
-  SetPasteText, SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
+  SetDeletionGranularity, SetDeletionIntensity, SetEditMetadataTitle,
+  SetFontSize, SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery,
+  SetLineSpacing, SetMode, SetPageDelay, SetParagraphDelay, SetPasteText,
+  SetPasteTitle, SetWpm, SettingsLoaded, SpacePressed, StartFade,
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
-  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
-  ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
-  TouchStart, UndoJump, ViewportResized, VisibilityChanged,
+  ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, TogglePageDelete,
+  ToggleJumpMenu, ToggleReaderStats, ToggleSettings, ToggleStatsView,
+  TouchCancel, TouchEnd, TouchStart, UndoJump, ViewportResized,
+  VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -77,6 +79,10 @@ import client/reducer/jump.{
   apply_select_search_result, apply_set_jump_page_input,
   apply_set_jump_search_query, apply_submit_jump_page, apply_toggle_jump_menu,
   apply_undo_jump,
+}
+import client/reducer/random_delete.{
+  apply_full_sweep, apply_page_deletion, apply_set_deletion_granularity,
+  apply_set_deletion_intensity, apply_toggle_page_delete,
 }
 import client/reducer/metadata.{
   apply_book_metadata_updated, apply_close_edit_metadata,
@@ -194,6 +200,16 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     ToggleDyslexiaFont -> apply_toggle_dyslexia_font(model)
 
     SetMode(mode) -> apply_set_mode(model, mode)
+
+    TogglePageDelete -> apply_toggle_page_delete(model)
+
+    SetDeletionGranularity(granularity) ->
+      apply_set_deletion_granularity(model, granularity)
+
+    SetDeletionIntensity(intensity) ->
+      apply_set_deletion_intensity(model, intensity)
+
+    ApplyFullSweep -> apply_full_sweep(model)
 
     SpacePressed -> apply_space_pressed(model)
 
@@ -615,8 +631,15 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
       // `go_to_page` (via `change_page`) already refreshed the
       // chapter list against the new page; only the overlay caches
       // remain to clear here.
+      //
+      // Page-per-page random deletion fires here, on page arrival: when
+      // the toggle is on, the page the reader just turned to loses a
+      // subportion of its units before they read it. A no-op when the
+      // toggle is off. The save below persists the freshly-deleted sets
+      // alongside the new `current_page`.
+      let deleted = apply_page_deletion(updated)
       let with_cleared_overlay =
-        Model(..updated, line_boxes: [], active_line: None)
+        Model(..deleted, line_boxes: [], active_line: None)
       #(
         with_cleared_overlay,
         effect.batch([

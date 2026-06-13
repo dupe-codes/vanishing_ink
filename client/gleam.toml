@@ -31,6 +31,7 @@ gleam_stdlib = ">= 0.60.0 and < 2.0.0"
 gleam_json = ">= 3.0.0 and < 4.0.0"
 lustre = ">= 5.0.0 and < 6.0.0"
 shared = { path = "../shared" }
+prng = ">= 5.1.0 and < 6.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
