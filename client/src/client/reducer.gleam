@@ -147,25 +147,29 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       #(new_model, save_reading_state(new_model))
     }
 
-    FocusPrevious -> #(
-      focus_sentence_step(model, navigation.Backward),
-      effect.none(),
-    )
+    FocusPrevious ->
+      apply_focus_navigation(
+        model,
+        focus_sentence_step(model, navigation.Backward),
+      )
 
-    FocusNext -> #(
-      focus_sentence_step(model, navigation.Forward),
-      effect.none(),
-    )
+    FocusNext ->
+      apply_focus_navigation(
+        model,
+        focus_sentence_step(model, navigation.Forward),
+      )
 
-    FocusParagraphUp -> #(
-      focus_paragraph_step(model, navigation.Backward),
-      effect.none(),
-    )
+    FocusParagraphUp ->
+      apply_focus_navigation(
+        model,
+        focus_paragraph_step(model, navigation.Backward),
+      )
 
-    FocusParagraphDown -> #(
-      focus_paragraph_step(model, navigation.Forward),
-      effect.none(),
-    )
+    FocusParagraphDown ->
+      apply_focus_navigation(
+        model,
+        focus_paragraph_step(model, navigation.Forward),
+      )
 
     EraseFocused -> {
       let new_model = apply_erase_focused(model)
@@ -647,6 +651,29 @@ fn apply_next_page(model: Model) -> #(Model, Effect(Msg)) {
         ]),
       )
     }
+  }
+}
+
+/// Commit the result of a vim focus-navigation step, persisting the
+/// reading state only when the move crossed onto a different page.
+///
+/// Vim navigation reaches new pages through `move_focus`/`change_page`
+/// rather than through `NextPage`, and `move_focus` now fires
+/// page-per-page random deletion on every page arrival (see
+/// `client/reducer/focus.move_focus`). A reader advancing forward past a
+/// page boundary with vim keys would otherwise land on an un-decimated
+/// page — the gap Critic Lockwood flagged. Because deletion can only run
+/// when the page actually changed, the persistence is gated on the same
+/// condition: an intra-page cursor step grows nothing and stays
+/// effect-free, exactly as before, so per-keystroke saves are not
+/// introduced for ordinary same-page navigation.
+fn apply_focus_navigation(
+  model: Model,
+  stepped: Model,
+) -> #(Model, Effect(Msg)) {
+  case stepped.current_page == model.current_page {
+    True -> #(stepped, effect.none())
+    False -> #(stepped, save_reading_state(stepped))
   }
 }
 

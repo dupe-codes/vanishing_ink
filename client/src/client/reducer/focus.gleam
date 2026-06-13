@@ -9,6 +9,7 @@
 import gleam/option.{None, Some}
 
 import client/navigation
+import client/reducer/random_delete.{apply_page_deletion}
 import client/reducer/touch.{apply_erase}
 import client/state.{type Model, Model}
 import client/state/helpers.{change_page}
@@ -99,9 +100,33 @@ pub fn apply_erase_focused(model: Model) -> Model {
 /// navigation message — the navigation module returns the target
 /// page alongside the target sentence so this helper can commit
 /// both in one place.
+///
+/// Page-per-page random deletion fires here, on every page arrival,
+/// so vim navigation honours the same "every page that loads
+/// immediately deletes a subportion" contract that the arrow-key
+/// `NextPage` and swipe paths already do. Vim navigation reaches new
+/// pages *exclusively* through this helper (sentence-step,
+/// paragraph-step, and erase-and-advance all route through it), so
+/// hooking the deletion at this single chokepoint covers every
+/// vim-driven page crossing without scattering the call across the
+/// three navigation entry points. A no-op when the page did not
+/// actually change — the toggle gate inside `apply_page_deletion`
+/// makes it a further no-op when the feature is off, and the
+/// deterministic per-page pick makes a same-page re-apply harmless
+/// regardless, but the page-change guard avoids the wasted walk.
+///
+/// The caller is responsible for the persistence effect: the
+/// `apply_focus_navigation` wrapper in `client/reducer` chains
+/// `save_reading_state` whenever a focus move crossed a page, since
+/// that is precisely when this helper may have grown the erased sets.
 fn move_focus(model: Model, target: navigation.SentenceLocation) -> Model {
   let with_page = change_page(model, target.page_index)
-  Model(..with_page, focused_sentence: Some(target.sentence_global_index))
+  let focused =
+    Model(..with_page, focused_sentence: Some(target.sentence_global_index))
+  case focused.current_page == model.current_page {
+    True -> focused
+    False -> apply_page_deletion(focused)
+  }
 }
 
 /// Initialise the cursor to the first non-erased sentence on the
