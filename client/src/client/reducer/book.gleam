@@ -196,7 +196,7 @@ pub fn apply_book_loaded(
 /// payload, the flat-paragraph cache that view + pagination read,
 /// the paginated state (`pages` / `current_page`), every per-book
 /// scratch field (`erased` sentence bitset, `erased_words` word
-/// bitset, undo stack, touch origin, vim focus, measured line
+/// bitset, touch origin, vim focus, measured line
 /// boxes, active-line index, Jump Ahead menu state and preview
 /// snapshot, forward-chapter cache), and the cached totals +
 /// chapter title. Callers layer on view / library bookkeeping on
@@ -217,7 +217,6 @@ pub fn apply_text_load(model: Model, text: SegmentedText) -> Model {
     current_page: 0,
     erased: set.new(),
     erased_words: set.new(),
-    undo_stack: [],
     touch_start: None,
     focused_sentence: None,
     line_boxes: [],
@@ -294,7 +293,6 @@ pub fn apply_go_to_library(model: Model) -> #(Model, Effect(Msg)) {
       current_page: 0,
       erased: set.new(),
       erased_words: set.new(),
-      undo_stack: [],
       touch_start: None,
       focused_sentence: None,
       line_boxes: [],

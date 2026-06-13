@@ -19,8 +19,8 @@
  *       .reader-page-content#vi-page-content  (FFI measurement target
  *                                              for available height)
  *     .reader-bottom-bar                      (mode-aware; Manual gets
- *                                              undo/page/next, RealTime
- *                                              gets WPM/play/spacer)
+ *                                              page/jump/next, RealTime
+ *                                              gets WPM/play/jump)
  *     .reader-measurement#vi-measurement      (absolute, hidden;
  *                                              same content width as
  *                                              .reader-page so paragraph
@@ -514,8 +514,8 @@ body.vi-reduced-motion .reader-active-line {
 }
 
 .reader-bottom-manual {
-  /* Manual mode: [↩ Undo]  Page X of Y  [Turn Page →]
-   * The undo button left-aligns, the page label centres in the
+  /* Manual mode: Page X of Y  [Jump]  [Turn Page →]
+   * The page label left-aligns, the jump button sits in the
    * remaining space, the turn-page button right-aligns and uses
    * the inverted (primary) styling so the eye is drawn to it. */
   display: flex;

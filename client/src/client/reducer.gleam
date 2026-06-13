@@ -23,8 +23,8 @@
 ////    - `Tap` — no-op; sentence erasure flows through the synthesised
 ////      `click` event on the `.sentence` span.
 ////    - `SwipeLeft` — `NextPage`.
-////    - `SwipeRight` — `Undo` the most recent erase. A no-op when
-////      the undo stack is empty (no backward page navigation).
+////    - `SwipeRight` — no-op (no backward page navigation; the former
+////      erase-undo mapping was removed, erasure is permanent).
 //// 3. `TouchCancel` clears `touch_start` without routing anything,
 ////    preventing the stale start coordinates from corrupting the next
 ////    `touchend` classification.
@@ -61,7 +61,7 @@ import client/msg.{
   SubmitEditMetadata, SubmitJumpPage, SubmitPaste, TextLoaded, ToggleAddBook,
   ToggleDarkMode, ToggleDyslexiaFont, ToggleGhostMode, ToggleJumpMenu,
   ToggleReaderStats, ToggleSettings, ToggleStatsView, TouchCancel, TouchEnd,
-  TouchStart, Undo, UndoJump, ViewportResized, VisibilityChanged,
+  TouchStart, UndoJump, ViewportResized, VisibilityChanged,
 }
 import client/navigation
 import client/pagination
@@ -99,7 +99,7 @@ import client/reducer/settings.{
 import client/reducer/settings_load.{
   apply_book_settings_loaded, apply_reading_state_loaded, apply_settings_loaded,
 }
-import client/reducer/touch.{apply_erase, apply_touch_end, apply_undo}
+import client/reducer/touch.{apply_erase, apply_touch_end}
 import client/search
 import client/state.{
   type Model, Library, Manual, Model, Paused, RealTime, Running, Stopped,
@@ -139,11 +139,6 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
     EraseSentence(global_index) -> {
       let new_model = apply_erase(model, global_index)
-      #(new_model, save_reading_state(new_model))
-    }
-
-    Undo -> {
-      let new_model = apply_undo(model)
       #(new_model, save_reading_state(new_model))
     }
 

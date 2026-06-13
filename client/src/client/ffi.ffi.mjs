@@ -217,40 +217,12 @@ export function on_arrow_key(next_callback) {
   });
 }
 
-/**
- * Installs a `keydown` listener for the platform undo chord (`Cmd+Z`
- * on macOS, `Ctrl+Z` elsewhere). `preventDefault()` stops the browser's
- * native undo (e.g. undeleting typed text in a focused input) from
- * running alongside the reader's undo. The `Shift` variant is excluded
- * so a future redo handler can claim `Cmd+Shift+Z` / `Ctrl+Shift+Z`
- * without conflict.
- *
- * @param {function(): void} callback Fired on the undo chord.
- */
-export function on_undo_key(callback) {
-  window.addEventListener("keydown", (event) => {
-    // The undo chord is Cmd+Z on macOS and Ctrl+Z everywhere else.
-    // Skip Shift+Z so the redo chord stays available for a future
-    // redo handler. `event.key` is the post-modifier resolution, so
-    // it reads "z" for an unshifted press and "Z" for shifted — we
-    // accept both because some keyboard layouts report uppercase
-    // even without shift held.
-    const is_undo_key = event.key === "z" || event.key === "Z";
-    const has_meta = event.metaKey || event.ctrlKey;
-    if (is_undo_key && has_meta && !event.shiftKey) {
-      event.preventDefault();
-      callback();
-    }
-  });
-}
-
 export function on_vim_keys(
   focus_previous_callback,
   focus_paragraph_down_callback,
   focus_paragraph_up_callback,
   focus_next_callback,
   space_callback,
-  undo_callback,
 ) {
   window.addEventListener("keydown", (event) => {
     // Skip when the reader is typing into an input — the cursor
@@ -260,10 +232,10 @@ export function on_vim_keys(
     const tag = event.target && event.target.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA") return;
 
-    // Modifier chords belong to the existing undo handler and to
-    // the browser (Ctrl+L focuses the URL bar, Cmd+H hides the
-    // window on macOS, etc.). Bailing here keeps every modifier
-    // combination available rather than silently stealing it.
+    // Modifier chords belong to the browser (Ctrl+L focuses the URL
+    // bar, Cmd+H hides the window on macOS, etc.). Bailing here keeps
+    // every modifier combination available rather than silently
+    // stealing it.
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
     switch (event.key) {
@@ -289,10 +261,6 @@ export function on_vim_keys(
         // would jump out from under the cursor.
         event.preventDefault();
         space_callback();
-        break;
-      case "u":
-        event.preventDefault();
-        undo_callback();
         break;
     }
   });

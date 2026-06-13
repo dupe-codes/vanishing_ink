@@ -66,26 +66,17 @@ pub fn on_resize(callback: fn() -> Nil) -> Nil
 @external(javascript, "./ffi.ffi.mjs", "on_arrow_key")
 pub fn on_arrow_key(next_callback next_callback: fn() -> Nil) -> Nil
 
-/// Install a `keydown` listener on `window` that fires `callback`
-/// for the platform-conventional undo chord — `Cmd+Z` on macOS and
-/// `Ctrl+Z` everywhere else. `Cmd+Shift+Z` / `Ctrl+Shift+Z` (redo)
-/// is intentionally not caught here; there is no redo stack in the
-/// reader today. The listener persists for the lifetime of the page.
-@external(javascript, "./ffi.ffi.mjs", "on_undo_key")
-pub fn on_undo_key(callback: fn() -> Nil) -> Nil
-
 /// Install a `keydown` listener on `window` for the vim-style
 /// reader keys. Each callback corresponds to one unmodified key
 /// press: `h`/`l` move the cursor between sentences, `j`/`k` move
-/// between paragraphs, `Space` fires `space_callback` (the
+/// between paragraphs, and `Space` fires `space_callback` (the
 /// reducer then routes it to either an erase-focused or a
-/// pause/resume-engine action depending on `model.mode`), and
-/// `u` invokes undo. Modifier chords (`Cmd`/`Ctrl`/`Alt`) are
-/// ignored so the listener never collides with the existing
-/// `Cmd+Z` undo handler or with browser shortcuts; keys pressed
-/// while focus is in an `<input>` or `<textarea>` are also
-/// ignored so the cursor doesn't hijack typing. The listener
-/// persists for the lifetime of the page.
+/// pause/resume-engine action depending on `model.mode`). Modifier
+/// chords (`Cmd`/`Ctrl`/`Alt`) are ignored so the listener never
+/// collides with browser shortcuts; keys pressed while focus is in
+/// an `<input>` or `<textarea>` are also ignored so the cursor
+/// doesn't hijack typing. The listener persists for the lifetime of
+/// the page.
 @external(javascript, "./ffi.ffi.mjs", "on_vim_keys")
 pub fn on_vim_keys(
   focus_previous_callback focus_previous_callback: fn() -> Nil,
@@ -93,7 +84,6 @@ pub fn on_vim_keys(
   focus_paragraph_up_callback focus_paragraph_up_callback: fn() -> Nil,
   focus_next_callback focus_next_callback: fn() -> Nil,
   space_callback space_callback: fn() -> Nil,
-  undo_callback undo_callback: fn() -> Nil,
 ) -> Nil
 
 /// Schedule the next word-fade tick. The implementation owns a

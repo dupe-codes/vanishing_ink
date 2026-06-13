@@ -6,7 +6,7 @@
 ////
 //// The variants are grouped roughly by source:
 ////   * pagination / measurement,
-////   * reader gestures and undo,
+////   * reader gestures,
 ////   * vim-key focus,
 ////   * settings sliders / toggles,
 ////   * fade engine (RealTime mode),
@@ -47,8 +47,7 @@ pub type Msg {
   LinesMeasured(boxes: List(LineBox))
 
   /// Reader requested the next page (`ArrowRight` or swipe-left
-  /// gesture). Clears the undo stack — erases on the page being
-  /// left commit.
+  /// gesture). Erases on the page being left commit.
   NextPage
 
   /// Debounced `window.resize` fired. The handler re-runs the
@@ -57,16 +56,10 @@ pub type Msg {
   ViewportResized
 
   /// Reader tapped or clicked the sentence with this global index.
-  /// `update` writes it into `erased` and pushes it onto
-  /// `undo_stack`. A repeat erase of an already-erased sentence is
-  /// a no-op so the undo stack stays meaningful.
+  /// `update` writes it into `erased`. A repeat erase of an
+  /// already-erased sentence is a no-op. Erasure is permanent —
+  /// there is no recovery path once a sentence is erased.
   EraseSentence(global_index: Int)
-
-  /// Reader requested undo (swipe right with non-empty undo stack,
-  /// `Cmd+Z`/`Ctrl+Z`, or any other future undo binding). Pops the
-  /// most recent erase off `undo_stack` and clears its `erased`
-  /// entry. No-op when the stack is empty.
-  Undo
 
   /// `touchstart` fired on the reader page. Carries the primary
   /// touch's viewport coordinates; `update` stores them on the
@@ -75,8 +68,8 @@ pub type Msg {
 
   /// `touchend` fired on the reader page. `update` reads the
   /// matching `touch_start` off the model, classifies the gesture
-  /// via `gestures.classify`, and routes a swipe to either a page
-  /// navigation or `Undo`. A `Tap` outcome is a no-op — sentence
+  /// via `gestures.classify`, and routes a `SwipeLeft` to a page
+  /// navigation. `SwipeRight` and `Tap` are no-ops — sentence
   /// erasure flows through the synthesized `click` event.
   TouchEnd(x: Float, y: Float)
 

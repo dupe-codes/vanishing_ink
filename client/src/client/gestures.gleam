@@ -44,9 +44,12 @@ pub type Gesture {
   /// Horizontal motion to the left (end_x < start_x). Conventionally
   /// "advance the page" in a left-to-right reading flow.
   SwipeLeft
-  /// Horizontal motion to the right (end_x > start_x). Conventionally
-  /// "go back" — the reducer maps this to `Undo`; an empty undo
-  /// stack makes it a no-op.
+  /// Horizontal motion to the right (end_x > start_x). Carries no
+  /// action today: it once mapped to erase-undo, which has been
+  /// removed (erasure is permanent), and backward page navigation is
+  /// disabled. The reducer treats it as a no-op. Kept as a distinct
+  /// classification (rather than folded into `Tap`) so a rightward
+  /// swipe never accidentally triggers the RealTime tap-to-pause path.
   SwipeRight
 }
 
