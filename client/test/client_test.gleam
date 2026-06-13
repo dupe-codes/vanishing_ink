@@ -9893,6 +9893,84 @@ pub fn next_page_does_not_delete_when_toggle_off_test() {
   assert updated.erased_words == set.new()
 }
 
+pub fn focus_next_crossing_page_applies_page_deletion_when_toggle_on_test() {
+  // Vim navigation reaches a new page through `move_focus`, not
+  // `NextPage`. A reader advancing forward past a page boundary with the
+  // `l` key must land on a decimated page, exactly as the arrow-key
+  // `NextPage` path does. Cursor on page 0's only sentence (0); FocusNext
+  // crosses to page 1 (words 10..19), which is what loses text.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      focused_sentence: Some(0),
+    )
+  let #(updated, _eff) = reducer.update(model, FocusNext)
+  assert updated.current_page == 1
+  assert updated.focused_sentence == Some(1)
+  assert set.size(updated.erased_words) == 5
+  assert list.all(set.to_list(updated.erased_words), fn(i) {
+    i >= 10 && i <= 19
+  })
+}
+
+pub fn focus_paragraph_down_crossing_page_applies_page_deletion_test() {
+  // The paragraph-step vim path (`j`) routes through the same
+  // `move_focus` chokepoint, so it must decimate the arrived page too.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      focused_sentence: Some(0),
+    )
+  let #(updated, _eff) = reducer.update(model, FocusParagraphDown)
+  assert updated.current_page == 1
+  assert set.size(updated.erased_words) == 5
+  assert list.all(set.to_list(updated.erased_words), fn(i) {
+    i >= 10 && i <= 19
+  })
+}
+
+pub fn focus_next_crossing_page_does_not_delete_when_toggle_off_test() {
+  // With the feature off, the vim page crossing leaves the text intact —
+  // the toggle gate inside `apply_page_deletion` short-circuits.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: False,
+      deletion_intensity: High,
+      current_page: 0,
+      focused_sentence: Some(0),
+    )
+  let #(updated, _eff) = reducer.update(model, FocusNext)
+  assert updated.current_page == 1
+  assert updated.erased_words == set.new()
+}
+
+pub fn focus_next_within_page_does_not_delete_test() {
+  // An intra-page cursor step (no page change) never triggers deletion,
+  // even with the toggle on — `vim_text` page 0 holds sentences 0 and 1,
+  // so FocusNext from sentence 0 stays on page 0 and erases nothing.
+  let model =
+    Model(
+      ..vim_model_on_page(0),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      focused_sentence: Some(0),
+    )
+  let #(updated, _eff) = reducer.update(model, FocusNext)
+  assert updated.current_page == 0
+  assert updated.focused_sentence == Some(1)
+  assert updated.erased_words == set.new()
+}
+
 pub fn toggle_page_delete_on_deletes_current_page_test() {
   // Enabling the toggle acts immediately on the page already loaded.
   let model =
@@ -9967,6 +10045,31 @@ pub fn deletion_count_maps_intensity_to_fraction_test() {
   assert state.deletion_count(High, 100) == 50
   // A scope smaller than the divisor deletes nothing.
   assert state.deletion_count(Low, 5) == 0
+}
+
+pub fn delete_units_zero_target_deletes_nothing_test() {
+  // When the intensity floors the count to 0 — a scope smaller than the
+  // divisor, here a single 5-word sentence under `Low` (which is n / 10) —
+  // `delete_units` drives the `random.sample(_, 0)` branch and must
+  // return the input sets untouched at every granularity. Every other
+  // reducer / pure test uses `High`, so this is the only coverage of the
+  // zero-sample path.
+  let tiny = [SentenceUnit(sentence_index: 0, word_indices: [0, 1, 2, 3, 4])]
+  let e = set.new()
+  let w = set.new()
+  assert state.deletion_count(Low, 5) == 0
+
+  let #(we, ww) = delete_units(tiny, DeleteWord, Low, 42, e, w)
+  assert we == set.new()
+  assert ww == set.new()
+
+  let #(se, sw) = delete_units(tiny, DeleteSentence, Low, 42, e, w)
+  assert se == set.new()
+  assert sw == set.new()
+
+  let #(pe, pw) = delete_units(tiny, DeletePhrase, Low, 42, e, w)
+  assert pe == set.new()
+  assert pw == set.new()
 }
 
 pub fn derive_deletion_seed_is_deterministic_test() {
