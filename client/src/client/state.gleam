@@ -806,12 +806,14 @@ pub type Model {
     /// also project erased sentences onto their word counts; for v1
     /// the gotcha is documented rather than fixed.
     session_start_erased_count: Int,
-    /// Accumulator for the Jump Lock-In bulk-vanish word count
-    /// recorded against the active session. Words are added every
-    /// time `apply_lock_in_jump` bulk-vanishes pages on a forward
-    /// jump; the closing PUT subtracts the accumulator from the
-    /// raw `erased_words` delta so Lock-In jumps inflate
-    /// `words_skipped` rather than `words_read`.
+    /// Accumulator for words that vanished without being read,
+    /// recorded against the active session. Three producers feed it:
+    /// `apply_lock_in_jump` (pages bulk-vanished on a forward jump),
+    /// `apply_page_deletion`, and `apply_full_sweep` (words destroyed
+    /// by random deletion). Each adds the size delta of `erased_words`
+    /// it caused. The closing PUT subtracts the accumulator from the
+    /// raw `erased_words` delta so Lock-In jumps and random deletions
+    /// inflate `words_skipped` rather than `words_read`.
     session_words_skipped: Int,
     /// `Some(iso)` when the active session is open — the wall-clock
     /// time at which `apply_start_session` stamped the row. `None`
