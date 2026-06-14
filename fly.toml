@@ -32,4 +32,7 @@ primary_region = "iad"  # placeholder — change at launch time
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  # Bumped from 512mb: a full-EPUB upload decodes the whole segmented book
+  # (chapters→paragraphs→sentences→words) into BEAM memory at once and OOM-
+  # killed beam.smp at 512mb. See quest "Fix OOM on full EPUB upload".
+  memory = "1024mb"
