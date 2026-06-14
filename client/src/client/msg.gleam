@@ -283,12 +283,22 @@ pub type Msg {
   /// previous book's erasures don't bleed into the new session.
   OpenBook(id: String)
 
-  /// Reader back-arrow pressed. Flips `view` to `Library`, stops
-  /// any running fade engine, clears the in-flight word timer,
-  /// and resets the reader's per-book state (`text`, `pages`,
-  /// erasures, focus, line geometry) so re-opening the same book
-  /// boots from a clean slate.
+  /// Reader back-arrow pressed (also the About page's back button).
+  /// Flips `view` to `Library`, stops any running fade engine, clears
+  /// the in-flight word timer, and resets the reader's per-book state
+  /// (`text`, `pages`, erasures, focus, line geometry) so re-opening
+  /// the same book boots from a clean slate. The About page reuses
+  /// this Msg rather than minting a second "back" path — from About
+  /// there is no reader state to reset, so the per-book clears are
+  /// already no-ops (the model is at library rest) and one return
+  /// path keeps the nav surface flat.
   GoToLibrary
+
+  /// Library "About" affordance tapped. Flips `view` to `About` — a
+  /// pure view change with no book/text state to touch, since the
+  /// About page is a static explainer. The return trip rides
+  /// `GoToLibrary` (see above).
+  GoToAbout
 
   /// FAB tapped (open) or sheet overlay / close button tapped
   /// (close). Flips `add_book_open` and clears `paste_error` when

@@ -325,14 +325,22 @@ pub fn cover_color_for_title(title: String) -> String {
 
 /// Active top-level view. `Library` renders the book grid plus the
 /// add-book bottom sheet; `Reader` renders the paginated reading
-/// surface against `model.text`. The reducer flips this field on
-/// `OpenBook(_)` (library → reader) and `GoToLibrary` (reader →
-/// library). No URL routing is involved — `modem`/`lustre_routed`
-/// would add machinery that a two-view app cannot justify; a plain
-/// enum on the model is sufficient and keeps the test surface flat.
+/// surface against `model.text`; `About` renders a static explainer
+/// page describing the app and its features. The reducer flips this
+/// field on `OpenBook(_)` (library → reader), `GoToLibrary` (reader
+/// or about → library), and `GoToAbout` (library → about). No URL
+/// routing is involved — `modem`/`lustre_routed` would add machinery
+/// that a three-view app cannot justify; a plain enum on the model is
+/// sufficient and keeps the test surface flat.
+///
+/// `About` carries no per-book state: it is reached only from the
+/// library (never mid-read) and returns through the same
+/// `GoToLibrary` the reader uses, so its arm is a pure `view` flip
+/// with nothing to tear down.
 pub type View {
   Library
   Reader
+  About
 }
 
 /// Reading mode. `Manual` is the original tap/click + vim-key

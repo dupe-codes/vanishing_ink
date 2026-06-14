@@ -25,7 +25,7 @@ import lustre/element/html
 import lustre/event
 
 import client/msg.{
-  type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, OpenBook,
+  type Msg, CancelDelete, ConfirmDelete, ExecuteDelete, GoToAbout, OpenBook,
   OpenEditMetadata, ToggleSettings, ToggleStatsView,
 }
 import client/state.{type Model, cover_color_for_title}
@@ -63,6 +63,19 @@ fn view_library_appbar() -> Element(Msg) {
         html.span([], [html.text("Vanishing Ink")]),
       ]),
       html.div([attribute.class("lib-appbar-actions")], [
+        // The "About" affordance sits at the head of the action cluster
+        // — it is the explainer entry point, conceptually one step
+        // removed from the reader-wide controls (stats, settings) that
+        // follow it, so it leads rather than hides behind the gear.
+        html.button(
+          [
+            attribute.class("btn-icon"),
+            attribute.aria_label("About Vanishing Ink"),
+            attribute.type_("button"),
+            event.on_click(GoToAbout),
+          ],
+          [html.text("?")],
+        ),
         // Reading-stats overlay sits next to the gear: the two surfaces
         // are conceptually adjacent (both are reader-wide, both ride
         // off the same affordance pattern) so co-locating them keeps
