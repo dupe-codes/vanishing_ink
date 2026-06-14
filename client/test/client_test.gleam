@@ -10543,13 +10543,29 @@ pub fn page_deletion_credits_session_words_skipped_test() {
   // session_words_skipped rose by exactly the number newly vanished.
   assert updated.session_words_skipped == vanished
 
-  // Computed words_read (the closing PUT formula) is zero — the reader
-  // did not read these words, the feature destroyed them.
-  let words_read =
-    set.size(updated.erased_words)
-    - updated.session_start_erased_count
-    - updated.session_words_skipped
-  assert words_read == 0
+  // Drive the model through the production closing-PUT body rather than
+  // re-deriving the formula inline — this binds the test to the real
+  // `build_session_snapshot_body` so it stays a regression guard even if
+  // the formula moves. `words_read` is zero (the feature destroyed these
+  // words, the reader did not read them); they surface as `words_skipped`.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: vanished,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 
 pub fn page_deletion_idempotent_session_words_skipped_test() {
@@ -10599,12 +10615,27 @@ pub fn full_sweep_credits_session_words_skipped_test() {
   // session_words_skipped rose by exactly the number newly vanished.
   assert updated.session_words_skipped == vanished
 
-  // Closing PUT would compute words_read = 0.
-  let words_read =
-    set.size(updated.erased_words)
-    - updated.session_start_erased_count
-    - updated.session_words_skipped
-  assert words_read == 0
+  // Drive through the production closing-PUT body rather than re-deriving
+  // the formula inline, mirroring the page-deletion credit test. The swept
+  // words net to `words_read == 0` and surface as `words_skipped`.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: vanished,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 
 pub fn page_deletion_skip_credit_excludes_already_erased_words_test() {
@@ -10668,12 +10699,30 @@ pub fn page_deletion_skip_credit_excludes_already_erased_words_test() {
   assert updated.session_words_skipped == picked_count - seeded_count
 
   // Strictly-stronger check: drive the model through the production
-  // closing-PUT body. `words_read` nets out the deletion-vanished words
-  // and retains the genuinely-read ones, so it equals `seeded_count`.
+  // closing-PUT body and pin the WHOLE payload, not individual fields.
+  // `words_read` nets out the deletion-vanished words and retains the
+  // genuinely-read ones, so it equals `seeded_count`; `words_skipped`
+  // carries the deletion overlap exclusion. Pinning the full
+  // `SnapshotBody` plus the sorted key list also catches drift in
+  // `pages_turned` (0 — no page motion) and stray extra keys for free.
   let body = effects.build_session_snapshot_body(updated)
-  let #(normalised, _keys) = parse_and_normalise_snapshot_body(body)
-  assert normalised.words_read == seeded_count
-  assert normalised.words_skipped == picked_count - seeded_count
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: seeded_count,
+      words_skipped: picked_count - seeded_count,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 
 pub fn full_sweep_skip_credit_excludes_already_erased_words_test() {
@@ -10714,10 +10763,27 @@ pub fn full_sweep_skip_credit_excludes_already_erased_words_test() {
   assert updated.erased_words == picked
   assert updated.session_words_skipped == picked_count - seeded_count
 
+  // Pin the WHOLE closing-PUT payload plus the sorted key list, mirroring
+  // the page-deletion overlap test — this also locks `pages_turned` (0 —
+  // the full sweep does not advance the page) and rejects extra keys.
   let body = effects.build_session_snapshot_body(updated)
-  let #(normalised, _keys) = parse_and_normalise_snapshot_body(body)
-  assert normalised.words_read == seeded_count
-  assert normalised.words_skipped == picked_count - seeded_count
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: seeded_count,
+      words_skipped: picked_count - seeded_count,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
 }
 // Regression guard for jump-skip accounting: the existing
 // `lock_in_jump_accumulates_session_words_skipped_test` covers the
