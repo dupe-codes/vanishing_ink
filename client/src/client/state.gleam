@@ -124,8 +124,7 @@ pub const default_wpm: Int = 200
 
 /// Lower bound on the WPM slider. 60 wpm is roughly one word per
 /// second — slow enough for the reader to deliberately watch each
-/// word fade, which matches the therapeutic-exposure pacing the
-/// app exists to support.
+/// word fade, which matches the fade pacing the engine targets.
 pub const min_wpm: Int = 60
 
 /// Upper bound. 500 wpm is the floor of speed-reading territory;
@@ -507,9 +506,8 @@ pub type LineBox {
 /// * `line_spacing` — `line-height` multiplier. Pushed into
 ///   `--vi-line-height` and triggers re-pagination on change.
 /// * `ghost_mode` — when `True`, erased sentences render at
-///   `ghost_opacity` instead of `0`. Useful for graded ERP exposure
-///   work where the reader wants a faint reminder that prose has
-///   been erased.
+///   `ghost_opacity` instead of `0`. Useful for a graded partial fade
+///   where the reader wants a faint reminder that prose has been erased.
 /// * `ghost_opacity` — opacity applied to erased sentences when
 ///   `ghost_mode` is on. Ignored when `ghost_mode` is off (the
 ///   inline `opacity:0` rules instead).

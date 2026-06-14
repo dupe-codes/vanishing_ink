@@ -8,8 +8,8 @@
 //// JS-target decoder is exercised on first paint.
 ////
 //// The bundled text is "The Tell-Tale Heart" by Edgar Allan Poe
-//// (1843, public domain). A narrator consumed by obsessive intrusive
-//// thoughts — thematically apt for an ERP reading tool.
+//// (1843, public domain). A narrator gripped by relentless fixation
+//// — thematically resonant with the app's forward-only mechanic.
 
 import gleam/json
 import shared/segmenter.{type SegmentedText}
