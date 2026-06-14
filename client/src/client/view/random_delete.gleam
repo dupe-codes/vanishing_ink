@@ -47,8 +47,8 @@ fn view_random_delete_panel(model: Model) -> Element(Msg) {
     ]),
     html.div([attribute.class("settings-row-hint")], [
       html.text(
-        "Exposure therapy: a portion of the text vanishes before you reach "
-        <> "it. Deletion is permanent — there is no undo.",
+        "Vanish a portion of the text before you reach it. Deletion is "
+        <> "permanent — there is no undo.",
       ),
     ]),
     view_page_delete_toggle(model),
