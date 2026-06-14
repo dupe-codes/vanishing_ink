@@ -35,6 +35,7 @@ import lustre/effect
 import lustre/element
 import lustre/vdom/vattr
 import lustre/vdom/vnode
+import prng/random
 import shared
 import shared/segmenter.{
   type Paragraph, type SegmentedText, type Sentence, type Word, Chapter,
@@ -76,7 +77,7 @@ import client/reducer/book as book_reducer
 import client/reducer/jump as jump_reducer
 import client/reducer/random_delete.{
   type SentenceUnit, SentenceUnit, apply_full_sweep, apply_page_deletion,
-  book_units, delete_units, page_units,
+  book_units, delete_units, page_units, reservoir_sample,
 }
 import client/reducer/session as session_reducer
 import client/sample
@@ -9723,24 +9724,24 @@ fn sorted(s: set.Set(Int)) -> List(Int) {
 
 pub fn delete_units_word_granularity_is_deterministic_and_exact_test() {
   // Pinned against seed 42 over the 20-word fixture. The exact picks are
-  // a regression lock on the PCG stream — `Low` deletes 10% (2 words),
-  // `Medium` 25% (5), `High` 50% (10). No sentence is ever inserted into
-  // `erased` at word granularity.
+  // a regression lock on `reservoir_sample` over the PCG stream — `Low`
+  // deletes 10% (2 words), `Medium` 25% (5), `High` 50% (10). No sentence
+  // is ever inserted into `erased` at word granularity.
   let e = set.new()
   let w = set.new()
 
   let #(le, lw) =
     delete_units(delete_fixture_units(), DeleteWord, Low, 42, e, w)
   assert le == set.new()
-  assert sorted(lw) == [8, 19]
+  assert sorted(lw) == [8, 11]
 
   let #(_me, mw) =
     delete_units(delete_fixture_units(), DeleteWord, Medium, 42, e, w)
-  assert sorted(mw) == [1, 8, 12, 15, 16]
+  assert sorted(mw) == [10, 11, 12, 16, 18]
 
   let #(_he, hw) =
     delete_units(delete_fixture_units(), DeleteWord, High, 42, e, w)
-  assert sorted(hw) == [1, 6, 8, 9, 10, 12, 13, 15, 17, 18]
+  assert sorted(hw) == [1, 2, 3, 5, 6, 7, 9, 14, 15, 19]
 }
 
 pub fn delete_units_count_matches_intensity_fraction_test() {
@@ -9812,7 +9813,7 @@ pub fn delete_units_phrase_granularity_stays_within_sentences_test() {
       set.new(),
     )
   assert es == set.new()
-  assert sorted(ws) == [6, 7, 8, 16, 17, 18]
+  assert sorted(ws) == [7, 8, 9, 17, 18, 19]
 }
 
 pub fn delete_units_is_idempotent_test() {
@@ -9833,6 +9834,67 @@ pub fn delete_units_is_idempotent_test() {
   let #(se2, sw2) = delete_units(fixture, DeleteSentence, High, 99, se1, sw1)
   assert se2 == se1
   assert sw2 == sw1
+}
+
+// A book-sized candidate set. Each "sentence" is a single word so that
+// `delete_words` flattens to one giant candidate list — exactly the shape
+// that overflowed the JS stack under `prng`'s non-trampolined
+// `random.sample`. 8_000 units is well past the recursion limit that
+// `sample_loop` hit but trivially cheap for a `while`-loop sampler.
+// `[0, 1, ..., count - 1]`. Local helper — this stdlib has no `list.range`.
+fn int_seq(count: Int) -> List(Int) {
+  list.index_map(list.repeat(0, count), fn(_, i) { i })
+}
+
+fn large_word_units(count: Int) -> List(SentenceUnit) {
+  int_seq(count)
+  |> list.map(fn(i) { SentenceUnit(sentence_index: i, word_indices: [i]) })
+}
+
+pub fn reservoir_sample_handles_book_sized_input_without_overflow_test() {
+  // Regression for "Uncaught InternalError: too much recursion" on full
+  // sweep: the candidate set is the whole book. With the tail-recursive
+  // sampler this completes; with `random.sample` it blew the stack. We only
+  // need it to *finish* and return the requested count in input order.
+  let units = large_word_units(8000)
+  let #(erased, erased_words) =
+    delete_units(units, DeleteWord, High, 7, set.new(), set.new())
+  // High deletes 50% of 8_000 words.
+  assert erased == set.new()
+  assert set.size(erased_words) == 4000
+}
+
+pub fn reservoir_sample_is_deterministic_test() {
+  // Same seed + same list + same target ⇒ identical pick, every time. This
+  // is the load-bearing property the idempotence guarantees rest on.
+  let candidates = int_seq(1000)
+  let seed = random.new_seed(123)
+  let #(a, _) = reservoir_sample(candidates, 50, seed)
+  let #(b, _) = reservoir_sample(candidates, 50, seed)
+  assert a == b
+  assert list.length(a) == 50
+}
+
+pub fn reservoir_sample_preserves_input_order_test() {
+  // The pick must come back in the same relative order as the input.
+  // `delete_phrases` threads the seed across picked sentences in order and
+  // relies on this. Feeding a strictly-ascending list, the result must be
+  // strictly ascending too — any reordering would break the invariant.
+  let candidates = int_seq(500)
+  let seed = random.new_seed(2024)
+  let #(picked, _) = reservoir_sample(candidates, 40, seed)
+  assert picked == list.sort(picked, int.compare)
+  assert list.length(picked) == 40
+}
+
+pub fn reservoir_sample_zero_target_is_empty_test() {
+  // Defensive: a zero (or negative) target draws no randomness and returns
+  // the seed untouched, matching the `random.sample(_, 0)` branch the old
+  // code relied on at low intensity over a tiny candidate set.
+  let seed = random.new_seed(5)
+  let #(picked, out_seed) = reservoir_sample(int_seq(100), 0, seed)
+  assert picked == []
+  assert out_seed == seed
 }
 
 pub fn page_deletion_only_touches_current_page_test() {

@@ -40,6 +40,15 @@
 //// rather than its index); same-pagination revisits, the common case,
 //// stay perfectly idempotent.
 ////
+//// **Stack-safe sampling.** The pick is drawn by `reservoir_sample`, our
+//// own tail-recursive Algorithm R sampler, NOT by `prng`'s `random.sample`.
+//// On a full sweep the candidate set is the whole book (every word, or
+//// every sentence), and `random.sample`'s internal `sample_loop` recurses
+//// once per element — that depth overflows the JS call stack
+//// (`too much recursion`). `reservoir_sample` compiles to a `while` loop,
+//// preserves input order, and is fully deterministic in the threaded seed,
+//// so the idempotence guarantees above still hold. See its doc comment.
+////
 //// Rendering is free: writing a word's `global_index` into
 //// `erased_words`, or a sentence's `global_index` into `erased`, hides
 //// it via the existing opacity render path — no new view logic. Sentence
@@ -47,6 +56,8 @@
 //// into `erased` AND project the sentence's words into `erased_words`)
 //// so session word-counts stay correct.
 
+import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/set.{type Set}
@@ -151,10 +162,10 @@ fn delete_words(
 ) -> #(Set(Int), Set(Int)) {
   let candidates = list.flat_map(units, fn(unit) { unit.word_indices })
   let target = deletion.deletion_count(intensity, list.length(candidates))
-  // `sample` is single-pass reservoir sampling — O(n) over the whole
-  // book on a full sweep, which the codebase prefers over re-flattening
-  // and re-picking per unit.
-  let #(picked, _seed) = random.step(random.sample(candidates, target), seed)
+  // `reservoir_sample` is our own stack-safe sampler — O(1) stack depth
+  // over the whole book on a full sweep. See its doc comment for why
+  // `random.sample` cannot be used here.
+  let #(picked, _seed) = reservoir_sample(candidates, target, seed)
   #(
     erased,
     list.fold(picked, erased_words, fn(acc, idx) { set.insert(acc, idx) }),
@@ -169,7 +180,7 @@ fn delete_sentences(
   erased_words: Set(Int),
 ) -> #(Set(Int), Set(Int)) {
   let target = deletion.deletion_count(intensity, list.length(units))
-  let #(picked, _seed) = random.step(random.sample(units, target), seed)
+  let #(picked, _seed) = reservoir_sample(units, target, seed)
   list.fold(picked, #(erased, erased_words), fn(acc, unit) {
     let #(erased_acc, words_acc) = acc
     // Mirror `apply_erase`: insert the sentence AND project its words so
@@ -192,8 +203,7 @@ fn delete_phrases(
   // Only sentences with at least one word can host a phrase.
   let candidates = list.filter(units, fn(unit) { unit.word_indices != [] })
   let target = deletion.deletion_count(intensity, list.length(candidates))
-  let #(picked, after_sample) =
-    random.step(random.sample(candidates, target), seed)
+  let #(picked, after_sample) = reservoir_sample(candidates, target, seed)
   // Thread the seed through each picked sentence so every window draw is
   // deterministic and reproducible. The sample preserves list order, so
   // the threading order is itself deterministic across revisits.
@@ -231,6 +241,125 @@ fn int_min(a: Int, b: Int) -> Int {
     True -> a
     False -> b
   }
+}
+
+// ---------------------------------------------------------------------------
+// Stack-safe reservoir sampling
+// ---------------------------------------------------------------------------
+
+/// Pick `target` elements from `candidates` deterministically, returning
+/// the picks in their original input order along with the stepped seed —
+/// shape `#(List(a), Seed)`, the same contract the old `random.sample`
+/// call sites consumed.
+///
+/// **Why this exists instead of `prng`'s `random.sample`.** `random.sample`
+/// builds a generator whose evaluation recurses once per candidate element:
+/// its internal `sample_loop` chains continuations through nested generator
+/// binds and is *not* trampolined (unlike the sibling `build_reservoir_loop`,
+/// a proper loop). When `random.step` forces that generator the whole
+/// continuation chain sits on the JS call stack — roughly one frame-stack
+/// per element. On a full sweep the candidate set is the entire book (every
+/// word, or every sentence — tens of thousands of units), which overflows
+/// the stack: `InternalError: too much recursion`. This sampler is written
+/// tail-recursively, so the Gleam compiler emits a JS `while` loop and the
+/// stack depth is O(1) regardless of candidate count. **Do not "simplify"
+/// it back to `random.sample`** — that reintroduces the overflow.
+///
+/// Algorithm R reservoir sampling: the first `target` elements seed the
+/// reservoir, then each later element at original position `pos` draws one
+/// uniform `j` in `[0, pos]` and, if `j < target`, evicts slot `j`. Every
+/// draw is taken from the threaded prng `Seed`, so the pick is fully
+/// deterministic — same seed + same list + same target ⇒ identical pick on
+/// every re-run, which the once-per-book and page-revisit idempotence
+/// guarantees depend on (see the module header). Each reservoir slot also
+/// records its element's original position, and the final pick is emitted in
+/// that order, so input order is preserved — `delete_phrases` threads the
+/// seed across the picked sentences in order and relies on that stability.
+pub fn reservoir_sample(
+  candidates: List(a),
+  target: Int,
+  seed: Seed,
+) -> #(List(a), Seed) {
+  case target <= 0 {
+    // Sampling zero (or fewer) elements is a no-op and draws no randomness,
+    // matching `deletion.deletion_count` returning 0 at low intensity over a
+    // tiny candidate set.
+    True -> #([], seed)
+    False -> {
+      let #(reservoir, rest, filled) =
+        fill_reservoir(candidates, target, 0, dict.new())
+      case filled < target {
+        // Fewer candidates than requested: every element is picked. The
+        // input list is already in order, so return it untouched with no
+        // draws — still deterministic.
+        True -> #(candidates, seed)
+        False -> {
+          let #(final, seed_out) =
+            reservoir_loop(rest, target, filled, reservoir, seed)
+          #(emit_in_input_order(final), seed_out)
+        }
+      }
+    }
+  }
+}
+
+/// Seed the reservoir with the first `target` elements, keyed by slot
+/// `0..target-1`. Each slot stores `#(original_position, element)` so the
+/// pick can later be emitted in input order. Tail-recursive → JS `while`.
+fn fill_reservoir(
+  list: List(a),
+  target: Int,
+  pos: Int,
+  reservoir: Dict(Int, #(Int, a)),
+) -> #(Dict(Int, #(Int, a)), List(a), Int) {
+  case pos >= target {
+    True -> #(reservoir, list, pos)
+    False ->
+      case list {
+        [] -> #(reservoir, [], pos)
+        [first, ..rest] ->
+          fill_reservoir(
+            rest,
+            target,
+            pos + 1,
+            dict.insert(reservoir, pos, #(pos, first)),
+          )
+      }
+  }
+}
+
+/// Walk the remaining candidates (those past the initial fill), drawing one
+/// uniform `j` in `[0, pos]` per element and evicting reservoir slot `j`
+/// when `j < target`. Threads the seed through every draw. Tail-recursive →
+/// JS `while`, so stack depth stays O(1) over the whole book.
+fn reservoir_loop(
+  list: List(a),
+  target: Int,
+  pos: Int,
+  reservoir: Dict(Int, #(Int, a)),
+  seed: Seed,
+) -> #(Dict(Int, #(Int, a)), Seed) {
+  case list {
+    [] -> #(reservoir, seed)
+    [first, ..rest] -> {
+      let #(j, seed_next) = random.step(random.int(0, pos), seed)
+      let reservoir_next = case j < target {
+        True -> dict.insert(reservoir, j, #(pos, first))
+        False -> reservoir
+      }
+      reservoir_loop(rest, target, pos + 1, reservoir_next, seed_next)
+    }
+  }
+}
+
+/// Project the reservoir's `#(position, element)` entries back into a list
+/// ordered by original input position. Reservoir slot order is arbitrary
+/// (slots get overwritten by eviction), so sort by the recorded position.
+fn emit_in_input_order(reservoir: Dict(Int, #(Int, a))) -> List(a) {
+  reservoir
+  |> dict.values
+  |> list.sort(fn(a, b) { int.compare(a.0, b.0) })
+  |> list.map(fn(entry) { entry.1 })
 }
 
 // ---------------------------------------------------------------------------
