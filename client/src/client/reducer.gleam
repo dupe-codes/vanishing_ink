@@ -50,11 +50,11 @@ import client/msg.{
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
   EraseSentence, ExecuteDelete, FetchBookStatsResult,
   FetchLibraryBookStatsResult, FetchLibraryStatsResult, FetchSpeedTrendResult,
-  FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
-  JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
-  OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
-  ResetBookSettings, ResumeFade, SelectSearchResult, SessionCreated,
-  SessionEnded, SetDeletionGranularity, SetDeletionIntensity,
+  FocusNext, FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToAbout,
+  GoToLibrary, JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage,
+  NoOp, OpenBook, OpenEditMetadata, ParagraphsMeasured, PauseFade,
+  ReadingStateLoaded, ResetBookSettings, ResumeFade, SelectSearchResult,
+  SessionCreated, SessionEnded, SetDeletionGranularity, SetDeletionIntensity,
   SetEditMetadataAuthor, SetEditMetadataGenre, SetEditMetadataTitle, SetFontSize,
   SetGhostOpacity, SetJumpPageInput, SetJumpSearchQuery, SetLineSpacing, SetMode,
   SetPageDelay, SetParagraphDelay, SetPasteText, SetPasteTitle, SetWpm,
@@ -107,7 +107,7 @@ import client/reducer/settings_load.{
 import client/reducer/touch.{apply_erase, apply_touch_end}
 import client/search
 import client/state.{
-  type Model, Library, Manual, Model, Paused, RealTime, Running, Stopped,
+  type Model, About, Library, Manual, Model, Paused, RealTime, Running, Stopped,
 }
 import client/state/helpers.{
   compute_chapter_entries, compute_current_chapter_title, go_to_page,
@@ -293,6 +293,13 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     OpenBook(id) -> apply_open_book(model, id)
 
     GoToLibrary -> apply_go_to_library(model)
+
+    // The About page is a static explainer with no per-book state, so
+    // navigating to it is a pure `view` flip — no fade engine to stop,
+    // no reading-state to persist, no session to close. Mirrors the
+    // shape of the library nav arms but without `apply_*` machinery
+    // because there is nothing to reset.
+    GoToAbout -> #(Model(..model, view: About), effect.none())
 
     ToggleAddBook -> {
       let opening = !model.add_book_open

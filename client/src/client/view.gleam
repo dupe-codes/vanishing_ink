@@ -16,7 +16,8 @@ import lustre/element.{type Element}
 import lustre/element/html
 
 import client/msg.{type Msg}
-import client/state.{type Model, Library, Reader}
+import client/state.{type Model, About, Library, Reader}
+import client/view/about as about_view
 import client/view/library as library_view
 import client/view/reader as reader_view
 import client/view/reader/book_stats as reader_book_stats
@@ -28,6 +29,7 @@ pub fn view(model: Model) -> Element(Msg) {
   let body = case model.view {
     Library -> library_view.view(model)
     Reader -> reader_view.view(model)
+    About -> about_view.view(model)
   }
 
   let overlay = case model.settings_open {
@@ -42,7 +44,7 @@ pub fn view(model: Model) -> Element(Msg) {
   // disappears without needing to clear `jump_menu_open` explicitly.
   let jump_overlay = case model.view {
     Reader -> jump_menu.view(model)
-    Library -> element.none()
+    Library | About -> element.none()
   }
 
   let stats_overlay = case model.stats_open {
@@ -58,7 +60,7 @@ pub fn view(model: Model) -> Element(Msg) {
   // the reader cannot paint the overlay against an empty book scope.
   let reader_stats_overlay = case model.view {
     Reader -> reader_book_stats.view(model)
-    Library -> element.none()
+    Library | About -> element.none()
   }
 
   html.div([attribute.id("vi-shell"), attribute.class("vi-app")], [
