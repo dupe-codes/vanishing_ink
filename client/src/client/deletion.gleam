@@ -70,7 +70,7 @@ pub fn deletion_intensity_to_wire(intensity: DeletionIntensity) -> String {
 }
 
 /// Inverse of `deletion_intensity_to_wire`. Unknown values fall back to
-/// `Low` — the gentlest exposure — for the same reason
+/// `Low` — the gentlest setting — for the same reason
 /// `deletion_granularity_from_wire` falls back to `DeleteWord`.
 pub fn deletion_intensity_from_wire(value: String) -> DeletionIntensity {
   case value {

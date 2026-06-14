@@ -1,6 +1,6 @@
-//// Random destructive deletion. The "exposure therapy" feature: a
-//// subportion of text is deleted *before the reader reaches it* so they
-//// sit with the discomfort of missing things. There is no timer and no
+//// Random destructive deletion. The forward-deletion mechanic: a
+//// subportion of text is deleted *before the reader reaches it* —
+//// forward-only, no re-read possible. There is no timer and no
 //// cadence — deletions are one-shot batches applied at well-defined
 //// moments:
 ////
