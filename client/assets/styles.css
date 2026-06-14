@@ -2321,7 +2321,6 @@ body.vi-reduced-motion .jump-search-result-item {
 }
 
 .about-wordmark {
-  flex: none;
   font-size: 22px;
   margin-bottom: 10px;
 }
