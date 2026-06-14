@@ -7847,14 +7847,15 @@ pub fn update_go_to_library_from_about_returns_to_library_test() {
 
   let #(updated, _effect) = reducer.update(prior, GoToLibrary)
 
-  assert updated.view == Library
+  assert updated == Model(..empty_model(), view: Library)
 }
 
 pub fn view_about_renders_explainer_and_back_button_test() {
   // The About view must render the wordmark, a clear way back, and
   // enough feature copy that the page is genuinely informative. Pin a
-  // few load-bearing phrases (the framing, both reading modes) so a
-  // regression that guts the body copy is caught.
+  // few load-bearing phrases (the framing, both reading modes, and both
+  // book-ingest paths) so a regression that guts the body copy is
+  // caught.
   let rendered = view.view(Model(..empty_model(), view: About))
 
   assert lustre_query.has(
@@ -7871,6 +7872,7 @@ pub fn view_about_renders_explainer_and_back_button_test() {
   assert string.contains(html, "Manual mode")
   assert string.contains(html, "Real-time mode")
   assert string.contains(html, "Jump Ahead")
+  assert string.contains(html, "Import an ePub file")
 }
 
 pub fn view_library_about_button_dispatches_go_to_about_test() {
