@@ -1,6 +1,6 @@
 //// Random destructive deletion. The forward-deletion mechanic: a
-//// subportion of text is deleted *before the reader reaches it*, gone
-//// before they arrive — forward-only, no re-read possible. There is no timer and no
+//// subportion of text is deleted *before the reader reaches it* —
+//// forward-only, no re-read possible. There is no timer and no
 //// cadence — deletions are one-shot batches applied at well-defined
 //// moments:
 ////
