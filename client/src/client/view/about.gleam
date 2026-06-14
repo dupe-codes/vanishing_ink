@@ -117,7 +117,8 @@ fn view_about_body() -> Element(Msg) {
     ]),
     view_section("Your library", [
       paragraph(
-        "Paste in your own text to build a library of books. Each book "
+        "Import an ePub file or paste in your own text to build a library "
+        <> "of books. Each book "
         <> "keeps its own reading stats and sessions — words read, words "
         <> "skipped, pages turned, time spent, and how your reading speed "
         <> "is trending. Your position is saved as you go, so closing the "
