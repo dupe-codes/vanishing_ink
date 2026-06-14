@@ -4933,6 +4933,17 @@ pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
   assert !string.contains(rendered, "reader-bottom-manual")
   assert !string.contains(rendered, "↩ Undo")
   assert !string.contains(rendered, "Turn Page →")
+
+  // The page label must *lead* the row — the `flex: 1 1 auto` label
+  // only left-anchors the controls if it precedes them in the markup.
+  // The bare `string.contains` checks above all stay green under a
+  // reordering, so pin the order explicitly: split on the label class
+  // and require the WPM readout to land in the trailing half, not the
+  // leading one.
+  let assert Ok(#(before_label, after_label)) =
+    string.split_once(rendered, "class=\"reader-page-label\"")
+  assert string.contains(after_label, "class=\"wpm-readout\"")
+  assert !string.contains(before_label, "class=\"wpm-readout\"")
 }
 
 pub fn view_manual_bottom_turn_page_shows_finished_on_last_page_test() {
