@@ -69,61 +69,61 @@ fn view_about_body() -> Element(Msg) {
     view_section("Reading is permanent", [
       paragraph(
         "Every word you read disappears, and there is no undo — not as a "
-          <> "per-mode warning but as a system-wide rule. That is the whole "
-          <> "point. Vanishing Ink is built for OCD ERP (Exposure Response "
-          <> "Prevention): re-reading is the compulsive safety behaviour, so "
-          <> "the app makes going back physically impossible. You read "
-          <> "forward, the text vanishes behind you, and the urge to check "
-          <> "what you just read has nothing to grab onto.",
+        <> "per-mode warning but as a system-wide rule. That is the whole "
+        <> "point. Vanishing Ink is built for OCD ERP (Exposure Response "
+        <> "Prevention): re-reading is the compulsive safety behaviour, so "
+        <> "the app makes going back physically impossible. You read "
+        <> "forward, the text vanishes behind you, and the urge to check "
+        <> "what you just read has nothing to grab onto.",
       ),
     ]),
     view_section("Two ways to read", [
       paragraph(
         "Manual mode puts the erasing in your hands: tap (or click) a "
-          <> "sentence once you have finished it and it fades away. On "
-          <> "desktop, vim-style keys move the cursor sentence by sentence "
-          <> "and paragraph by paragraph, and erase-and-advance in one "
-          <> "keystroke.",
+        <> "sentence once you have finished it and it fades away. On "
+        <> "desktop, vim-style keys move the cursor sentence by sentence "
+        <> "and paragraph by paragraph, and erase-and-advance in one "
+        <> "keystroke.",
       ),
       paragraph(
         "Real-time mode hands the pace to a ghost-fade engine: words fade "
-          <> "on their own at a words-per-minute speed you set, with a beat "
-          <> "of pause between paragraphs. Play and pause whenever you need "
-          <> "to — but what has already faded stays gone.",
+        <> "on their own at a words-per-minute speed you set, with a beat "
+        <> "of pause between paragraphs. Play and pause whenever you need "
+        <> "to — but what has already faded stays gone.",
       ),
     ]),
     view_section("Jump Ahead", [
       paragraph(
         "Navigation is forward-only, but you are never stuck. Jump Ahead "
-          <> "lets you skip to a later chapter or page, or search the text "
-          <> "ahead of you for a phrase. You get a preview of the target "
-          <> "first: lock it in and every page you skipped vanishes in one "
-          <> "go, or back out and stay where you were.",
+        <> "lets you skip to a later chapter or page, or search the text "
+        <> "ahead of you for a phrase. You get a preview of the target "
+        <> "first: lock it in and every page you skipped vanishes in one "
+        <> "go, or back out and stay where you were.",
       ),
     ]),
     view_section("Random destructive deletion", [
       paragraph(
         "For a sharper exposure, the app can vanish part of the text "
-          <> "before you ever reach it. A page-per-page toggle thins each "
-          <> "page as it loads, and a one-shot full sweep takes a bite out "
-          <> "of the entire book at once — available once per book, ever.",
+        <> "before you ever reach it. A page-per-page toggle thins each "
+        <> "page as it loads, and a one-shot full sweep takes a bite out "
+        <> "of the entire book at once — available once per book, ever.",
       ),
       paragraph(
         "Tune what disappears: granularity picks the unit (a word, a "
-          <> "phrase, or a whole sentence) and intensity sets how much goes "
-          <> "(low, medium, or high). The deletion is deterministic per "
-          <> "book, so the same book always vanishes the same way.",
+        <> "phrase, or a whole sentence) and intensity sets how much goes "
+        <> "(low, medium, or high). The deletion is deterministic per "
+        <> "book, so the same book always vanishes the same way.",
       ),
     ]),
     view_section("Your library", [
       paragraph(
         "Paste in your own text to build a library of books. Each book "
-          <> "keeps its own reading stats and sessions — words read, words "
-          <> "skipped, pages turned, time spent, and how your reading speed "
-          <> "is trending. Your position is saved as you go, so closing the "
-          <> "tab and coming back lands you exactly where you left off. "
-          <> "Reader settings (speed, spacing, dark mode, and more) live a "
-          <> "tap away.",
+        <> "keeps its own reading stats and sessions — words read, words "
+        <> "skipped, pages turned, time spent, and how your reading speed "
+        <> "is trending. Your position is saved as you go, so closing the "
+        <> "tab and coming back lands you exactly where you left off. "
+        <> "Reader settings (speed, spacing, dark mode, and more) live a "
+        <> "tap away.",
       ),
     ]),
     view_closing_note(),

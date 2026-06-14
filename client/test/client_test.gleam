@@ -57,7 +57,7 @@ import client/msg.{
   BookMetadataUpdated, BookSettingsLoaded, BooksLoaded, CancelDelete,
   CloseEditMetadata, ConfirmDelete, EpubFileSelected, EpubParsed, EraseFocused,
   EraseSentence, ExecuteDelete, FetchSpeedTrendResult, FocusNext,
-  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToLibrary,
+  FocusParagraphDown, FocusParagraphUp, FocusPrevious, GoToAbout, GoToLibrary,
   JumpToChapter, JumpToPage, LinesMeasured, LockInJump, NextPage, NoOp, OpenBook,
   OpenEditMetadata, ParagraphsMeasured, PauseFade, ReadingStateLoaded,
   ResetBookSettings, ResumeFade, SelectSearchResult, SetDeletionGranularity,
@@ -83,7 +83,7 @@ import client/reducer/session as session_reducer
 import client/sample
 import client/search.{SearchResult}
 import client/state.{
-  type LineBox, type Model, ChapterEntry, DeletePhrase, DeleteSentence,
+  type LineBox, type Model, About, ChapterEntry, DeletePhrase, DeleteSentence,
   DeleteWord, High, JumpPreview, Library, LineBox, Low, Manual, Medium,
   MetadataEdit, Model, Paused, Reader, RealTime, Running, Stopped,
 }
@@ -7814,6 +7814,110 @@ pub fn stats_view_renders_tile_values_test() {
 pub fn library_appbar_carries_stats_button_test() {
   let rendered = view.view(library_model()) |> element.to_string
   assert string.contains(rendered, "aria-label=\"Open reading stats\"")
+}
+
+// ---------------------------------------------------------------------------
+// About view + navigation
+// ---------------------------------------------------------------------------
+
+pub fn library_appbar_carries_about_button_test() {
+  // The library appbar surfaces the explainer entry point: an "About"
+  // affordance that dispatches `GoToAbout`. Pinning the aria label
+  // catches an accidental relabel/removal of the button.
+  let rendered = view.view(library_model()) |> element.to_string
+  assert string.contains(rendered, "aria-label=\"About Vanishing Ink\"")
+}
+
+pub fn update_go_to_about_flips_view_to_about_test() {
+  // `GoToAbout` is a pure view flip: nothing else on the model moves,
+  // so the whole-model equality pins that no per-book state was
+  // touched alongside the `view` change.
+  let prior = Model(..empty_model(), view: Library)
+
+  let #(updated, _effect) = reducer.update(prior, GoToAbout)
+
+  assert updated == Model(..empty_model(), view: About)
+}
+
+pub fn update_go_to_library_from_about_returns_to_library_test() {
+  // The About page reuses `GoToLibrary` for its back button — from
+  // About the reader's per-book clears are already no-ops, so the
+  // round-trip lands cleanly back on the library.
+  let prior = Model(..empty_model(), view: About)
+
+  let #(updated, _effect) = reducer.update(prior, GoToLibrary)
+
+  assert updated.view == Library
+}
+
+pub fn view_about_renders_explainer_and_back_button_test() {
+  // The About view must render the wordmark, a clear way back, and
+  // enough feature copy that the page is genuinely informative. Pin a
+  // few load-bearing phrases (the framing, both reading modes) so a
+  // regression that guts the body copy is caught.
+  let rendered = view.view(Model(..empty_model(), view: About))
+
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.class("view-about"),
+  )
+  assert lustre_query.has(
+    in: rendered,
+    matching: lustre_query.aria("label", "Back to library"),
+  )
+
+  let html = element.to_string(rendered)
+  assert string.contains(html, "Vanishing Ink")
+  assert string.contains(html, "Manual mode")
+  assert string.contains(html, "Real-time mode")
+  assert string.contains(html, "Jump Ahead")
+}
+
+pub fn view_library_about_button_dispatches_go_to_about_test() {
+  // Clicking the library's About affordance flips the view to About.
+  // Driving the click through `simulate` pins the on_click wiring — a
+  // reducer-level assertion would stay green even if the button were
+  // wired to the wrong Msg.
+  let app =
+    simulate.application(
+      init: fn(_) { #(Model(..empty_model(), view: Library), effect.none()) },
+      update: reducer.update,
+      view: view.view,
+    )
+
+  let about_button =
+    lustre_query.element(matching: lustre_query.aria(
+      "label",
+      "About Vanishing Ink",
+    ))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: about_button)
+    |> simulate.model
+
+  assert updated.view == About
+}
+
+pub fn view_about_back_button_dispatches_go_to_library_test() {
+  // The About page's back glyph must return to the library. Clicking
+  // through `simulate` pins the handler's actual Msg path.
+  let app =
+    simulate.application(
+      init: fn(_) { #(Model(..empty_model(), view: About), effect.none()) },
+      update: reducer.update,
+      view: view.view,
+    )
+
+  let back_button =
+    lustre_query.element(matching: lustre_query.aria("label", "Back to library"))
+
+  let updated =
+    simulate.start(app, Nil)
+    |> simulate.click(on: back_button)
+    |> simulate.model
+
+  assert updated.view == Library
 }
 
 pub fn library_card_renders_book_stats_summary_when_available_test() {
