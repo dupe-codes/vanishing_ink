@@ -389,7 +389,18 @@ pub fn apply_page_deletion(model: Model) -> Model {
           model.erased,
           model.erased_words,
         )
-      Model(..model, erased: erased, erased_words: erased_words)
+      // Count the words newly added to `erased_words` and credit them
+      // to `session_words_skipped` so the closing PUT subtracts them
+      // from `words_read` — vanished words were never read. Idempotent:
+      // re-applying the same page seed re-writes the same indices and
+      // the set size delta is zero, so page revisits add no extra credit.
+      let added = set.size(erased_words) - set.size(model.erased_words)
+      Model(
+        ..model,
+        erased: erased,
+        erased_words: erased_words,
+        session_words_skipped: model.session_words_skipped + added,
+      )
     }
     _, _, _ -> model
   }
@@ -446,12 +457,21 @@ pub fn apply_full_sweep(model: Model) -> #(Model, Effect(Msg)) {
           model.erased,
           model.erased_words,
         )
+      // Mirror the page-deletion skip-accounting: credit every newly
+      // vanished word to `session_words_skipped` so `words_read` stays
+      // honest — words destroyed before the reader reaches them are not
+      // read. The once-per-book guard means this runs at most once, so
+      // the idempotence constraint that governs page deletion (size delta
+      // = 0 on revisit) does not apply here, but the accounting is
+      // identical in shape to the jump lock-in pattern.
+      let added = set.size(erased_words) - set.size(model.erased_words)
       let updated =
         Model(
           ..model,
           erased: erased,
           erased_words: erased_words,
           full_sweep_applied: True,
+          session_words_skipped: model.session_words_skipped + added,
         )
       #(updated, save_reading_state(updated))
     }

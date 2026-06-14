@@ -10515,3 +10515,278 @@ pub fn settings_random_delete_hidden_in_library_test() {
     matching: lustre_query.attribute("aria-label", "Deletion granularity"),
   )
 }
+
+pub fn page_deletion_credits_session_words_skipped_test() {
+  // Words removed by the page-per-page deletion feature must NOT count
+  // toward `words_read`. The fix: `apply_page_deletion` credits the
+  // `erased_words` size delta to `session_words_skipped`, so the
+  // closing PUT formula (`erased_delta - session_words_skipped`) nets
+  // to zero for a session whose only erasures came from deletion.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      // Simulate an open session starting from a clean slate.
+      active_session_id: Some("s-1"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let updated = apply_page_deletion(model)
+
+  // Some words were actually vanished.
+  let vanished = set.size(updated.erased_words)
+  assert vanished > 0
+
+  // session_words_skipped rose by exactly the number newly vanished.
+  assert updated.session_words_skipped == vanished
+
+  // Drive the model through the production closing-PUT body rather than
+  // re-deriving the formula inline — this binds the test to the real
+  // `build_session_snapshot_body` so it stays a regression guard even if
+  // the formula moves. `words_read` is zero (the feature destroyed these
+  // words, the reader did not read them); they surface as `words_skipped`.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: vanished,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+
+pub fn page_deletion_idempotent_session_words_skipped_test() {
+  // Re-applying the same page's deletion (same seed, same units) must
+  // not double-count session_words_skipped. The set size delta is zero
+  // on the second call because the same indices are already in
+  // `erased_words`, so the accumulator stays unchanged.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      active_session_id: Some("s-2"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let after_first = apply_page_deletion(model)
+  let after_second = apply_page_deletion(after_first)
+
+  // No additional words erased on the second call.
+  assert after_second.erased_words == after_first.erased_words
+  // No additional credit accumulated either.
+  assert after_second.session_words_skipped == after_first.session_words_skipped
+}
+
+pub fn full_sweep_credits_session_words_skipped_test() {
+  // The one-shot full-sweep is subject to the same accounting bug as
+  // page deletion: it grows `erased_words` without touching
+  // `session_words_skipped`, so every swept word falsely inflated
+  // `words_read`. The fix mirrors the page-deletion approach.
+  let model =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      active_session_id: Some("s-3"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let #(updated, _eff) = apply_full_sweep(model)
+
+  let vanished = set.size(updated.erased_words)
+  assert vanished > 0
+
+  // session_words_skipped rose by exactly the number newly vanished.
+  assert updated.session_words_skipped == vanished
+
+  // Drive through the production closing-PUT body rather than re-deriving
+  // the formula inline, mirroring the page-deletion credit test. The swept
+  // words net to `words_read == 0` and surface as `words_skipped`.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: 0,
+      words_skipped: vanished,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+
+pub fn page_deletion_skip_credit_excludes_already_erased_words_test() {
+  // The load-bearing property of the delta-based credit: words ALREADY
+  // in `erased_words` before deletion runs (read naturally this session,
+  // or vanished by a prior erasure) must NOT be re-credited to
+  // `session_words_skipped`. The clean-slate tests above cannot catch a
+  // regression to a naive `session_words_skipped += set.size(picked)` —
+  // that would over-credit by the overlap yet still pass them. This test
+  // seeds a non-empty proper subset of the page's deterministic picks as
+  // already-erased and asserts the credit covers ONLY the newly vanished
+  // words. It then drives the result through the real
+  // `build_session_snapshot_body`, binding the assertion to the
+  // production closing-PUT formula rather than an inline re-derivation:
+  // the seeded words are read-this-session and net to `words_read`, while
+  // the deletion-vanished words net to zero.
+
+  // Discover the page's deterministic picks by deleting from a clean
+  // slate — `reservoir_sample` is seed-stable, so the pick is fixed.
+  let clean =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let baseline = apply_page_deletion(clean)
+  let picked = baseline.erased_words
+  let picked_count = set.size(picked)
+  // A meaningful proper subset needs at least two picked words.
+  assert picked_count >= 2
+
+  // Seed a non-empty proper subset of the picks as already-erased,
+  // simulating words the reader read naturally this session whose
+  // indices happen to coincide with what page deletion also targets.
+  let seeded_count = picked_count / 2
+  let seeded = set.from_list(list.take(sorted(picked), seeded_count))
+  assert set.size(seeded) == seeded_count
+  assert seeded_count > 0
+  assert seeded_count < picked_count
+
+  // Session opened on a clean slate (start count 0); the seeded words
+  // were read after open, so they belong to this session's `words_read`.
+  let model =
+    Model(
+      ..clean,
+      erased_words: seeded,
+      active_session_id: Some("s-overlap"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let updated = apply_page_deletion(model)
+
+  // Deletion is deterministic: the final set equals the clean-slate
+  // picks (the seeded subset was already going to be erased).
+  assert updated.erased_words == picked
+  // Credit covers ONLY the newly vanished words — picked minus the
+  // already-erased overlap. A `+= set.size(picked)` regression credits
+  // the full `picked_count` and fails this assertion.
+  assert updated.session_words_skipped == picked_count - seeded_count
+
+  // Strictly-stronger check: drive the model through the production
+  // closing-PUT body and pin the WHOLE payload, not individual fields.
+  // `words_read` nets out the deletion-vanished words and retains the
+  // genuinely-read ones, so it equals `seeded_count`; `words_skipped`
+  // carries the deletion overlap exclusion. Pinning the full
+  // `SnapshotBody` plus the sorted key list also catches drift in
+  // `pages_turned` (0 — no page motion) and stray extra keys for free.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: seeded_count,
+      words_skipped: picked_count - seeded_count,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+
+pub fn full_sweep_skip_credit_excludes_already_erased_words_test() {
+  // The full-sweep helper shares the page-deletion `set.size` delta
+  // idiom, so it inherits the same anti-double-count invariant: words
+  // already erased before the sweep must not be re-credited as skipped.
+  // Same construction as the page-deletion overlap test — discover the
+  // deterministic picks, seed a proper subset, assert the credit and the
+  // production `words_read` formula both exclude the overlap.
+
+  let clean =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+    )
+  let #(baseline, _eff) = apply_full_sweep(clean)
+  let picked = baseline.erased_words
+  let picked_count = set.size(picked)
+  assert picked_count >= 2
+
+  let seeded_count = picked_count / 2
+  let seeded = set.from_list(list.take(sorted(picked), seeded_count))
+  assert set.size(seeded) == seeded_count
+  assert seeded_count > 0
+  assert seeded_count < picked_count
+
+  let model =
+    Model(
+      ..clean,
+      erased_words: seeded,
+      active_session_id: Some("s-sweep-overlap"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let #(updated, _eff2) = apply_full_sweep(model)
+
+  assert updated.erased_words == picked
+  assert updated.session_words_skipped == picked_count - seeded_count
+
+  // Pin the WHOLE closing-PUT payload plus the sorted key list, mirroring
+  // the page-deletion overlap test — this also locks `pages_turned` (0 —
+  // the full sweep does not advance the page) and rejects extra keys.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised
+    == SnapshotBody(
+      ended_at: "<wall-clock>",
+      words_read: seeded_count,
+      words_skipped: picked_count - seeded_count,
+      pages_turned: 0,
+      duration_seconds: 0,
+    )
+  assert keys
+    == [
+      "duration_seconds",
+      "ended_at",
+      "pages_turned",
+      "words_read",
+      "words_skipped",
+    ]
+}
+// Regression guard for jump-skip accounting: the existing
+// `lock_in_jump_accumulates_session_words_skipped_test` covers the
+// LockInJump path. The fix in `apply_page_deletion` and
+// `apply_full_sweep` touches only the random-deletion path and leaves
+// the jump accumulator pattern untouched.
