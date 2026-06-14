@@ -595,8 +595,11 @@ body.vi-reduced-motion .btn-bar:active {
 }
 
 .reader-page-label {
-  /* Centred page indicator on the manual bottom bar. Sans-serif
-   * to read as chrome rather than prose. */
+  /* `Page X of Y` indicator, shared by both bottom-bar modes. It
+   * grows (`flex: 1 1 auto`) to absorb the row's free space, which
+   * left-anchors the label and pushes the trailing controls to the
+   * right edge — the same left-rail convention in manual and
+   * real-time mode. Sans-serif to read as chrome rather than prose. */
   flex: 1 1 auto;
   font-family: system-ui, sans-serif;
   font-size: 12px;
@@ -605,13 +608,18 @@ body.vi-reduced-motion .btn-bar:active {
 }
 
 .reader-bottom-realtime {
-  /* Real-time mode: WPM readout (left), play/pause button (centre,
-   * 56px circle), balancing spacer (right). The spacer's width
-   * mirrors `.wpm-readout` so the play button sits perfectly
-   * centred in the bar. */
+  /* Real-time mode: Page X of Y (left), then the control cluster —
+   * WPM readout, play/pause button (56px circle), Jump — grouped at
+   * the right. The same `space-between` strategy as `.reader-bottom-
+   * manual`: the grow-child page label absorbs the free space and
+   * left-anchors itself while the `flex: 0 0 auto` controls ride the
+   * right edge, separated by the 24px gap. (Earlier this row centred
+   * a lone play button between a WPM readout and a balancing spacer;
+   * the spacer gave way to the Jump button, and then the leading page
+   * label, so the layout now matches manual mode's left-rail shape.) */
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
   height: 72px;
   padding: 0 20px;
   gap: 24px;
@@ -674,13 +682,6 @@ body.vi-reduced-motion .btn-play {
 
 body.vi-reduced-motion .btn-play:active {
   transform: none;
-}
-
-.btn-play-spacer {
-  /* Mirrors `.wpm-readout` width so the play button sits centred
-   * between two equal-width siblings. */
-  flex: 0 0 auto;
-  min-width: 60px;
 }
 
 /* ---------------------------------------------------------------------
