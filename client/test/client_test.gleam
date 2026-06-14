@@ -10515,3 +10515,99 @@ pub fn settings_random_delete_hidden_in_library_test() {
     matching: lustre_query.attribute("aria-label", "Deletion granularity"),
   )
 }
+
+pub fn page_deletion_credits_session_words_skipped_test() {
+  // Words removed by the page-per-page deletion feature must NOT count
+  // toward `words_read`. The fix: `apply_page_deletion` credits the
+  // `erased_words` size delta to `session_words_skipped`, so the
+  // closing PUT formula (`erased_delta - session_words_skipped`) nets
+  // to zero for a session whose only erasures came from deletion.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      // Simulate an open session starting from a clean slate.
+      active_session_id: Some("s-1"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let updated = apply_page_deletion(model)
+
+  // Some words were actually vanished.
+  let vanished = set.size(updated.erased_words)
+  assert vanished > 0
+
+  // session_words_skipped rose by exactly the number newly vanished.
+  assert updated.session_words_skipped == vanished
+
+  // Computed words_read (the closing PUT formula) is zero — the reader
+  // did not read these words, the feature destroyed them.
+  let words_read =
+    set.size(updated.erased_words)
+    - updated.session_start_erased_count
+    - updated.session_words_skipped
+  assert words_read == 0
+}
+
+pub fn page_deletion_idempotent_session_words_skipped_test() {
+  // Re-applying the same page's deletion (same seed, same units) must
+  // not double-count session_words_skipped. The set size delta is zero
+  // on the second call because the same indices are already in
+  // `erased_words`, so the accumulator stays unchanged.
+  let model =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+      active_session_id: Some("s-2"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let after_first = apply_page_deletion(model)
+  let after_second = apply_page_deletion(after_first)
+
+  // No additional words erased on the second call.
+  assert after_second.erased_words == after_first.erased_words
+  // No additional credit accumulated either.
+  assert after_second.session_words_skipped == after_first.session_words_skipped
+}
+
+pub fn full_sweep_credits_session_words_skipped_test() {
+  // The one-shot full-sweep is subject to the same accounting bug as
+  // page deletion: it grows `erased_words` without touching
+  // `session_words_skipped`, so every swept word falsely inflated
+  // `words_read`. The fix mirrors the page-deletion approach.
+  let model =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      active_session_id: Some("s-3"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let #(updated, _eff) = apply_full_sweep(model)
+
+  let vanished = set.size(updated.erased_words)
+  assert vanished > 0
+
+  // session_words_skipped rose by exactly the number newly vanished.
+  assert updated.session_words_skipped == vanished
+
+  // Closing PUT would compute words_read = 0.
+  let words_read =
+    set.size(updated.erased_words)
+    - updated.session_start_erased_count
+    - updated.session_words_skipped
+  assert words_read == 0
+}
+// Regression guard for jump-skip accounting: the existing
+// `lock_in_jump_accumulates_session_words_skipped_test` (line ~7658)
+// covers the LockInJump path. The fix in `apply_page_deletion` and
+// `apply_full_sweep` touches only the random-deletion path and leaves
+// the jump accumulator pattern untouched.
