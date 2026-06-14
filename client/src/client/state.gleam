@@ -667,6 +667,25 @@ pub type Model {
     flat_paragraphs: List(PageParagraph),
     pages: List(Page),
     current_page: Int,
+    /// One-shot carrier for a saved sentence anchor (`global_index`)
+    /// that is waiting to be resolved against the live pagination.
+    ///
+    /// The reading-state GET races pagination: it can land before *or*
+    /// after the first `ParagraphsMeasured`. When it lands first,
+    /// `model.pages` is still empty, so the anchor cannot be resolved to
+    /// a page yet. Rather than collapse the cross-device position to a
+    /// raw `current_page` index (the bug the anchor exists to fix), the
+    /// load handler parks the `global_index` here; the next
+    /// `ParagraphsMeasured` resolves it to a page via
+    /// `pagination.page_for_sentence_index`, sets `current_page`, and
+    /// clears this back to `None`. When the GET lands *after* pagination
+    /// the handler resolves inline and never sets this field.
+    ///
+    /// `None` at every other time. Reset on every per-book teardown
+    /// (`apply_text_load`, `apply_go_to_library`) so a stale anchor from
+    /// the previous book can never resolve against the next book's
+    /// pages.
+    resume_anchor: Option(Int),
     erased: Set(Int),
     touch_start: Option(#(Float, Float)),
     focused_sentence: Option(Int),

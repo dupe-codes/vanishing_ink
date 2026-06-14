@@ -365,11 +365,19 @@ pub type Msg {
   /// `GET /api/books/:id/state` resolved. The success arm decodes the
   /// body as a `ReadingState`, unpacks the base64 bitsets back into
   /// `Set(Int)` projections, maps `mode` onto the typed `Mode` variant,
-  /// and stamps `current_page`, `erased`, `erased_words`, and `mode`
-  /// onto the model. The error arm logs and continues with the empty
-  /// defaults `apply_text_load` already installed — a stuck request
-  /// leaves the reader on page 0 with no erasures, the same state a
-  /// fresh book would carry.
+  /// and stamps the reading position, `erased`, `erased_words`, and
+  /// `mode` onto the model. The error arm logs and continues with the
+  /// empty defaults `apply_text_load` already installed — a stuck
+  /// request leaves the reader on page 0 with no erasures, the same
+  /// state a fresh book would carry.
+  ///
+  /// The reading position is restored from the device-independent
+  /// `anchor_sentence_index` (the `global_index` of the first sentence
+  /// on the saved page) when one is present, resolving it to a page
+  /// under the current device's pagination; a legacy row with no anchor
+  /// (`-1`) falls back to the raw `current_page` index. Because the GET
+  /// can land before the first `ParagraphsMeasured`, the handler may
+  /// park the anchor in `Model.resume_anchor` for pagination to resolve.
   ///
   /// The `book_id` round-trips the originating request id so the
   /// reducer can drop responses whose id no longer matches

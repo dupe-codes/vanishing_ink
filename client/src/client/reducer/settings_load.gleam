@@ -210,10 +210,40 @@ pub fn apply_reading_state_loaded(
         "ghost" -> RealTime
         _ -> Manual
       }
-      let target_page = case model.total_pages > 0 {
-        True ->
-          pagination.clamp_page_index(state.current_page, model.total_pages)
-        False -> state.current_page
+      // Resolve the reading position from the sentence anchor when one
+      // is present, falling back to the raw `current_page` index for
+      // legacy rows (anchor `-1`). The anchor is the cross-device source
+      // of truth: a page index is viewport-dependent, but a sentence's
+      // `global_index` resolves to whatever page contains it under *this*
+      // device's pagination — see `pagination.page_for_sentence_index`.
+      //
+      // The GET races the first `ParagraphsMeasured`: it can land before
+      // pagination has produced any pages. With pages present we resolve
+      // the anchor here and now; without them we cannot, so we park the
+      // anchor in `resume_anchor` for the next `ParagraphsMeasured` to
+      // resolve, rather than collapsing the position to a raw page index
+      // (the exact divergence the anchor exists to prevent). The legacy
+      // no-anchor path keeps today's behaviour: stash `current_page`
+      // (clamped if pages exist) and let repagination clamp it later.
+      let has_anchor = state.anchor_sentence_index >= 0
+      let pages_ready = model.total_pages > 0
+      let #(target_page, resume_anchor) = case has_anchor, pages_ready {
+        True, True -> #(
+          pagination.clamp_page_index(
+            pagination.page_for_sentence_index(
+              model.pages,
+              state.anchor_sentence_index,
+            ),
+            model.total_pages,
+          ),
+          None,
+        )
+        True, False -> #(0, Some(state.anchor_sentence_index))
+        False, True -> #(
+          pagination.clamp_page_index(state.current_page, model.total_pages),
+          None,
+        )
+        False, False -> #(state.current_page, None)
       }
       let loaded_erased = decode_base64_to_indices(state.sentence_bitset)
       let loaded_erased_words = decode_base64_to_indices(state.word_bitset)
@@ -244,6 +274,7 @@ pub fn apply_reading_state_loaded(
           erased: loaded_erased,
           erased_words: loaded_erased_words,
           current_page: target_page,
+          resume_anchor: resume_anchor,
           chapter_entries: chapter_entries,
           session_start_page: restamped_start_page,
           session_start_erased_count: restamped_start_erased_count,

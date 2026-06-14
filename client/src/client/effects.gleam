@@ -33,6 +33,7 @@ import client/msg.{
   FetchSpeedTrendResult, LinesMeasured, ParagraphsMeasured, ReadingStateLoaded,
   SessionCreated, SessionEnded, SettingsLoaded, ViewportResized,
 }
+import client/pagination
 import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
   page_content_id,
@@ -225,6 +226,21 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
         Manual -> "manual"
         RealTime -> "ghost"
       }
+      // Persist the reading position as a sentence anchor — the
+      // `global_index` of the first sentence on the reader's current
+      // page — not the raw `current_page` index. Pagination is
+      // viewport-dependent, so a page index does not survive a device
+      // change; a sentence's `global_index` resolves to whatever page
+      // contains it under any pagination. `current_page` still rides in
+      // the body below as a same-device fast-path and a back-compat
+      // fallback, but the anchor is the cross-device source of truth.
+      //
+      // `None` (no first sentence resolvable — pagination has not run,
+      // or a pathological empty page) maps to the `-1` "no anchor"
+      // sentinel, which the load path falls back to `current_page` for.
+      let anchor_sentence_index =
+        pagination.first_sentence_index_on_page(model.pages, model.current_page)
+        |> option.unwrap(-1)
       let body =
         json.object([
           #("book_id", json.string(id)),
@@ -241,11 +257,22 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
             ),
           ),
           #("current_page", json.int(model.current_page)),
-          // `helpers.progress_percentage` is the canonical reader-side
-          // page-based progress computation; sending it here keeps the
-          // server view of progress in lock-step with the bar the
-          // reader sees rendered on screen.
-          #("percent_progress", json.float(helpers.progress_percentage(model))),
+          #("anchor_sentence_index", json.int(anchor_sentence_index)),
+          // Progress derives from the anchor's document position
+          // (`anchor_sentence_index / total_sentence_count`), not from
+          // the page index, so the persisted figure is
+          // pagination-independent: it reads back the same on any device.
+          // See `helpers.anchor_progress_percentage`. `helpers
+          // .progress_percentage` (the old page-based computation) is
+          // retained for the in-reader progress bar, which is always a
+          // single-viewport read.
+          #(
+            "percent_progress",
+            json.float(helpers.anchor_progress_percentage(
+              anchor_sentence_index,
+              model.total_sentence_count,
+            )),
+          ),
           #("random_page_delete_on", json.bool(model.random_page_delete_on)),
           #(
             "deletion_granularity",

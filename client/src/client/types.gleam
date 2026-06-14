@@ -205,15 +205,21 @@ pub type ReadingState {
     sentence_bitset: Option(String),
     word_bitset: Option(String),
     current_page: Int,
-    /// Page-based progress percentage in `[0, 100]`. The server stores
-    /// the value the client last PUT (computed as
-    /// `(current_page + 1) / total_pages * 100`) and echoes it back on
-    /// the read; the GET handler stays a pure mirror of the on-disk
-    /// row, no derivation. The persisted number is
-    /// *viewport-of-last-save* — whatever pagination the saving
-    /// viewport happened to produce — not viewport-agnostic; see
-    /// `state/helpers.gleam:percent_progress` for the helper-purity
-    /// vs system-purity distinction.
+    /// `global_index` of the first sentence on the reader's saved page —
+    /// the device-independent reading-position anchor. Mirrors
+    /// `server/types.gleam:ReadingState.anchor_sentence_index`. `-1` is
+    /// the "no anchor" sentinel: a legacy row saved before the anchor
+    /// existed, which the load path falls back to `current_page` for.
+    /// Decoded through `optional_field` with a `-1` default so a payload
+    /// from an older server (no key) still decodes.
+    anchor_sentence_index: Int,
+    /// Document-position progress percentage in `[0, 100]`. The server
+    /// stores the value the client last PUT (computed as
+    /// `anchor_sentence_index / total_sentence_count * 100`) and echoes
+    /// it back on the read; the GET handler stays a pure mirror of the
+    /// on-disk row, no derivation. Deriving from document position rather
+    /// than page index makes the figure viewport-agnostic — see
+    /// `state/helpers.gleam:anchor_progress_percentage`.
     percent_progress: Float,
     /// Random destructive deletion settings, persisted per book. The
     /// page-per-page toggle and the once-per-book full-sweep guard ride
@@ -241,6 +247,15 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   )
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
+  // `optional_field` with the `-1` "no anchor" sentinel as default keeps
+  // the decode resilient to a payload from an older server that predates
+  // the cross-device-anchor quest (the key is simply absent there) —
+  // same backwards-compatible shape as the random-deletion fields below.
+  use anchor_sentence_index <- decode.optional_field(
+    "anchor_sentence_index",
+    -1,
+    decode.int,
+  )
   use percent_progress <- decode.field("percent_progress", decode.float)
   // The four random-deletion fields decode through `optional_field` with
   // defaults so a reading-state payload that predates the feature (an
@@ -274,6 +289,7 @@ pub fn reading_state_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    anchor_sentence_index: anchor_sentence_index,
     percent_progress: percent_progress,
     random_page_delete_on: random_page_delete_on,
     deletion_granularity: deletion_granularity,

@@ -112,15 +112,39 @@ pub type ReadingState {
     sentence_bitset: Option(BitArray),
     word_bitset: Option(BitArray),
     current_page: Int,
-    /// Page-based progress percentage. Computed client-side as
-    /// `(current_page + 1) / total_pages * 100` and echoed verbatim
-    /// on the wire so the library card can display the same number
-    /// the reader sees in the progress bar. Stored as a `REAL` in
-    /// `reading_state.percent_progress`, defaulting to `0.0` for
-    /// rows created before the page-based-progress quest. The
-    /// persisted number is *viewport-of-last-save* — whatever
-    /// pagination the client's viewport produced at PUT time — not
-    /// viewport-agnostic.
+    /// `global_index` of the first sentence on the reader's current
+    /// page — the device-independent reading-position anchor.
+    ///
+    /// `current_page` alone cannot survive a device change: pagination
+    /// depends on viewport, font size, and line spacing, so page N on a
+    /// phone is not page N on a desktop. A sentence's `global_index`, by
+    /// contrast, is assigned by the segmenter over the full text and is
+    /// stable across every pagination — the same identity space the
+    /// `erased` / `erased_words` bitsets already key on. Pagination runs
+    /// over the *full* text (erasure is only a render overlay), so this
+    /// anchor always resolves to a page regardless of erase state, with
+    /// no "next visible unit" fallback needed.
+    ///
+    /// `-1` is the "no anchor" sentinel for rows persisted before this
+    /// field existed; the client falls back to `current_page` then.
+    /// `current_page` is kept in the payload as a same-device fast-path
+    /// and that back-compat fallback, but the anchor wins whenever it is
+    /// present (`>= 0`).
+    anchor_sentence_index: Int,
+    /// Document-position progress percentage. Computed client-side from
+    /// the anchor's position in the document (`anchor_sentence_index /
+    /// total_sentence_count * 100`) and echoed verbatim on the wire so
+    /// the library card can display the same number the reader sees in
+    /// the progress bar. Stored as a `REAL` in
+    /// `reading_state.percent_progress`, defaulting to `0.0` for rows
+    /// created before the page-based-progress quest.
+    ///
+    /// Deriving from document position rather than the old
+    /// `(current_page + 1) / total_pages` makes the figure
+    /// pagination-independent: a reader who saves at 40% on a phone sees
+    /// the same 40% when the library card is rendered on a desktop,
+    /// because the numerator (a sentence's document index) and the
+    /// denominator (the total sentence count) are both viewport-agnostic.
     percent_progress: Float,
     /// Random destructive deletion settings, persisted per book. The
     /// page-per-page toggle and the once-per-book full-sweep guard are
@@ -245,6 +269,7 @@ pub fn reading_state_to_json(state: ReadingState) -> json.Json {
     ),
     #("word_bitset", json.nullable(state.word_bitset, bit_array_to_json)),
     #("current_page", json.int(state.current_page)),
+    #("anchor_sentence_index", json.int(state.anchor_sentence_index)),
     #("percent_progress", json.float(state.percent_progress)),
     #("random_page_delete_on", json.bool(state.random_page_delete_on)),
     #("deletion_granularity", json.string(state.deletion_granularity)),
