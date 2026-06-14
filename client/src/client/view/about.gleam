@@ -13,7 +13,8 @@
 //// The copy is deliberately grounded in what the code actually does
 //// (the two reading modes, Jump Ahead's preview/lock-in flow, the
 //// random-deletion granularity/intensity axes, the once-per-book full
-//// sweep). Overstating the feature set here would be the one place a
+//// sweep) and presents the mechanics without prescribing how or why to
+//// use them. Overstating the feature set here would be the one place a
 //// reader goes to *learn* the app, so the claims stay honest to the
 //// reducer.
 
@@ -58,38 +59,30 @@ fn view_about_appbar() -> Element(Msg) {
   ])
 }
 
-/// The scrollable prose body. Lead block (wordmark + tagline + the
-/// "why permanence" framing) followed by one section per feature
-/// cluster, closing with the project note. Each section is a
-/// `section-label` header (reusing the library's uppercase label
-/// treatment) over body copy.
+/// The scrollable prose body. Lead block (wordmark + tagline) followed
+/// by one section per feature cluster, closing with the attribution
+/// footer. Each section is a `section-label` header (reusing the
+/// library's uppercase label treatment) over body copy.
 fn view_about_body() -> Element(Msg) {
   html.div([attribute.class("about-body")], [
     view_lead(),
     view_section("Reading is permanent", [
       paragraph(
-        "Every word you read disappears, and there is no undo — not as a "
-        <> "per-mode warning but as a system-wide rule. That is the whole "
-        <> "point. Vanishing Ink is built for OCD ERP (Exposure Response "
-        <> "Prevention): re-reading is the compulsive safety behaviour, so "
-        <> "the app makes going back physically impossible. You read "
-        <> "forward, the text vanishes behind you, and the urge to check "
-        <> "what you just read has nothing to grab onto.",
+        "Every word you read disappears, and there is no undo. You read "
+        <> "forward, the text vanishes behind you, and going back is "
+        <> "physically impossible.",
       ),
     ]),
     view_section("Two ways to read", [
       paragraph(
         "Manual mode puts the erasing in your hands: tap (or click) a "
-        <> "sentence once you have finished it and it fades away. On "
-        <> "desktop, vim-style keys move the cursor sentence by sentence "
-        <> "and paragraph by paragraph, and erase-and-advance in one "
-        <> "keystroke.",
+        <> "sentence once you have finished it and it fades away.",
       ),
       paragraph(
         "Real-time mode hands the pace to a ghost-fade engine: words fade "
         <> "on their own at a words-per-minute speed you set, with a beat "
         <> "of pause between paragraphs. Play and pause whenever you need "
-        <> "to — but what has already faded stays gone.",
+        <> "to.",
       ),
     ]),
     view_section("Jump Ahead", [
@@ -103,10 +96,11 @@ fn view_about_body() -> Element(Msg) {
     ]),
     view_section("Random destructive deletion", [
       paragraph(
-        "For a sharper exposure, the app can vanish part of the text "
-        <> "before you ever reach it. A page-per-page toggle thins each "
-        <> "page as it loads, and a one-shot full sweep takes a bite out "
-        <> "of the entire book at once — available once per book, ever.",
+        "To introduce more uncertainty in what you're reading, the app can "
+        <> "vanish part of the text before you ever reach it. A "
+        <> "page-per-page toggle thins each page as it loads, and a "
+        <> "one-shot full sweep takes a bite out of the entire book at "
+        <> "once. The full sweep can be run only once per book.",
       ),
       paragraph(
         "Tune what disappears: granularity picks the unit (a word, a "
@@ -118,13 +112,11 @@ fn view_about_body() -> Element(Msg) {
     view_section("Your library", [
       paragraph(
         "Import an ePub file or paste in your own text to build a library "
-        <> "of books. Each book "
-        <> "keeps its own reading stats and sessions — words read, words "
-        <> "skipped, pages turned, time spent, and how your reading speed "
-        <> "is trending. Your position is saved as you go, so closing the "
-        <> "tab and coming back lands you exactly where you left off. "
-        <> "Reader settings (speed, spacing, dark mode, and more) live a "
-        <> "tap away.",
+        <> "of books. Each book keeps its own reading stats and sessions. "
+        <> "Your position is saved as you go, so closing the tab and "
+        <> "coming back lands you exactly where you left off. Reader "
+        <> "settings (speed, spacing, dark mode, and more) live a tap "
+        <> "away.",
       ),
     ]),
     view_closing_note(),
@@ -151,14 +143,19 @@ fn view_lead() -> Element(Msg) {
   ])
 }
 
-/// Closing project note — small print on the why-it-exists. Distinct
-/// muted treatment so it reads as a footer rather than another feature
-/// section.
+/// Closing attribution footer: a muted credit line linking to the
+/// author's GitHub. Distinct muted treatment so it reads as a footer
+/// rather than another feature section.
 fn view_closing_note() -> Element(Msg) {
   html.div([attribute.class("about-note")], [
-    html.text(
-      "Vanishing Ink is a personal project, built end to end in Gleam as a "
-      <> "way to learn the language.",
+    html.text("personal project built by "),
+    html.a(
+      [
+        attribute.href("https://github.com/dupe-codes"),
+        attribute.target("_blank"),
+        attribute.rel("noopener noreferrer"),
+      ],
+      [html.text("dupe-codes")],
     ),
   ])
 }
