@@ -431,11 +431,17 @@ fn words_before_page(pages: List(Page), limit: Int) -> set.Set(Int) {
 ///
 /// * `Stopped` — clear `next_word_index`. The engine is dormant; the
 ///   prior pointer is meaningless on the new page.
-/// * `Paused` — keep the preview's `prior_next_word_index`. A paused
-///   engine never ticks, so a stale pointer is safe; a future
-///   `ResumeFade` would either find an eligible word and continue,
-///   or hit the `next_eligible_after` `None` arm and advance pages
-///   naturally.
+/// * `Paused` — re-anchor the pointer to the first eligible word on
+///   the now-current page, exactly like the `Running` arm, but stay
+///   `Paused`. The stale `prior_next_word_index` points at a word on
+///   the *source* page, and `apply_resume_fade` (`client/engine`) only
+///   flips `Paused -> Running` and schedules a tick — it never touches
+///   `next_word_index`. Keeping the stale pointer would make the first
+///   post-resume `apply_advance_word` fade an old-page word and walk
+///   `next_eligible_after` forward from there, dragging the reader's
+///   view back to the page they jumped from. When the new page has no
+///   eligible word, drop to `Stopped` with `None` (a safe shape) so the
+///   reader's next manual start re-finds an anchor on the current page.
 /// * `Running` — re-anchor the pointer to the first eligible word on
 ///   the now-current page. The engine panics on `Running, None`, so
 ///   leaving the prior pointer in place (which may not exist on the
@@ -454,11 +460,11 @@ fn restore_engine_after_jump(
   case preview.prior_engine_state {
     Stopped -> Model(..model, engine_state: Stopped, next_word_index: None)
     Paused ->
-      Model(
-        ..model,
-        engine_state: Paused,
-        next_word_index: preview.prior_next_word_index,
-      )
+      case first_eligible_word(model) {
+        Some(idx) ->
+          Model(..model, engine_state: Paused, next_word_index: Some(idx))
+        None -> Model(..model, engine_state: Stopped, next_word_index: None)
+      }
     Running ->
       case first_eligible_word(model) {
         Some(idx) ->

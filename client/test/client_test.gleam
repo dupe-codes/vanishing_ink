@@ -6920,6 +6920,80 @@ pub fn update_lock_in_jump_paused_snapshot_skips_timer_resume_test() {
   assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
 }
 
+pub fn update_lock_in_jump_reanchors_paused_engine_to_new_page_test() {
+  // RealTime jump → lock in → play must resume the fade on the NEW
+  // page even when the engine was *Paused* at jump time. The preview
+  // stashes `prior_next_word_index: Some(0)` — a word on the source
+  // page 0. `apply_resume_fade` only flips `Paused -> Running` and
+  // schedules a tick; it never re-finds an eligible word. So if the
+  // `Paused` restore arm kept the stale pointer, the first post-resume
+  // `apply_advance_word` would fade word 0 on the old page and walk
+  // forward from there, dragging the view back. The arm therefore
+  // re-anchors to the first eligible word on the now-current page,
+  // mirroring the `Running` arm, while staying `Paused`.
+  //
+  // After the bulk vanish on lock-in, every word on pages 0..1
+  // (global indices 0..3) is erased, so the first eligible word on
+  // page 2 is word 4 ("Two") — the same anchor the `Running` sibling
+  // test pins.
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Paused,
+      prior_next_word_index: Some(0),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+    )
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  // Engine stays Paused, but the pointer now lands on a word that
+  // belongs to the NEW current page (4), not the source-page pointer
+  // (0) the preview carried.
+  assert updated.engine_state == Paused
+  assert updated.next_word_index == Some(4)
+  // A Paused restoration never re-arms the FFI timer; that stays the
+  // responsibility of a later `ResumeFade`.
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
+}
+
+pub fn update_lock_in_jump_paused_engine_drops_to_stopped_when_no_eligible_word_test() {
+  // The `Stopped`/`None` fallback for the Paused arm. When the new
+  // current page has no eligible word — here both of page 2's words
+  // (global indices 4 and 5) are already erased before the jump — the
+  // arm cannot re-anchor. It drops to `Stopped` with `next_word_index:
+  // None` rather than keeping a stale pointer or leaving a `Paused`
+  // engine pointing at nothing. (`Stopped, None` is a safe shape; the
+  // `Running, None` panic invariant is never produced.)
+  let preview =
+    JumpPreview(
+      source_page: 0,
+      prior_engine_state: Paused,
+      prior_next_word_index: Some(0),
+    )
+  let prior =
+    Model(
+      ..jump_model(),
+      active_book_id: Some("the-iliad"),
+      current_page: 2,
+      jump_preview: Some(preview),
+      engine_state: Paused,
+      erased_words: set.from_list([4, 5]),
+    )
+
+  let #(updated, _effect) = reducer.update(prior, LockInJump)
+
+  assert updated.engine_state == Stopped
+  assert updated.next_word_index == None
+  assert jump_reducer.should_resume_word_timer_after_jump(updated) == False
+}
+
 pub fn update_lock_in_jump_stopped_snapshot_skips_timer_resume_test() {
   // A `Stopped` snapshot — the engine was dormant pre-jump — also
   // skips the timer resume. The restored engine is `Stopped`, not
