@@ -71,7 +71,7 @@
    * `model.ghost_opacity` float. */
   --vi-ghost-opacity: 0;
   /* `0.65s` is the prototype's `--fade-dur` — slow enough to read
-   * as a therapeutic dissolve rather than a UI snap. Collapsed to
+   * as a deliberate dissolve rather than a UI snap. Collapsed to
    * `0s` under `vi-reduced-motion`. */
   --vi-transition-duration: 0.65s;
   /* Snappy duration for chrome interactions — button presses, body

@@ -1,8 +1,7 @@
 # Vanishing Ink
 
-A mobile-first eReader for OCD ERP (Exposure Response Prevention): text
-disappears as you read. The aim is to remove the safety behaviour of
-re-reading by making it physically impossible. Built in Gleam end to end
+A mobile-first eReader where text disappears as you read — making it
+physically impossible to go back and re-read. Built in Gleam end to end
 under Operation Luminous as the learning vehicle for the language.
 
 ## Repo layout
