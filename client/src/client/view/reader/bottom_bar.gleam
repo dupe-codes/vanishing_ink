@@ -13,7 +13,7 @@
 //// state, the inner row swaps shape with `model.mode`:
 ////
 //// * Manual — `Page N of M   [Jump]   [Turn Page →]`
-//// * RealTime — `WPM readout   [▶ / ⏸]   [Jump]`
+//// * RealTime — `Page N of M   WPM readout   [▶ / ⏸]   [Jump]`
 
 import gleam/int
 import gleam/option.{None, Some}
@@ -96,6 +96,20 @@ fn view_jump_button(model: Model, total: Int) -> Element(Msg) {
   )
 }
 
+/// Returns the `"Page N of M"` string for the current page (one-based).
+/// Yields an empty string before pagination produces any pages so the
+/// bottom bar's height stays stable while waiting for the first result.
+fn page_label_text(model: Model, total: Int) -> String {
+  case total {
+    0 -> ""
+    _ ->
+      "Page "
+      <> int.to_string(model.current_page + 1)
+      <> " of "
+      <> int.to_string(total)
+  }
+}
+
 /// Manual-mode bottom bar inner row.
 ///
 /// Layout: `Page N of M   [Jump]   [Turn Page →]`.
@@ -113,14 +127,7 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
     False -> "Turn Page →"
   }
   let next_disabled = total == 0 || on_last_page
-  let page_text = case total {
-    0 -> ""
-    _ ->
-      "Page "
-      <> int.to_string(model.current_page + 1)
-      <> " of "
-      <> int.to_string(total)
-  }
+  let page_text = page_label_text(model, total)
 
   html.div([attribute.class("reader-bottom-manual")], [
     html.div([attribute.class("reader-page-label")], [html.text(page_text)]),
@@ -140,7 +147,7 @@ fn view_bottom_manual(model: Model, total: Int) -> Element(Msg) {
 
 /// Real-time mode bottom bar inner row.
 ///
-/// Layout: `WPM readout   [▶ / ⏸]   (spacer)`.
+/// Layout: `Page N of M   WPM readout   [▶ / ⏸]   [Jump]`.
 ///
 /// The play button cycles through the engine's three states:
 ///
@@ -173,6 +180,9 @@ fn view_bottom_realtime(model: Model, total: Int) -> Element(Msg) {
   }
 
   html.div([attribute.class("reader-bottom-realtime")], [
+    html.div([attribute.class("reader-page-label")], [
+      html.text(page_label_text(model, total)),
+    ]),
     html.div(
       [
         attribute.class("wpm-readout"),

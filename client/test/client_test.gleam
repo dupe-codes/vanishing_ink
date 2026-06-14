@@ -1032,6 +1032,34 @@ pub fn view_renders_current_page_and_indicator_when_pages_populated_test() {
   assert paragraph_0_chunks == 2
 }
 
+pub fn view_renders_page_label_in_realtime_bottom_bar_test() {
+  // RealTime mode's bottom bar must render the same `Page N of M`
+  // label as Manual mode. This pins that `page_label_text` is shared
+  // and that the realtime bar wraps the result in `.reader-page-label`.
+  let text = two_chapter_text()
+  let flat = pagination.flatten(text)
+  let pages = list.index_map(flat, fn(p, i) { Page(index: i, paragraphs: [p]) })
+  let model =
+    Model(
+      ..empty_model(),
+      mode: RealTime,
+      text: Some(text),
+      flat_paragraphs: flat,
+      pages: pages,
+      current_page: 1,
+      total_pages: list.length(pages),
+    )
+
+  let rendered = view.view(model) |> element.to_string
+
+  assert string.contains(
+    rendered,
+    "<div class=\"reader-page-label\">Page 2 of 3</div>",
+  )
+  assert string.contains(rendered, "class=\"reader-bottom-bar\"")
+  assert string.contains(rendered, "class=\"reader-bottom-realtime\"")
+}
+
 pub fn view_attaches_chapter_title_to_first_paragraph_of_titled_chapter_test() {
   // Chapter titles ride with the first paragraph of their chapter
   // so a page boundary in the middle of a chapter does not orphan
@@ -4886,18 +4914,17 @@ pub fn view_bottom_bar_renders_manual_layout_when_mode_is_manual_test() {
 }
 
 pub fn view_bottom_bar_renders_realtime_layout_when_mode_is_realtime_test() {
-  // RealTime mode bottom bar: WPM readout, play button, Jump button.
-  // The play button stays centred between the wpm readout and the
-  // jump affordance — the trailing spacer was replaced by the Jump
-  // button when the Jump Ahead surface landed, so the inner row now
-  // carries three real children rather than two children plus a
-  // ghost spacer. Manual chrome (turn-page) must not appear —
-  // the bar is mode-conditional.
+  // RealTime mode bottom bar: page label, WPM readout, play button,
+  // Jump button. The inner row carries four children: the page label
+  // on the left (matching Manual mode's left-rail convention), then
+  // the WPM readout, play button, and jump affordance. Manual chrome
+  // (turn-page) must not appear — the bar is mode-conditional.
   let model = Model(..fade_model_single_page(), mode: RealTime, wpm: 250)
 
   let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"reader-bottom-realtime\"")
+  assert string.contains(rendered, "class=\"reader-page-label\"")
   assert string.contains(rendered, "class=\"wpm-readout\"")
   assert string.contains(rendered, "250 wpm")
   assert string.contains(rendered, "btn-play")
@@ -7242,13 +7269,14 @@ pub fn view_renders_jump_button_in_manual_bottom_bar_test() {
 
 pub fn view_renders_jump_button_in_realtime_bottom_bar_test() {
   // Same affordance in the real-time bottom bar — the Jump button
-  // replaces the trailing spacer in that branch so a RealTime
-  // reader can also open the menu without switching modes.
+  // appears alongside the page label, WPM readout, and play button
+  // so a RealTime reader can open the menu without switching modes.
   let model = Model(..jump_model(), mode: RealTime, view: Reader)
 
   let rendered = view.view(model) |> element.to_string
 
   assert string.contains(rendered, "class=\"btn-bar jump\"")
+  assert string.contains(rendered, "class=\"reader-page-label\"")
 }
 
 pub fn view_renders_jump_overlay_when_menu_open_test() {
