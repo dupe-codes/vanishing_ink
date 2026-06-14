@@ -105,8 +105,7 @@ fn view_about_body() -> Element(Msg) {
       paragraph(
         "Tune what disappears: granularity picks the unit (a word, a "
         <> "phrase, or a whole sentence) and intensity sets how much goes "
-        <> "(low, medium, or high). The deletion is deterministic per "
-        <> "book, so the same book always vanishes the same way.",
+        <> "(low, medium, or high).",
       ),
     ]),
     view_section("Your library", [
