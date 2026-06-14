@@ -10606,8 +10606,121 @@ pub fn full_sweep_credits_session_words_skipped_test() {
     - updated.session_words_skipped
   assert words_read == 0
 }
+
+pub fn page_deletion_skip_credit_excludes_already_erased_words_test() {
+  // The load-bearing property of the delta-based credit: words ALREADY
+  // in `erased_words` before deletion runs (read naturally this session,
+  // or vanished by a prior erasure) must NOT be re-credited to
+  // `session_words_skipped`. The clean-slate tests above cannot catch a
+  // regression to a naive `session_words_skipped += set.size(picked)` —
+  // that would over-credit by the overlap yet still pass them. This test
+  // seeds a non-empty proper subset of the page's deterministic picks as
+  // already-erased and asserts the credit covers ONLY the newly vanished
+  // words. It then drives the result through the real
+  // `build_session_snapshot_body`, binding the assertion to the
+  // production closing-PUT formula rather than an inline re-derivation:
+  // the seeded words are read-this-session and net to `words_read`, while
+  // the deletion-vanished words net to zero.
+
+  // Discover the page's deterministic picks by deleting from a clean
+  // slate — `reservoir_sample` is seed-stable, so the pick is fixed.
+  let clean =
+    Model(
+      ..deletion_model(),
+      random_page_delete_on: True,
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+      current_page: 0,
+    )
+  let baseline = apply_page_deletion(clean)
+  let picked = baseline.erased_words
+  let picked_count = set.size(picked)
+  // A meaningful proper subset needs at least two picked words.
+  assert picked_count >= 2
+
+  // Seed a non-empty proper subset of the picks as already-erased,
+  // simulating words the reader read naturally this session whose
+  // indices happen to coincide with what page deletion also targets.
+  let seeded_count = picked_count / 2
+  let seeded = set.from_list(list.take(sorted(picked), seeded_count))
+  assert set.size(seeded) == seeded_count
+  assert seeded_count > 0
+  assert seeded_count < picked_count
+
+  // Session opened on a clean slate (start count 0); the seeded words
+  // were read after open, so they belong to this session's `words_read`.
+  let model =
+    Model(
+      ..clean,
+      erased_words: seeded,
+      active_session_id: Some("s-overlap"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let updated = apply_page_deletion(model)
+
+  // Deletion is deterministic: the final set equals the clean-slate
+  // picks (the seeded subset was already going to be erased).
+  assert updated.erased_words == picked
+  // Credit covers ONLY the newly vanished words — picked minus the
+  // already-erased overlap. A `+= set.size(picked)` regression credits
+  // the full `picked_count` and fails this assertion.
+  assert updated.session_words_skipped == picked_count - seeded_count
+
+  // Strictly-stronger check: drive the model through the production
+  // closing-PUT body. `words_read` nets out the deletion-vanished words
+  // and retains the genuinely-read ones, so it equals `seeded_count`.
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, _keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised.words_read == seeded_count
+  assert normalised.words_skipped == picked_count - seeded_count
+}
+
+pub fn full_sweep_skip_credit_excludes_already_erased_words_test() {
+  // The full-sweep helper shares the page-deletion `set.size` delta
+  // idiom, so it inherits the same anti-double-count invariant: words
+  // already erased before the sweep must not be re-credited as skipped.
+  // Same construction as the page-deletion overlap test — discover the
+  // deterministic picks, seed a proper subset, assert the credit and the
+  // production `words_read` formula both exclude the overlap.
+
+  let clean =
+    Model(
+      ..deletion_model(),
+      deletion_granularity: DeleteWord,
+      deletion_intensity: High,
+    )
+  let #(baseline, _eff) = apply_full_sweep(clean)
+  let picked = baseline.erased_words
+  let picked_count = set.size(picked)
+  assert picked_count >= 2
+
+  let seeded_count = picked_count / 2
+  let seeded = set.from_list(list.take(sorted(picked), seeded_count))
+  assert set.size(seeded) == seeded_count
+  assert seeded_count > 0
+  assert seeded_count < picked_count
+
+  let model =
+    Model(
+      ..clean,
+      erased_words: seeded,
+      active_session_id: Some("s-sweep-overlap"),
+      session_start_erased_count: 0,
+      session_words_skipped: 0,
+    )
+  let #(updated, _eff2) = apply_full_sweep(model)
+
+  assert updated.erased_words == picked
+  assert updated.session_words_skipped == picked_count - seeded_count
+
+  let body = effects.build_session_snapshot_body(updated)
+  let #(normalised, _keys) = parse_and_normalise_snapshot_body(body)
+  assert normalised.words_read == seeded_count
+  assert normalised.words_skipped == picked_count - seeded_count
+}
 // Regression guard for jump-skip accounting: the existing
-// `lock_in_jump_accumulates_session_words_skipped_test` (line ~7658)
-// covers the LockInJump path. The fix in `apply_page_deletion` and
+// `lock_in_jump_accumulates_session_words_skipped_test` covers the
+// LockInJump path. The fix in `apply_page_deletion` and
 // `apply_full_sweep` touches only the random-deletion path and leaves
 // the jump accumulator pattern untouched.
