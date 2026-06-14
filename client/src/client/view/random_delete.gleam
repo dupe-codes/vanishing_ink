@@ -46,10 +46,7 @@ fn view_random_delete_panel(model: Model) -> Element(Msg) {
       html.span([], [html.text("Random deletion")]),
     ]),
     html.div([attribute.class("settings-row-hint")], [
-      html.text(
-        "Vanish a portion of the text before you reach it. Deletion is "
-        <> "permanent — there is no undo.",
-      ),
+      html.text("Vanish a portion of the text before you reach it."),
     ]),
     view_page_delete_toggle(model),
     view_granularity_selector(model),
