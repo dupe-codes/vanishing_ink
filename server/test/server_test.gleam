@@ -163,6 +163,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
   )
   use word_bitset <- decode.field("word_bitset", decode.optional(decode.string))
   use current_page <- decode.field("current_page", decode.int)
+  use anchor_sentence_index <- decode.field("anchor_sentence_index", decode.int)
   use percent_progress <- decode.field("percent_progress", decode.float)
   use random_page_delete_on <- decode.field(
     "random_page_delete_on",
@@ -186,6 +187,7 @@ fn reading_state_wire_decoder() -> decode.Decoder(ReadingState) {
     sentence_bitset: sentence,
     word_bitset: word,
     current_page: current_page,
+    anchor_sentence_index: anchor_sentence_index,
     percent_progress: percent_progress,
     random_page_delete_on: random_page_delete_on,
     deletion_granularity: deletion_granularity,
@@ -424,6 +426,7 @@ pub fn get_reading_state_for_unwritten_book_returns_empty_default_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 0,
+      anchor_sentence_index: -1,
       percent_progress: 0.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -472,6 +475,7 @@ pub fn put_reading_state_round_trips_through_http_test() {
       sentence_bitset: Some(bytes),
       word_bitset: None,
       current_page: 5,
+      anchor_sentence_index: -1,
       percent_progress: 60.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -537,6 +541,7 @@ pub fn put_reading_state_rejects_stale_write_end_to_end_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 7,
+      anchor_sentence_index: -1,
       percent_progress: 0.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -699,6 +704,7 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 4,
+      anchor_sentence_index: -1,
       percent_progress: 42.5,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -737,6 +743,7 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 9,
+      anchor_sentence_index: -1,
       percent_progress: 100.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -750,6 +757,99 @@ pub fn put_reading_state_round_trips_percent_progress_test() {
   let upper_reloaded =
     decode_body(upper_get_response, reading_state_wire_decoder())
   assert upper_reloaded == upper_expected
+}
+
+/// Round-trip the device-independent `anchor_sentence_index` end-to-end.
+/// The PUT body carries an explicit anchor, the response echoes it, and
+/// a subsequent GET resurfaces it from the
+/// `reading_state.anchor_sentence_index` column. The anchor is the
+/// cross-device source of truth — a sentence `global_index` that resolves
+/// to a page under any pagination — so a silent drop on either side of
+/// the wire would reintroduce the very divergence it exists to fix. The
+/// whole-record pin keeps the round-trip honest.
+pub fn put_reading_state_round_trips_anchor_sentence_index_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      // `current_page` and `anchor_sentence_index` deliberately disagree:
+      // the page is a same-device fast-path, the anchor is the
+      // cross-device truth, and both must persist independently.
+      #("current_page", json.int(2)),
+      #("anchor_sentence_index", json.int(17)),
+      #("percent_progress", json.float(34.0)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  let expected =
+    ReadingState(
+      book_id: created.book.id,
+      mode: "manual",
+      sentence_bitset: None,
+      word_bitset: None,
+      current_page: 2,
+      anchor_sentence_index: 17,
+      percent_progress: 34.0,
+      random_page_delete_on: False,
+      deletion_granularity: "word",
+      deletion_intensity: "low",
+      full_sweep_applied: False,
+      updated_at: Some("2026-05-12T02:00:00.000Z"),
+    )
+  assert decoded == expected
+
+  let get_response = http_get_reading_state(ctx, created.book.id)
+  let reloaded = decode_body(get_response, reading_state_wire_decoder())
+  assert reloaded == expected
+}
+
+/// A PUT that omits `anchor_sentence_index` lands with the schema-default
+/// `-1` "no anchor" sentinel. The optional-field decode keeps a client
+/// that predates the cross-device-anchor quest from 400-ing on every
+/// save — the value defaults to the same `-1` the schema's `DEFAULT -1`
+/// would inject for an `ALTER TABLE`-upgraded row, and the load path then
+/// falls back to `current_page`.
+pub fn put_reading_state_defaults_anchor_when_absent_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  // `put_reading_state_body` predates the anchor field, so its body
+  // omits the key entirely.
+  let body = put_reading_state_body("manual", 4, "2026-05-12T02:00:00Z")
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 200
+  let decoded = decode_body(response, reading_state_wire_decoder())
+  assert decoded.anchor_sentence_index == -1
+  assert decoded.current_page == 4
+}
+
+/// A PUT with an `anchor_sentence_index` below the `-1` sentinel is
+/// refused with a 400. The segmenter numbers sentences from zero, so a
+/// value like `-5` is meaningless; the handler rejects it rather than
+/// persist a garbage anchor the load path would try (and fail) to
+/// resolve.
+pub fn put_reading_state_rejects_anchor_below_sentinel_test() {
+  use ctx <- with_context
+  let created = http_create_book(ctx, "Title", None, sample_text)
+
+  let body =
+    json.object([
+      #("mode", json.string("manual")),
+      #("sentence_bitset", json.null()),
+      #("word_bitset", json.null()),
+      #("current_page", json.int(0)),
+      #("anchor_sentence_index", json.int(-5)),
+      #("percent_progress", json.float(0.0)),
+      #("updated_at", json.string("2026-05-12T02:00:00Z")),
+    ])
+  let response = http_put_reading_state(ctx, created.book.id, body)
+  assert response.status == 400
 }
 
 /// A PUT that omits `percent_progress` lands with the schema-default
@@ -777,6 +877,7 @@ pub fn put_reading_state_defaults_percent_progress_when_absent_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      anchor_sentence_index: -1,
       percent_progress: 0.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -823,6 +924,7 @@ pub fn put_reading_state_round_trips_random_delete_settings_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 2,
+      anchor_sentence_index: -1,
       percent_progress: 20.0,
       random_page_delete_on: True,
       deletion_granularity: "phrase",
@@ -877,6 +979,7 @@ pub fn put_reading_state_defaults_random_delete_when_absent_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 1,
+      anchor_sentence_index: -1,
       percent_progress: 0.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -954,6 +1057,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      anchor_sentence_index: -1,
       percent_progress: 30.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -972,6 +1076,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 99,
+      anchor_sentence_index: -1,
       percent_progress: 99.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -991,6 +1096,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: None,
       word_bitset: None,
       current_page: 3,
+      anchor_sentence_index: -1,
       percent_progress: 30.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -1008,6 +1114,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      anchor_sentence_index: -1,
       percent_progress: 70.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -1023,6 +1130,7 @@ pub fn reading_state_upsert_last_write_wins_test() {
       sentence_bitset: Some(<<1, 2, 3>>),
       word_bitset: Some(<<4, 5, 6>>),
       current_page: 7,
+      anchor_sentence_index: -1,
       percent_progress: 70.0,
       random_page_delete_on: False,
       deletion_granularity: "word",
@@ -2547,6 +2655,90 @@ pub fn ensure_reading_state_random_delete_columns_migrates_pre_random_delete_sch
   // intact, and the seeded row's defaults are undisturbed.
   let assert Ok(Nil) = db.ensure_reading_state_random_delete_columns(conn)
   let assert Ok([#("legacy-1", 3, 0, "word", "low", 0)]) =
+    sqlight.query(select_sql, on: conn, with: [], expecting: row_decoder)
+
+  let assert Ok(_) = sqlight.close(conn)
+}
+
+pub fn ensure_reading_state_anchor_column_migrates_pre_anchor_schema_test() {
+  // Mirror the precedent set by the percent_progress and random-delete
+  // migration tests above. The ALTER TABLE branch of
+  // `ensure_reading_state_anchor_column` only fires against tables
+  // created before the column landed; every test that goes through
+  // `db.initialize` on a fresh `:memory:` database picks the column up
+  // from the inline `CREATE TABLE IF NOT EXISTS` and never drives the
+  // migration. This test hand-builds a pre-anchor `reading_state` table,
+  // seeds a row, runs the migration, and asserts both that the column
+  // appears AND that the seeded row's `anchor_sentence_index` reads back
+  // as the `-1` "no anchor" sentinel — NOT a backfill (there is no
+  // sentence anchor to recover for a legacy row), not an error.
+  // Idempotency is then asserted: a second call leaves the `-1`
+  // undisturbed.
+  let assert Ok(conn) = sqlight.open(":memory:")
+  // The pre-anchor schema carries `percent_progress` and the four
+  // random-deletion columns (it post-dates those migrations) but omits
+  // `anchor_sentence_index` and the FK reference (FK enforcement is off
+  // by default, so a hand-built standalone table is sufficient).
+  let pre_anchor_schema =
+    "CREATE TABLE reading_state (
+       book_id TEXT PRIMARY KEY,
+       mode TEXT NOT NULL DEFAULT 'manual',
+       sentence_bitset BLOB,
+       word_bitset BLOB,
+       current_page INTEGER NOT NULL DEFAULT 0,
+       percent_progress REAL NOT NULL DEFAULT 0.0,
+       random_page_delete_on INTEGER NOT NULL DEFAULT 0,
+       deletion_granularity TEXT NOT NULL DEFAULT 'word',
+       deletion_intensity TEXT NOT NULL DEFAULT 'low',
+       full_sweep_applied INTEGER NOT NULL DEFAULT 0,
+       updated_at TEXT NOT NULL
+     );"
+  let assert Ok(_) = sqlight.exec(pre_anchor_schema, conn)
+
+  // Seed a row at the pre-anchor schema so the migration runs against
+  // non-empty data. The contract under test: after the ALTER TABLE ADD
+  // COLUMN passes, this pre-existing row must read back at the declared
+  // `-1` default — the legacy row has no sentence anchor, so the client
+  // falls back to its `current_page` (here `3`).
+  let seed_row_sql =
+    "INSERT INTO reading_state (book_id, mode, sentence_bitset, word_bitset,
+      current_page, percent_progress, random_page_delete_on,
+      deletion_granularity, deletion_intensity, full_sweep_applied, updated_at)
+     VALUES ('legacy-1', 'manual', NULL, NULL, 3, 0.0, 0, 'word', 'low', 0,
+       '2026-04-01T12:00:00Z');"
+  let assert Ok(_) = sqlight.exec(seed_row_sql, conn)
+
+  // Sanity: the table starts without `anchor_sentence_index`. A SELECT
+  // touching it must fail with a column-missing error — confirms the
+  // seed schema is genuinely pre-anchor.
+  let assert Error(_) =
+    sqlight.exec("SELECT anchor_sentence_index FROM reading_state;", conn)
+
+  // First run: the migration adds the column.
+  let assert Ok(Nil) = db.ensure_reading_state_anchor_column(conn)
+  let assert Ok(_) =
+    sqlight.exec("SELECT anchor_sentence_index FROM reading_state;", conn)
+
+  // The pre-existing row's `anchor_sentence_index` reads back as `-1` —
+  // the column default lands the sentinel on every legacy row, and the
+  // seeded row is still there with its original `book_id` and
+  // `current_page`.
+  let row_decoder = {
+    use book_id <- decode.field(0, decode.string)
+    use current_page <- decode.field(1, decode.int)
+    use anchor_sentence_index <- decode.field(2, decode.int)
+    decode.success(#(book_id, current_page, anchor_sentence_index))
+  }
+  let select_sql =
+    "SELECT book_id, current_page, anchor_sentence_index FROM reading_state;"
+  let assert Ok([#("legacy-1", 3, -1)]) =
+    sqlight.query(select_sql, on: conn, with: [], expecting: row_decoder)
+
+  // Second run: the column probe sees `anchor_sentence_index` already
+  // present and skips the ALTER. Still `Ok(Nil)`, still leaves the
+  // column intact, and the seeded row's `-1` is undisturbed.
+  let assert Ok(Nil) = db.ensure_reading_state_anchor_column(conn)
+  let assert Ok([#("legacy-1", 3, -1)]) =
     sqlight.query(select_sql, on: conn, with: [], expecting: row_decoder)
 
   let assert Ok(_) = sqlight.close(conn)

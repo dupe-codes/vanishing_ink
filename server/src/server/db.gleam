@@ -32,6 +32,7 @@ pub fn initialize(path: String) -> Result(sqlight.Connection, sqlight.Error) {
   use _ <- result.try(ensure_books_genre_column(connection))
   use _ <- result.try(ensure_reading_state_percent_progress_column(connection))
   use _ <- result.try(ensure_reading_state_random_delete_columns(connection))
+  use _ <- result.try(ensure_reading_state_anchor_column(connection))
   use _ <- result.try(ensure_default_settings(connection))
   Ok(connection)
 }
@@ -157,6 +158,47 @@ pub fn ensure_reading_state_random_delete_columns(
   })
 }
 
+/// Add the `reading_state.anchor_sentence_index` column to databases
+/// created before the cross-device-position quest. Mirrors the
+/// established `ensure_*_column` migration pattern: probe
+/// `PRAGMA table_info` for the column and only issue `ALTER TABLE` when
+/// it is missing, so the path is idempotent and safe to run on every
+/// boot. Fresh databases pick the column up inline from `schema_sql`
+/// and skip the ALTER cleanly.
+///
+/// The `DEFAULT -1` is the "no anchor" sentinel, not a real sentence
+/// position. Rows that predate this quest persisted only a raw
+/// `current_page` index, which is pagination- (and therefore device-)
+/// dependent; there is no sentence anchor to back-fill for them. The
+/// sentinel lets the client distinguish "this row has a resolvable
+/// sentence anchor" from "fall back to the legacy `current_page`
+/// index" — see `client/types.gleam:reading_state_decoder` and the
+/// resume path in `client/reducer/settings_load`. The next save from
+/// an anchor-aware client overwrites the sentinel with the real
+/// `global_index` of the first sentence on the reader's page.
+///
+/// Exposed as `pub` so tests can drive the upgrade path directly off a
+/// hand-built pre-anchor `reading_state` table.
+pub fn ensure_reading_state_anchor_column(
+  connection: sqlight.Connection,
+) -> Result(Nil, sqlight.Error) {
+  use columns <- result.try(table_column_names(connection, "reading_state"))
+  case list.contains(columns, "anchor_sentence_index") {
+    True -> Ok(Nil)
+    False ->
+      case
+        sqlight.exec(
+          "ALTER TABLE reading_state
+             ADD COLUMN anchor_sentence_index INTEGER NOT NULL DEFAULT -1;",
+          connection,
+        )
+      {
+        Ok(_) -> Ok(Nil)
+        Error(error) -> Error(error)
+      }
+  }
+}
+
 /// Read column names from any table via `PRAGMA table_info`. Centralised
 /// so future ADD COLUMN migrations don't each carry their own probe.
 fn table_column_names(
@@ -242,6 +284,15 @@ CREATE TABLE IF NOT EXISTS reading_state (
   sentence_bitset BLOB,
   word_bitset BLOB,
   current_page INTEGER NOT NULL DEFAULT 0,
+  -- global_index of the first sentence on the reader's page. This is
+  -- the device-independent reading-position anchor: pagination is
+  -- viewport-dependent, so a raw current_page index diverges across
+  -- screen sizes, but a sentence's global_index resolves to whatever
+  -- page contains it under any pagination. -1 is the no-anchor
+  -- sentinel for rows saved before this column existed; the client
+  -- falls back to current_page then. See
+  -- ensure_reading_state_anchor_column for the upgrade path.
+  anchor_sentence_index INTEGER NOT NULL DEFAULT -1,
   percent_progress REAL NOT NULL DEFAULT 0.0,
   random_page_delete_on INTEGER NOT NULL DEFAULT 0,
   deletion_granularity TEXT NOT NULL DEFAULT 'word',
@@ -634,6 +685,7 @@ pub fn update_reading_state(
   sentence_bitset sentence_bitset: Option(BitArray),
   word_bitset word_bitset: Option(BitArray),
   current_page current_page: Int,
+  anchor_sentence_index anchor_sentence_index: Int,
   percent_progress percent_progress: Float,
   random_page_delete_on random_page_delete_on: Bool,
   deletion_granularity deletion_granularity: String,
@@ -644,15 +696,17 @@ pub fn update_reading_state(
   let sql =
     "INSERT INTO reading_state
        (book_id, mode, sentence_bitset, word_bitset,
-        current_page, percent_progress, random_page_delete_on,
+        current_page, anchor_sentence_index, percent_progress,
+        random_page_delete_on,
         deletion_granularity, deletion_intensity, full_sweep_applied,
         updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(book_id) DO UPDATE SET
        mode = excluded.mode,
        sentence_bitset = excluded.sentence_bitset,
        word_bitset = excluded.word_bitset,
        current_page = excluded.current_page,
+       anchor_sentence_index = excluded.anchor_sentence_index,
        percent_progress = excluded.percent_progress,
        random_page_delete_on = excluded.random_page_delete_on,
        deletion_granularity = excluded.deletion_granularity,
@@ -670,6 +724,7 @@ pub fn update_reading_state(
         sqlight.nullable(sqlight.blob, sentence_bitset),
         sqlight.nullable(sqlight.blob, word_bitset),
         sqlight.int(current_page),
+        sqlight.int(anchor_sentence_index),
         sqlight.float(percent_progress),
         sqlight.bool(random_page_delete_on),
         sqlight.text(deletion_granularity),
@@ -694,7 +749,8 @@ pub fn get_reading_state(
 ) -> Result(Option(ReadingState), sqlight.Error) {
   let sql =
     "SELECT book_id, mode, sentence_bitset, word_bitset,
-            current_page, percent_progress, random_page_delete_on,
+            current_page, anchor_sentence_index, percent_progress,
+            random_page_delete_on,
             deletion_granularity, deletion_intensity, full_sweep_applied,
             updated_at
        FROM reading_state
@@ -719,22 +775,24 @@ fn reading_state_decoder() -> decode.Decoder(ReadingState) {
   use sentence_bitset <- decode.field(2, decode.optional(decode.bit_array))
   use word_bitset <- decode.field(3, decode.optional(decode.bit_array))
   use current_page <- decode.field(4, decode.int)
-  use percent_progress <- decode.field(5, decode.float)
-  use random_page_delete_on <- decode.field(6, sqlight.decode_bool())
-  use deletion_granularity <- decode.field(7, decode.string)
-  use deletion_intensity <- decode.field(8, decode.string)
-  use full_sweep_applied <- decode.field(9, sqlight.decode_bool())
+  use anchor_sentence_index <- decode.field(5, decode.int)
+  use percent_progress <- decode.field(6, decode.float)
+  use random_page_delete_on <- decode.field(7, sqlight.decode_bool())
+  use deletion_granularity <- decode.field(8, decode.string)
+  use deletion_intensity <- decode.field(9, decode.string)
+  use full_sweep_applied <- decode.field(10, sqlight.decode_bool())
   // The column is `NOT NULL` so the value is always present; wrap in
   // `Some` to match the `Option(String)` shape of `ReadingState.updated_at`,
   // which the wire layer needs to distinguish a persisted row from a
   // synthesised empty default.
-  use updated_at <- decode.field(10, decode.string)
+  use updated_at <- decode.field(11, decode.string)
   decode.success(ReadingState(
     book_id: book_id,
     mode: mode,
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    anchor_sentence_index: anchor_sentence_index,
     percent_progress: percent_progress,
     random_page_delete_on: random_page_delete_on,
     deletion_granularity: deletion_granularity,

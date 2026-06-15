@@ -74,6 +74,7 @@ fn put_reading_state_handler(
                 sentence_bitset,
                 word_bitset,
                 validated.current_page,
+                validated.anchor_sentence_index,
                 validated.percent_progress,
                 validated.random_page_delete_on,
                 validated.deletion_granularity,
@@ -100,6 +101,9 @@ fn validate_reading_state_input(
   use mode <- result.try(validate_mode(input.mode))
   use updated_at <- result.try(validate_updated_at(input.updated_at))
   use current_page <- result.try(validate_current_page(input.current_page))
+  use anchor_sentence_index <- result.try(validate_anchor_sentence_index(
+    input.anchor_sentence_index,
+  ))
   use percent_progress <- result.try(validate_percent_progress(
     input.percent_progress,
   ))
@@ -115,6 +119,7 @@ fn validate_reading_state_input(
       mode: mode,
       updated_at: updated_at,
       current_page: current_page,
+      anchor_sentence_index: anchor_sentence_index,
       percent_progress: percent_progress,
       deletion_granularity: deletion_granularity,
       deletion_intensity: deletion_intensity,
@@ -166,9 +171,26 @@ fn validate_current_page(current_page: Int) -> Result(Int, String) {
   }
 }
 
+/// Refuse `anchor_sentence_index` values below `-1`. `-1` is the
+/// "no anchor" sentinel a client emits when it cannot resolve a first
+/// sentence on the page (no pagination yet, empty book); any value
+/// `>= 0` is a real sentence `global_index`. A negative value other
+/// than the sentinel is meaningless — the segmenter numbers sentences
+/// from zero — so it is rejected rather than persisted, matching the
+/// fail-fast posture of `validate_current_page` next door.
+fn validate_anchor_sentence_index(
+  anchor_sentence_index: Int,
+) -> Result(Int, String) {
+  case anchor_sentence_index >= -1 {
+    True -> Ok(anchor_sentence_index)
+    False -> Error("anchor_sentence_index must be -1 (no anchor) or >= 0")
+  }
+}
+
 /// Refuse `percent_progress` values outside `[0.0, 100.0]`. The
-/// client computes the percentage as `(current_page + 1) / total_pages
-/// * 100`, which is mathematically inside the range, but the wire is
+/// client computes the percentage from document position as
+/// `(last_read_sentence_index + 1) / total_sentence_count * 100`, which is
+/// mathematically inside the range, but the wire is
 /// untrusted — a future bug (or a hand-crafted PUT) that posted a
 /// negative or > 100 value would otherwise persist a garbage figure
 /// that the library card would happily render. Clamping at the
@@ -199,6 +221,7 @@ fn persist_reading_state(
   sentence_bitset: Option(BitArray),
   word_bitset: Option(BitArray),
   current_page: Int,
+  anchor_sentence_index: Int,
   percent_progress: Float,
   random_page_delete_on: Bool,
   deletion_granularity: String,
@@ -231,6 +254,7 @@ fn persist_reading_state(
             sentence_bitset: sentence_bitset,
             word_bitset: word_bitset,
             current_page: current_page,
+            anchor_sentence_index: anchor_sentence_index,
             percent_progress: percent_progress,
             random_page_delete_on: random_page_delete_on,
             deletion_granularity: deletion_granularity,
@@ -305,6 +329,10 @@ fn empty_reading_state(book_id: shared.BookId) -> ReadingState {
     sentence_bitset: None,
     word_bitset: None,
     current_page: 0,
+    // A fresh book has no saved sentence anchor — `-1` signals the
+    // client to fall through to the (also-zero) `current_page` rather
+    // than try to resolve a non-existent sentence position.
+    anchor_sentence_index: -1,
     percent_progress: 0.0,
     random_page_delete_on: False,
     deletion_granularity: "word",
@@ -320,6 +348,7 @@ type ReadingStateInput {
     sentence_bitset: Option(String),
     word_bitset: Option(String),
     current_page: Int,
+    anchor_sentence_index: Int,
     percent_progress: Float,
     random_page_delete_on: Bool,
     deletion_granularity: String,
@@ -342,6 +371,18 @@ fn reading_state_input_decoder() -> decode.Decoder(ReadingStateInput) {
     decode.optional(decode.string),
   )
   use current_page <- decode.field("current_page", decode.int)
+  // `optional_field` with the `-1` "no anchor" sentinel as the default
+  // keeps the API backwards-compatible: a client that predates the
+  // cross-device-anchor quest can still PUT a reading state, and the
+  // server persists `-1` (fall back to `current_page` on the next read)
+  // until an anchor-aware client overwrites it with a real
+  // `global_index`. Same backwards-compatible shape `percent_progress`
+  // and the random-delete fields use.
+  use anchor_sentence_index <- decode.optional_field(
+    "anchor_sentence_index",
+    -1,
+    decode.int,
+  )
   // `optional_field` with `0.0` as the default keeps the API
   // backwards-compatible during the page-based-progress rollout: an
   // older client that hasn't been redeployed yet can still PUT a
@@ -383,6 +424,7 @@ fn reading_state_input_decoder() -> decode.Decoder(ReadingStateInput) {
     sentence_bitset: sentence_bitset,
     word_bitset: word_bitset,
     current_page: current_page,
+    anchor_sentence_index: anchor_sentence_index,
     percent_progress: percent_progress,
     random_page_delete_on: random_page_delete_on,
     deletion_granularity: deletion_granularity,

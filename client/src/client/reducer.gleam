@@ -521,7 +521,23 @@ fn apply_paragraphs_measured(
       )
   }
   let total = list.length(pages)
-  let clamped = pagination.clamp_page_index(model.current_page, total)
+  // Resolve a parked sentence anchor against the freshly-computed page
+  // list. `resume_anchor` is `Some(global_index)` only when the
+  // reading-state GET landed before pagination had produced any pages —
+  // the load handler could not resolve the cross-device position then,
+  // so it parked the anchor here for exactly this moment (see
+  // `state.Model.resume_anchor`). With pages now in hand we resolve the
+  // anchor to its page; otherwise we keep today's behaviour and clamp
+  // the stashed `current_page` into the new range. Either way the result
+  // is clamped defensively — an anchor always maps to a page within the
+  // same book, but a stale anchor that survived a book swap must not
+  // escape the valid range.
+  let resolved = case model.resume_anchor {
+    Some(global_index) ->
+      pagination.page_for_sentence_index(pages, global_index)
+    None -> model.current_page
+  }
+  let clamped = pagination.clamp_page_index(resolved, total)
   // Re-anchor `focused_sentence` if pagination shifted it off the
   // visible page. Without this, a viewport change can leave the
   // vim cursor on a sentence whose `page_index` differs from
@@ -590,6 +606,11 @@ fn apply_paragraphs_measured(
       ..model,
       pages: pages,
       current_page: clamped,
+      // The parked anchor has now been resolved (or there was none);
+      // clear it so a later repagination — a font-size or line-spacing
+      // change mid-read — clamps the live `current_page` rather than
+      // snapping back to the original load anchor.
+      resume_anchor: None,
       focused_sentence: focused,
       // Re-pagination invalidates the cached line geometry: the
       // new `pages` may wrap differently and the previous

@@ -33,6 +33,7 @@ import client/msg.{
   FetchSpeedTrendResult, LinesMeasured, ParagraphsMeasured, ReadingStateLoaded,
   SessionCreated, SessionEnded, SettingsLoaded, ViewportResized,
 }
+import client/pagination
 import client/state.{
   type LineBox, type Model, LineBox, Manual, RealTime, measurement_id,
   page_content_id,
@@ -219,12 +220,53 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// server side rather than clobbering the latest state.
 pub fn save_reading_state(model: Model) -> Effect(Msg) {
   refresh_session_snapshot(model)
-  case should_save_reading_state(model), model.active_book_id {
-    True, Some(id) -> {
+  case
+    should_save_reading_state(model),
+    model.active_book_id,
+    model.resume_anchor
+  {
+    // A cross-device anchor is parked, waiting for the first pagination to
+    // resolve it (the reading-state GET landed before the first
+    // `ParagraphsMeasured`). In that window `model.pages` is empty and
+    // `model.current_page` is 0 — neither reflects the reader's real
+    // position — so a save here would persist `anchor = -1, current_page =
+    // 0` and clobber the very anchor parked to survive this race, resetting
+    // the reader to the document start on the next load. The state already
+    // on the server is correct; skip the save until the anchor resolves.
+    // This window is hard to reach today (no user gesture fires before the
+    // first render), so this guards a latent fragility rather than a live
+    // bug.
+    _, _, Some(_) -> effect.none()
+    True, Some(id), None -> {
       let mode_value = case model.mode {
         Manual -> "manual"
         RealTime -> "ghost"
       }
+      // Persist the reading position as a sentence anchor — the
+      // `global_index` of the first sentence on the reader's current
+      // page — not the raw `current_page` index. Pagination is
+      // viewport-dependent, so a page index does not survive a device
+      // change; a sentence's `global_index` resolves to whatever page
+      // contains it under any pagination. `current_page` still rides in
+      // the body below as a same-device fast-path and a back-compat
+      // fallback, but the anchor is the cross-device source of truth.
+      //
+      // `None` (no first sentence resolvable — pagination has not run,
+      // or a pathological empty page) maps to the `-1` "no anchor"
+      // sentinel, which the load path falls back to `current_page` for.
+      let anchor_sentence_index =
+        pagination.first_sentence_index_on_page(model.pages, model.current_page)
+        |> option.unwrap(-1)
+      // Progress is reported through the *last* sentence on the page, not
+      // the anchor (which is the *first*). On a page the reader has read
+      // through to its bottom, so the document-position figure must reach
+      // 100% on the final page — the first-sentence anchor never can,
+      // because the last page's first sentence is strictly below the last.
+      // `None` (pages empty / pathological empty page) maps to the same
+      // `-1` "no progress" sentinel `document_progress_percentage` guards.
+      let last_read_sentence_index =
+        pagination.last_sentence_index_on_page(model.pages, model.current_page)
+        |> option.unwrap(-1)
       let body =
         json.object([
           #("book_id", json.string(id)),
@@ -241,11 +283,24 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
             ),
           ),
           #("current_page", json.int(model.current_page)),
-          // `helpers.progress_percentage` is the canonical reader-side
-          // page-based progress computation; sending it here keeps the
-          // server view of progress in lock-step with the bar the
-          // reader sees rendered on screen.
-          #("percent_progress", json.float(helpers.progress_percentage(model))),
+          #("anchor_sentence_index", json.int(anchor_sentence_index)),
+          // Progress derives from document position
+          // (`(last_read_sentence_index + 1) / total_sentence_count`), not
+          // from the page index, so the persisted figure is
+          // pagination-independent: it reads back the same on any device.
+          // Using the *last* sentence on the page (plus one) keeps the
+          // figure in lock-step with the in-reader bar — both reach 100%
+          // on the final page. See `helpers.document_progress_percentage`.
+          // `helpers.progress_percentage` (the page-based computation) is
+          // retained for the in-reader progress bar, which is always a
+          // single-viewport read.
+          #(
+            "percent_progress",
+            json.float(helpers.document_progress_percentage(
+              last_read_sentence_index,
+              model.total_sentence_count,
+            )),
+          ),
           #("random_page_delete_on", json.bool(model.random_page_delete_on)),
           #(
             "deletion_granularity",
@@ -275,7 +330,7 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
         })
       })
     }
-    _, _ -> effect.none()
+    _, _, _ -> effect.none()
   }
 }
 

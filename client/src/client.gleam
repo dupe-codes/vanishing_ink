@@ -102,6 +102,7 @@ fn init(_flags: Nil) -> #(Model, Effect(Msg)) {
       flat_paragraphs: [],
       pages: [],
       current_page: 0,
+      resume_anchor: None,
       erased: set.new(),
       touch_start: None,
       focused_sentence: None,

@@ -283,3 +283,202 @@ pub fn nth_returns_none_when_index_out_of_bounds_test() {
   assert pagination.nth(pages, 5) == None
   assert pagination.nth(pages, -1) == None
 }
+
+// ---------------------------------------------------------------------------
+// sentence-anchor resolution
+// ---------------------------------------------------------------------------
+//
+// These tests pin the cross-device reading-position machinery: the
+// reading position is persisted as a sentence `global_index` anchor
+// rather than a raw page index because pagination is viewport-dependent.
+// The fixture below carries one sentence per paragraph with DISTINCT
+// sentence `global_index` values (0..3) — `synthetic_paragraph` above
+// hardcodes `global_index: 0` on every sentence, which cannot
+// distinguish anchors, so anchor tests need their own fixture.
+
+/// Four paragraphs, one sentence each, sentence `global_index` 0..3.
+/// `flatten` leaves sentence indices untouched, so the hardcoded values
+/// flow through to the paginated pages.
+fn four_sentence_book() -> SegmentedText {
+  let para = fn(idx: Int, text: String) -> Paragraph {
+    Paragraph(index: idx, sentences: [
+      Sentence(index: 0, global_index: idx, words: [
+        Word(index: 0, global_index: idx, text: text),
+      ]),
+    ])
+  }
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      para(0, "Alpha"),
+      para(1, "Beta"),
+      para(2, "Gamma"),
+      para(3, "Delta"),
+    ]),
+  ])
+}
+
+pub fn page_for_sentence_index_resolves_known_index_to_its_page_test() {
+  // Two paragraphs per page → sentence global_index 2 sits on page 1.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+
+  assert pagination.page_for_sentence_index(pages, 0) == 0
+  assert pagination.page_for_sentence_index(pages, 1) == 0
+  assert pagination.page_for_sentence_index(pages, 2) == 1
+  assert pagination.page_for_sentence_index(pages, 3) == 1
+}
+
+pub fn page_for_sentence_index_defaults_to_zero_when_pages_empty_test() {
+  // Pagination has not run yet (the GET/pagination race). The caller
+  // additionally parks the anchor for re-resolution, but the primitive
+  // itself must not crash — page 0 is the document-start default.
+  assert pagination.page_for_sentence_index([], 7) == 0
+}
+
+pub fn page_for_sentence_index_defaults_to_zero_for_unknown_index_test() {
+  // A stale anchor that belongs to a different book (survived a book
+  // swap) resolves to no page; the primitive returns the safe
+  // document-start default rather than a negative or out-of-range index.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+
+  assert pagination.page_for_sentence_index(pages, 999) == 0
+}
+
+pub fn first_sentence_index_on_page_reads_the_top_sentence_test() {
+  // Two paragraphs per page: page 0 opens on sentence 0, page 1 opens
+  // on sentence 2. This is the anchor the client persists for the
+  // reader's current page.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+
+  assert pagination.first_sentence_index_on_page(pages, 0) == Some(0)
+  assert pagination.first_sentence_index_on_page(pages, 1) == Some(2)
+}
+
+pub fn first_sentence_index_on_page_is_none_when_page_out_of_range_test() {
+  // Pagination pending (empty pages) or an index past the last page
+  // yields `None`, which the caller maps onto the `-1` "no anchor"
+  // wire sentinel.
+  assert pagination.first_sentence_index_on_page([], 0) == None
+
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+  assert pagination.first_sentence_index_on_page(pages, 99) == None
+}
+
+pub fn last_sentence_index_on_page_reads_the_bottom_sentence_test() {
+  // Mirror of the `first_sentence` top-sentence test, for the *bottom*
+  // of the page. Two paragraphs per page makes each page multi-sentence:
+  // page 0 holds sentences 0 and 1, page 1 holds 2 and 3. The last
+  // sentence is therefore distinct from the first on the same page —
+  // page 0 opens on 0 but closes on 1 — which is precisely the walk the
+  // document-position percentage relies on (`+ 1` on the last sentence
+  // reaches a clean 100% on the final page). Pinning both endpoints of
+  // page 0 proves this reads the tail, not the head.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+
+  // Bottom sentence of each page.
+  assert pagination.last_sentence_index_on_page(pages, 0) == Some(1)
+  assert pagination.last_sentence_index_on_page(pages, 1) == Some(3)
+
+  // And on page 0 the bottom (1) is genuinely below the top (0) — the
+  // two primitives read opposite ends of the same multi-sentence page.
+  assert pagination.first_sentence_index_on_page(pages, 0) == Some(0)
+  assert pagination.last_sentence_index_on_page(pages, 0)
+    != pagination.first_sentence_index_on_page(pages, 0)
+}
+
+pub fn last_sentence_index_on_page_is_none_when_page_out_of_range_test() {
+  // Same `None` conditions as `first_sentence_index_on_page`: pagination
+  // pending (empty pages) or an index past the last page. The caller
+  // maps `None` onto the `-1` "no progress" sentinel.
+  assert pagination.last_sentence_index_on_page([], 0) == None
+
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+  assert pagination.last_sentence_index_on_page(pages, 99) == None
+}
+
+pub fn same_anchor_resolves_across_different_paginations_test() {
+  // THE CORE REGRESSION. The same sentence anchor (global_index 2),
+  // restored under two DIFFERENT paginations of the same text, must
+  // land on the page that actually CONTAINS that sentence — NOT on a
+  // fixed raw page index. This is the exact cross-device divergence the
+  // anchor exists to close: page N on one viewport is not page N on
+  // another.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+
+  // "Desktop" viewport: a tall budget packs two paragraphs per page.
+  // Sentence 2 lands on page 1.
+  let desktop_pages = pagination.calculate_pages(flat, heights, 250.0)
+  // "Phone" viewport: a short budget forces one paragraph per page.
+  // The same sentence 2 now lands on page 2.
+  let phone_pages = pagination.calculate_pages(flat, heights, 50.0)
+
+  let desktop_page = pagination.page_for_sentence_index(desktop_pages, 2)
+  let phone_page = pagination.page_for_sentence_index(phone_pages, 2)
+
+  // Different raw page indices — proving the resolution is
+  // pagination-aware, not a stored constant.
+  assert desktop_page == 1
+  assert phone_page == 2
+  assert desktop_page != phone_page
+
+  // And each resolved page genuinely contains the anchor sentence:
+  // its first sentence round-trips back to the anchor.
+  assert pagination.first_sentence_index_on_page(desktop_pages, desktop_page)
+    == Some(2)
+  assert pagination.first_sentence_index_on_page(phone_pages, phone_page)
+    == Some(2)
+}

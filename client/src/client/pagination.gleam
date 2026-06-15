@@ -176,3 +176,113 @@ pub fn nth(pages: List(Page), index: Int) -> Option(Page) {
       }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Sentence-anchor resolution
+// ---------------------------------------------------------------------------
+//
+// Reading position is persisted as a sentence `global_index` anchor, not
+// a raw page index, because pagination is viewport-dependent: page N on a
+// phone is not page N on a desktop. A sentence's `global_index` is
+// assigned by the segmenter over the *full* text and is stable across
+// every pagination, so an anchor always resolves to whatever page
+// currently contains it — on any device, under any font size. These two
+// helpers are the resolution primitives: `first_sentence_index_on_page`
+// builds the anchor at save time, `page_for_sentence_index` resolves it
+// back to a page at load time. Both walk the same page → paragraph →
+// sentence chain `reducer/jump.words_before_page` walks, kept pure here
+// so the cross-pagination round-trip can be exercised in tests without a
+// browser.
+
+/// Resolve a sentence `global_index` to the index of the page that
+/// contains it. Walks pages in order and returns the first page whose
+/// paragraphs hold a sentence with the given `global_index`.
+///
+/// Pagination is computed over the full text and erasure is only a
+/// render overlay, so every sentence's `global_index` always sits on
+/// exactly one page regardless of erase state — there is no "next
+/// visible unit" fallback to chase. The anchor was, by construction, the
+/// `global_index` of a sentence that exists in *this* book, so on a
+/// populated page list it always matches.
+///
+/// Returns `0` when no page contains the index — an empty `pages` list
+/// (pagination has not run yet) or a `global_index` that belongs to a
+/// different book (a stale anchor that survived a book swap). Page 0 is
+/// the safe document-start default; callers additionally clamp through
+/// `clamp_page_index`, so an out-of-range result can never escape into
+/// the view.
+pub fn page_for_sentence_index(pages: List(Page), global_index: Int) -> Int {
+  case pages {
+    [] -> 0
+    [page, ..rest] ->
+      case page_contains_sentence(page, global_index) {
+        True -> page.index
+        False -> page_for_sentence_index(rest, global_index)
+      }
+  }
+}
+
+fn page_contains_sentence(page: Page, global_index: Int) -> Bool {
+  page.paragraphs
+  |> list.flat_map(fn(page_paragraph) { page_paragraph.paragraph.sentences })
+  |> list.any(fn(sentence) { sentence.global_index == global_index })
+}
+
+/// Read the `global_index` of the first sentence on `page`. This is the
+/// sentence anchor the client persists for the reader's current page:
+/// the natural top-of-page reading unit, in the same identity space as
+/// the erase bitsets.
+///
+/// Returns `None` when the page index is out of range (pagination has
+/// not run, or the index is past the last page) or when the resolved
+/// page carries no sentences (a pathological empty page). Callers map
+/// `None` onto the `-1` "no anchor" wire sentinel, falling the persisted
+/// state back to the raw `current_page` index.
+pub fn first_sentence_index_on_page(
+  pages: List(Page),
+  page: Int,
+) -> Option(Int) {
+  case nth(pages, page) {
+    None -> None
+    Some(found) ->
+      found.paragraphs
+      |> list.flat_map(fn(page_paragraph) { page_paragraph.paragraph.sentences })
+      |> list.first
+      |> option.from_result
+      |> option.map(fn(sentence) { sentence.global_index })
+  }
+}
+
+/// Read the `global_index` of the *last* sentence on `page`. Mirror of
+/// `first_sentence_index_on_page`, but for the bottom of the page rather
+/// than the top.
+///
+/// Used by the progress display, not the resume anchor: the figure a
+/// reader sees on the library card answers "how far through the document
+/// have I read?", and on any given page the answer is "through the last
+/// sentence on it". Pairing this with a `+ 1` (a sentence's `global_index`
+/// is zero-based, so the last sentence of the book is `total - 1`) lets the
+/// document-position percentage reach a clean 100% on the final page —
+/// exactly the way the page-based `(current_page + 1) / total_pages` did.
+/// The resume anchor keeps using `first_sentence_index_on_page` so a
+/// restored reader lands at the *top* of the page they left.
+///
+/// Returns `None` under the same conditions as
+/// `first_sentence_index_on_page` — the page index is out of range
+/// (pagination has not run, or it is past the last page) or the resolved
+/// page carries no sentences. Callers map `None` onto the `-1` "no
+/// progress" sentinel.
+pub fn last_sentence_index_on_page(
+  pages: List(Page),
+  page: Int,
+) -> Option(Int) {
+  case nth(pages, page) {
+    None -> None
+    Some(found) ->
+      found.paragraphs
+      |> list.flat_map(fn(page_paragraph) { page_paragraph.paragraph.sentences })
+      |> list.last
+      |> option.from_result
+      |> option.map(fn(sentence) { sentence.global_index })
+  }
+}

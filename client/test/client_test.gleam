@@ -133,6 +133,7 @@ fn empty_model() -> Model {
     flat_paragraphs: [],
     pages: [],
     current_page: 0,
+    resume_anchor: None,
     erased: set.new(),
     touch_start: None,
     focused_sentence: None,
@@ -2418,6 +2419,76 @@ pub fn progress_percentage_rounds_to_one_decimal_place_test() {
 }
 
 // ---------------------------------------------------------------------------
+// helpers — document_progress_percentage (document-position progress)
+// ---------------------------------------------------------------------------
+//
+// The persisted `percent_progress` derives from *document* position
+// (`(last_read_sentence_index + 1) / total_sentence_count`), not the page
+// index, so the figure is pagination-independent: it reads back the same
+// on any device rather than being recomputed against a new pagination. The
+// numerator is the LAST sentence on the page (plus one), not the anchor
+// (the first), so the figure reaches 100% on the final page — the same
+// `+ 1` the page-based `(current_page + 1) / total_pages` used. The
+// page-based `progress_percentage` above is retained for the in-reader bar
+// (a single-viewport read); these tests pin the document-position figure
+// at both ends and in the middle.
+
+pub fn document_progress_percentage_derives_from_document_position_test() {
+  // Last-read sentence 39 of a 100-sentence book →
+  // `(39 + 1) / 100 * 100 = 40.0`, independent of how any viewport
+  // paginated those sentences.
+  assert state_helpers.document_progress_percentage(39, 100) == 40.0
+}
+
+pub fn document_progress_percentage_is_pagination_independent_test() {
+  // The headline cross-device property: the SAME document position
+  // yields the SAME percentage regardless of pagination. Both inputs
+  // (a sentence's `global_index` and the total sentence count) are
+  // viewport-agnostic, unlike `current_page` / `total_pages`. Having read
+  // through sentence 24 of 50 reads 50% on every device.
+  assert state_helpers.document_progress_percentage(24, 50) == 50.0
+}
+
+pub fn document_progress_percentage_reaches_100_on_last_page_test() {
+  // THE BOUNDARY CASE that the first-sentence anchor could never hit:
+  // finishing a book must read a full 100%. The last sentence of a
+  // 100-sentence book is `global_index` 99 (zero-based), and
+  // `(99 + 1) / 100 * 100 = 100.0`. This is the regression guard — the
+  // prior `anchor_sentence_index / total` formula returned the first
+  // sentence of the last page (e.g. 95.0) and never the ceiling.
+  assert state_helpers.document_progress_percentage(99, 100) == 100.0
+}
+
+pub fn document_progress_percentage_first_page_is_nonzero_test() {
+  // The opposite end: a freshly-opened book reads its first page's share,
+  // not a misleading 0%. With the last sentence of page one at
+  // `global_index` 9 of a 100-sentence book, `(9 + 1) / 100 * 100 = 10.0`
+  // — exactly the "first of ten pages reads 10%" the page-based bar shows.
+  assert state_helpers.document_progress_percentage(9, 100) == 10.0
+}
+
+pub fn document_progress_percentage_no_progress_is_zero_test() {
+  // The `-1` "no progress" sentinel (no pagination yet, or an empty
+  // book) short-circuits to `0.0` rather than emitting `(−1 + 1) = 0`
+  // by accident of arithmetic — the guard is explicit, not incidental.
+  assert state_helpers.document_progress_percentage(-1, 100) == 0.0
+}
+
+pub fn document_progress_percentage_handles_zero_sentences_test() {
+  // An empty book (`total_sentence_count == 0`) is the only
+  // divide-by-zero branch and must short-circuit to `0.0`, mirroring
+  // the page-based helper's zero-pages guard.
+  assert state_helpers.document_progress_percentage(0, 0) == 0.0
+}
+
+pub fn document_progress_percentage_rounds_to_one_decimal_place_test() {
+  // Same one-decimal snap as `progress_percentage` so the serialised
+  // `width:<n>%` style stays a clean prefix: `(0 + 1) / 3 * 100 = 33.333…`
+  // rounds to `33.3`.
+  assert state_helpers.document_progress_percentage(0, 3) == 33.3
+}
+
+// ---------------------------------------------------------------------------
 // view — settings panel
 // ---------------------------------------------------------------------------
 //
@@ -3820,6 +3891,196 @@ pub fn update_reading_state_loaded_fetch_error_leaves_model_unchanged_test() {
     )
 
   assert updated == prior
+}
+
+// ---------------------------------------------------------------------------
+// update — ReadingStateLoaded: cross-device sentence anchor
+// ---------------------------------------------------------------------------
+//
+// Reading position is persisted as a sentence `global_index` anchor, not
+// a raw page index, because pagination is viewport-dependent. On load the
+// anchor is resolved to whatever page contains that sentence under the
+// CURRENT device's pagination; a legacy row with no anchor (`-1`) falls
+// back to the raw `current_page`. The fixtures below carry one sentence
+// per paragraph with distinct sentence `global_index` values so the
+// anchor identifies a unique sentence.
+
+/// Four paragraphs, one sentence each, sentence `global_index` 0..3.
+fn four_sentence_anchor_book() -> SegmentedText {
+  let para = fn(idx: Int) -> Paragraph {
+    Paragraph(index: idx, sentences: [
+      Sentence(index: 0, global_index: idx, words: [
+        Word(index: 0, global_index: idx, text: "w."),
+      ]),
+    ])
+  }
+  SegmentedText(chapters: [
+    Chapter(index: 0, title: None, paragraphs: [
+      para(0),
+      para(1),
+      para(2),
+      para(3),
+    ]),
+  ])
+}
+
+/// Build a model whose `pages` are the four-sentence book paginated at
+/// `per_page` paragraphs per page (via a height budget). Used to stand
+/// up two different paginations of the same text.
+fn paginated_anchor_model(per_page: Int) -> Model {
+  let text = four_sentence_anchor_book()
+  let flat = pagination.flatten(text)
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  // `per_page * 100 + 50` fits exactly `per_page` paragraphs per page.
+  let budget = int.to_float(per_page) *. 100.0 +. 50.0
+  let pages = pagination.calculate_pages(flat, heights, budget)
+  Model(
+    ..empty_model(),
+    view: Reader,
+    active_book_id: Some("book-1"),
+    text: Some(text),
+    flat_paragraphs: flat,
+    pages: pages,
+    total_pages: list.length(pages),
+    total_sentence_count: 4,
+  )
+}
+
+/// Reading-state JSON body carrying an explicit `anchor_sentence_index`.
+fn reading_state_body_with_anchor(
+  book_id: String,
+  current_page: Int,
+  anchor: Int,
+) -> String {
+  "{\"book_id\":\""
+  <> book_id
+  <> "\",\"mode\":\"manual\",\"sentence_bitset\":null,\"word_bitset\":null"
+  <> ",\"current_page\":"
+  <> int.to_string(current_page)
+  <> ",\"anchor_sentence_index\":"
+  <> int.to_string(anchor)
+  <> ",\"percent_progress\":0.0"
+  <> ",\"updated_at\":\"2026-05-13T10:00:00.000Z\"}"
+}
+
+pub fn update_reading_state_loaded_resolves_anchor_to_page_test() {
+  // Pages present (GET landed after pagination). Two paragraphs per
+  // page → sentence 2 lives on page 1. The anchor must win over the
+  // (deliberately wrong) raw `current_page: 0` in the body: a page
+  // index does not survive a device change, the sentence anchor does.
+  //
+  // The prior model is seeded with the OPPOSITE of what the body carries
+  // — `RealTime` mode and non-empty erase sets — so the assertions below
+  // verify the reducer arm actually stamps every field it owns from the
+  // loaded state (`mode`, `erased`, `erased_words`), not just the page
+  // resolution. The body's `mode: "manual"` and null bitsets must
+  // overwrite all three. (Asserting the whole `Model` is impractical here
+  // — it carries dozens of unrelated fields — so this pins the arm's
+  // full output set rather than a single field.)
+  let prior =
+    Model(
+      ..paginated_anchor_model(2),
+      mode: RealTime,
+      erased: set.from_list([0, 1]),
+      erased_words: set.from_list([0]),
+    )
+  let body = reading_state_body_with_anchor("book-1", 0, 2)
+
+  let #(updated, _effect) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.current_page == 1
+  // Resolved inline — nothing parked for a later repagination.
+  assert updated.resume_anchor == None
+  // The body's `mode: "manual"` and null bitsets overwrite the prior
+  // `RealTime` / non-empty sets the model carried in.
+  assert updated.mode == Manual
+  assert updated.erased == set.new()
+  assert updated.erased_words == set.new()
+}
+
+pub fn update_reading_state_loaded_legacy_row_falls_back_to_current_page_test() {
+  // A row saved before the anchor existed carries `-1`. With no anchor
+  // to resolve, the reducer keeps today's behaviour: stamp the raw
+  // `current_page` (clamped into range). One paragraph per page → 4
+  // pages; saved `current_page: 3` stays 3 rather than collapsing to
+  // an anchor-derived value.
+  let prior = paginated_anchor_model(1)
+  let body = reading_state_body_with_anchor("book-1", 3, -1)
+
+  let #(updated, _effect) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert updated.current_page == 3
+  assert updated.resume_anchor == None
+}
+
+pub fn update_reading_state_loaded_parks_anchor_when_pagination_pending_test() {
+  // THE GET/PAGINATION RACE. The reading-state GET landed before the
+  // first `ParagraphsMeasured`, so `model.pages` is still empty and the
+  // anchor cannot be resolved to a page yet. Rather than collapse the
+  // cross-device position to a raw page index, the handler parks the
+  // anchor in `resume_anchor` and leaves `current_page` at 0; the next
+  // `ParagraphsMeasured` resolves it.
+  let text = four_sentence_anchor_book()
+  let prior =
+    Model(
+      ..empty_model(),
+      view: Reader,
+      active_book_id: Some("book-1"),
+      text: Some(text),
+      flat_paragraphs: pagination.flatten(text),
+      total_sentence_count: 4,
+      // total_pages defaults to 0 — pagination has not run.
+    )
+  let body = reading_state_body_with_anchor("book-1", 0, 2)
+
+  let #(parked, _effect) =
+    reducer.update(prior, ReadingStateLoaded("book-1", Ok(body)))
+  assert parked.resume_anchor == Some(2)
+  assert parked.current_page == 0
+
+  // Now pagination runs at one paragraph per page → 4 pages; the parked
+  // anchor (sentence 2) resolves to page 2, and `resume_anchor` clears.
+  let heights = [#(0, 100.0), #(1, 100.0), #(2, 100.0), #(3, 100.0)]
+  let #(resolved, _effect2) =
+    reducer.update(
+      parked,
+      ParagraphsMeasured(heights: heights, available_height: 150.0),
+    )
+  assert resolved.current_page == 2
+  assert resolved.resume_anchor == None
+}
+
+pub fn update_reading_state_loaded_same_anchor_resolves_across_paginations_test() {
+  // THE CORE REGRESSION at the reducer seam. The SAME persisted anchor
+  // (sentence 2), restored under two DIFFERENT paginations of the same
+  // text, must land on the page that actually CONTAINS that sentence —
+  // NOT on the same raw page index. This is save→load round-trip across
+  // devices: a phone saves the anchor, a desktop restores it.
+  let body = reading_state_body_with_anchor("book-1", 0, 2)
+
+  // "Desktop": two paragraphs per page → sentence 2 on page 1.
+  let desktop = paginated_anchor_model(2)
+  let #(desktop_loaded, _e1) =
+    reducer.update(desktop, ReadingStateLoaded("book-1", Ok(body)))
+
+  // "Phone": one paragraph per page → sentence 2 on page 2.
+  let phone = paginated_anchor_model(1)
+  let #(phone_loaded, _e2) =
+    reducer.update(phone, ReadingStateLoaded("book-1", Ok(body)))
+
+  assert desktop_loaded.current_page == 1
+  assert phone_loaded.current_page == 2
+  // Different raw indices for the same logical position — exactly the
+  // divergence the anchor closes.
+  assert desktop_loaded.current_page != phone_loaded.current_page
 }
 
 // ---------------------------------------------------------------------------
