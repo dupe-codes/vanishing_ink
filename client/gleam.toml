@@ -44,12 +44,31 @@ lustre_dev_tools = ">= 2.0.0 and < 3.0.0"
 [tools.lustre.html]
 title = "Vanishing Ink"
 
-# Favicon. The PNG lives in `client/assets/` and is copied into the dist
+# Icons. All assets live in `client/assets/` and are copied into the dist
 # bundle on build (same flow as the stylesheet below), served at the root.
+# Browser-tab favicon:
 [[tools.lustre.html.links]]
 rel = "icon"
 type = "image/png"
 href = "/vanishing-ink.png"
+
+# iOS home-screen icon ("Add to Home Screen"). iOS ignores PNG alpha and
+# composites on a background, so this variant has an opaque white bg.
+[[tools.lustre.html.links]]
+rel = "apple-touch-icon"
+href = "/apple-touch-icon.png"
+
+# Web app manifest — Android/Chrome home-screen + PWA install icons
+# (icon-192 / icon-512, opaque bg). Named `.json` (not `.webmanifest`)
+# so the static server returns a content-type browsers accept.
+[[tools.lustre.html.links]]
+rel = "manifest"
+href = "/manifest.json"
+
+# Mobile browser address-bar / theme color.
+[[tools.lustre.html.meta]]
+name = "theme-color"
+content = "#ffffff"
 
 [[tools.lustre.html.stylesheets]]
 href = "/styles.css"
