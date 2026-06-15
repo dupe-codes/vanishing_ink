@@ -131,13 +131,19 @@ pub type ReadingState {
     /// and that back-compat fallback, but the anchor wins whenever it is
     /// present (`>= 0`).
     anchor_sentence_index: Int,
-    /// Document-position progress percentage. Computed client-side from
-    /// the anchor's position in the document (`anchor_sentence_index /
-    /// total_sentence_count * 100`) and echoed verbatim on the wire so
-    /// the library card can display the same number the reader sees in
-    /// the progress bar. Stored as a `REAL` in
-    /// `reading_state.percent_progress`, defaulting to `0.0` for rows
-    /// created before the page-based-progress quest.
+    /// Document-position progress percentage in `[0, 100]`. Computed
+    /// client-side as `(last_read_sentence_index + 1) / total_sentence_count
+    /// * 100` — the `+ 1` counts the last sentence on the saved page as
+    /// read, so the final page lands on a clean `100.0`. The server stores
+    /// the value the client last PUT and echoes it verbatim on the read;
+    /// the GET handler is a pure mirror of the on-disk row, no derivation.
+    /// Stored as a `REAL` in `reading_state.percent_progress`, defaulting
+    /// to `0.0` for rows created before the page-based-progress quest.
+    ///
+    /// Note this is the *persisted* document-position figure, derived from
+    /// the last read sentence — not the in-reader progress bar, which the
+    /// client renders from page position via `helpers.progress_percentage`.
+    /// The two coincide only at the 0% / 100% endpoints.
     ///
     /// Deriving from document position rather than the old
     /// `(current_page + 1) / total_pages` makes the figure
@@ -145,6 +151,8 @@ pub type ReadingState {
     /// the same 40% when the library card is rendered on a desktop,
     /// because the numerator (a sentence's document index) and the
     /// denominator (the total sentence count) are both viewport-agnostic.
+    /// Mirrors `client/types.gleam:ReadingState.percent_progress`; see
+    /// `state/helpers.gleam:document_progress_percentage` for the formula.
     percent_progress: Float,
     /// Random destructive deletion settings, persisted per book. The
     /// page-per-page toggle and the once-per-book full-sweep guard are
