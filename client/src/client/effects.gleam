@@ -220,8 +220,24 @@ pub fn save_book_settings(id: String, settings: BookSettings) -> Effect(Msg) {
 /// server side rather than clobbering the latest state.
 pub fn save_reading_state(model: Model) -> Effect(Msg) {
   refresh_session_snapshot(model)
-  case should_save_reading_state(model), model.active_book_id {
-    True, Some(id) -> {
+  case
+    should_save_reading_state(model),
+    model.active_book_id,
+    model.resume_anchor
+  {
+    // A cross-device anchor is parked, waiting for the first pagination to
+    // resolve it (the reading-state GET landed before the first
+    // `ParagraphsMeasured`). In that window `model.pages` is empty and
+    // `model.current_page` is 0 — neither reflects the reader's real
+    // position — so a save here would persist `anchor = -1, current_page =
+    // 0` and clobber the very anchor parked to survive this race, resetting
+    // the reader to the document start on the next load. The state already
+    // on the server is correct; skip the save until the anchor resolves.
+    // This window is hard to reach today (no user gesture fires before the
+    // first render), so this guards a latent fragility rather than a live
+    // bug.
+    _, _, Some(_) -> effect.none()
+    True, Some(id), None -> {
       let mode_value = case model.mode {
         Manual -> "manual"
         RealTime -> "ghost"
@@ -314,7 +330,7 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
         })
       })
     }
-    _, _ -> effect.none()
+    _, _, _ -> effect.none()
   }
 }
 
