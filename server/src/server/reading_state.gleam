@@ -188,8 +188,9 @@ fn validate_anchor_sentence_index(
 }
 
 /// Refuse `percent_progress` values outside `[0.0, 100.0]`. The
-/// client computes the percentage as `(current_page + 1) / total_pages
-/// * 100`, which is mathematically inside the range, but the wire is
+/// client computes the percentage from document position as
+/// `(last_read_sentence_index + 1) / total_sentence_count * 100`, which is
+/// mathematically inside the range, but the wire is
 /// untrusted — a future bug (or a hand-crafted PUT) that posted a
 /// negative or > 100 value would otherwise persist a garbage figure
 /// that the library card would happily render. Clamping at the
