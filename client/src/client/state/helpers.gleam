@@ -114,9 +114,9 @@ pub fn progress_percentage(model: Model) -> Float {
 
 /// Reading progress as a *document-position* percentage, rounded to one
 /// decimal place. Computed as
-/// `anchor_sentence_index / total_sentence_count * 100`, where
-/// `anchor_sentence_index` is the `global_index` of the first sentence on
-/// the reader's current page.
+/// `(last_read_sentence_index + 1) / total_sentence_count * 100`, where
+/// `last_read_sentence_index` is the `global_index` of the *last* sentence
+/// on the reader's current page (`pagination.last_sentence_index_on_page`).
 ///
 /// **Why document position, not page index.** The previous revision
 /// derived progress from `(current_page + 1) / total_pages`, which is
@@ -126,27 +126,41 @@ pub fn progress_percentage(model: Model) -> Float {
 /// viewport-agnostic — a sentence's `global_index` is assigned by the
 /// segmenter over the full text, and the total sentence count is a
 /// property of the book — so the figure a reader saves at 40% on one
-/// device reads back as 40% on any other. This is the same invariant the
-/// sentence anchor gives the reading position itself; deriving progress
-/// from the anchor keeps the two in lock-step.
+/// device reads back on any other rather than being silently recomputed
+/// against a different pagination.
 ///
-/// `anchor < 0` is the "no anchor" sentinel (no pagination yet, or an
-/// empty book) and yields `0.0`, as does a zero `total` — guarding the
-/// divide-by-zero keeps the helper total during the pagination-pending
-/// window, exactly as the page-based predecessor did.
+/// **Why the last sentence, and why `+ 1`.** The figure answers "how far
+/// through the document have I read?", and on any page the reader has read
+/// through its last sentence, so the numerator is the last sentence's
+/// position, not the first. A sentence's `global_index` is zero-based, so
+/// the last sentence of the book is `total_sentence_count - 1`; the `+ 1`
+/// turns that into a full `total / total = 100%` on the final page. This
+/// mirrors what the page-based predecessor did with
+/// `(current_page + 1) / total_pages`: the `+ 1` is why both surfaces read
+/// 100% at the end and a freshly-opened book reads its first page's share
+/// rather than a misleading 0%. The resume anchor keeps using the first
+/// sentence on the page (`first_sentence_index_on_page`) so a restored
+/// reader lands at the top of the page they left; only this display figure
+/// uses the last.
+///
+/// `last_read_sentence_index < 0` is the "no progress" sentinel (no
+/// pagination yet, or an empty book) and yields `0.0`, as does a zero
+/// `total` — guarding the divide-by-zero keeps the helper total during
+/// the pagination-pending window, exactly as the page-based predecessor
+/// did.
 ///
 /// `float.to_precision(_, 1)` snaps the result to a single decimal digit
 /// so the serialised `width:<n>%` style stays a clean prefix, matching
 /// the rounding the page-based `progress_percentage` used.
-pub fn anchor_progress_percentage(
-  anchor_sentence_index: Int,
+pub fn document_progress_percentage(
+  last_read_sentence_index: Int,
   total_sentence_count: Int,
 ) -> Float {
-  case anchor_sentence_index < 0, total_sentence_count {
+  case last_read_sentence_index < 0, total_sentence_count {
     True, _ -> 0.0
     _, 0 -> 0.0
     False, total ->
-      int.to_float(anchor_sentence_index) /. int.to_float(total) *. 100.0
+      int.to_float(last_read_sentence_index + 1) /. int.to_float(total) *. 100.0
       |> float.to_precision(1)
   }
 }

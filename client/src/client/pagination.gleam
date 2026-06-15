@@ -252,3 +252,37 @@ pub fn first_sentence_index_on_page(
       |> option.map(fn(sentence) { sentence.global_index })
   }
 }
+
+/// Read the `global_index` of the *last* sentence on `page`. Mirror of
+/// `first_sentence_index_on_page`, but for the bottom of the page rather
+/// than the top.
+///
+/// Used by the progress display, not the resume anchor: the figure a
+/// reader sees on the library card answers "how far through the document
+/// have I read?", and on any given page the answer is "through the last
+/// sentence on it". Pairing this with a `+ 1` (a sentence's `global_index`
+/// is zero-based, so the last sentence of the book is `total - 1`) lets the
+/// document-position percentage reach a clean 100% on the final page —
+/// exactly the way the page-based `(current_page + 1) / total_pages` did.
+/// The resume anchor keeps using `first_sentence_index_on_page` so a
+/// restored reader lands at the *top* of the page they left.
+///
+/// Returns `None` under the same conditions as
+/// `first_sentence_index_on_page` — the page index is out of range
+/// (pagination has not run, or it is past the last page) or the resolved
+/// page carries no sentences. Callers map `None` onto the `-1` "no
+/// progress" sentinel.
+pub fn last_sentence_index_on_page(
+  pages: List(Page),
+  page: Int,
+) -> Option(Int) {
+  case nth(pages, page) {
+    None -> None
+    Some(found) ->
+      found.paragraphs
+      |> list.flat_map(fn(page_paragraph) { page_paragraph.paragraph.sentences })
+      |> list.last
+      |> option.from_result
+      |> option.map(fn(sentence) { sentence.global_index })
+  }
+}

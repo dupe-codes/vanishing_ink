@@ -2419,50 +2419,73 @@ pub fn progress_percentage_rounds_to_one_decimal_place_test() {
 }
 
 // ---------------------------------------------------------------------------
-// helpers — anchor_progress_percentage (document-position progress)
+// helpers — document_progress_percentage (document-position progress)
 // ---------------------------------------------------------------------------
 //
-// The persisted `percent_progress` derives from the anchor's *document*
-// position (`anchor_sentence_index / total_sentence_count`), not the
-// page index, so the figure is pagination-independent: a reader who
-// saves at 40% on a phone reads back 40% on a desktop. The page-based
-// `progress_percentage` above is retained for the in-reader bar (a
-// single-viewport read); these tests pin the cross-device figure.
+// The persisted `percent_progress` derives from *document* position
+// (`(last_read_sentence_index + 1) / total_sentence_count`), not the page
+// index, so the figure is pagination-independent: it reads back the same
+// on any device rather than being recomputed against a new pagination. The
+// numerator is the LAST sentence on the page (plus one), not the anchor
+// (the first), so the figure reaches 100% on the final page — the same
+// `+ 1` the page-based `(current_page + 1) / total_pages` used. The
+// page-based `progress_percentage` above is retained for the in-reader bar
+// (a single-viewport read); these tests pin the document-position figure
+// at both ends and in the middle.
 
-pub fn anchor_progress_percentage_derives_from_document_position_test() {
-  // Sentence 40 of a 100-sentence book → `40 / 100 * 100 = 40.0`,
-  // independent of how any viewport paginated those sentences.
-  assert state_helpers.anchor_progress_percentage(40, 100) == 40.0
+pub fn document_progress_percentage_derives_from_document_position_test() {
+  // Last-read sentence 39 of a 100-sentence book →
+  // `(39 + 1) / 100 * 100 = 40.0`, independent of how any viewport
+  // paginated those sentences.
+  assert state_helpers.document_progress_percentage(39, 100) == 40.0
 }
 
-pub fn anchor_progress_percentage_is_pagination_independent_test() {
+pub fn document_progress_percentage_is_pagination_independent_test() {
   // The headline cross-device property: the SAME document position
   // yields the SAME percentage regardless of pagination. Both inputs
   // (a sentence's `global_index` and the total sentence count) are
-  // viewport-agnostic, unlike `current_page` / `total_pages`. A reader
-  // at sentence 25 of 50 reads 50% on every device.
-  assert state_helpers.anchor_progress_percentage(25, 50) == 50.0
+  // viewport-agnostic, unlike `current_page` / `total_pages`. Having read
+  // through sentence 24 of 50 reads 50% on every device.
+  assert state_helpers.document_progress_percentage(24, 50) == 50.0
 }
 
-pub fn anchor_progress_percentage_no_anchor_is_zero_test() {
-  // The `-1` "no anchor" sentinel (no pagination yet, or an empty
-  // book) short-circuits to `0.0` rather than emitting a negative
-  // percentage.
-  assert state_helpers.anchor_progress_percentage(-1, 100) == 0.0
+pub fn document_progress_percentage_reaches_100_on_last_page_test() {
+  // THE BOUNDARY CASE that the first-sentence anchor could never hit:
+  // finishing a book must read a full 100%. The last sentence of a
+  // 100-sentence book is `global_index` 99 (zero-based), and
+  // `(99 + 1) / 100 * 100 = 100.0`. This is the regression guard — the
+  // prior `anchor_sentence_index / total` formula returned the first
+  // sentence of the last page (e.g. 95.0) and never the ceiling.
+  assert state_helpers.document_progress_percentage(99, 100) == 100.0
 }
 
-pub fn anchor_progress_percentage_handles_zero_sentences_test() {
+pub fn document_progress_percentage_first_page_is_nonzero_test() {
+  // The opposite end: a freshly-opened book reads its first page's share,
+  // not a misleading 0%. With the last sentence of page one at
+  // `global_index` 9 of a 100-sentence book, `(9 + 1) / 100 * 100 = 10.0`
+  // — exactly the "first of ten pages reads 10%" the page-based bar shows.
+  assert state_helpers.document_progress_percentage(9, 100) == 10.0
+}
+
+pub fn document_progress_percentage_no_progress_is_zero_test() {
+  // The `-1` "no progress" sentinel (no pagination yet, or an empty
+  // book) short-circuits to `0.0` rather than emitting `(−1 + 1) = 0`
+  // by accident of arithmetic — the guard is explicit, not incidental.
+  assert state_helpers.document_progress_percentage(-1, 100) == 0.0
+}
+
+pub fn document_progress_percentage_handles_zero_sentences_test() {
   // An empty book (`total_sentence_count == 0`) is the only
   // divide-by-zero branch and must short-circuit to `0.0`, mirroring
   // the page-based helper's zero-pages guard.
-  assert state_helpers.anchor_progress_percentage(0, 0) == 0.0
+  assert state_helpers.document_progress_percentage(0, 0) == 0.0
 }
 
-pub fn anchor_progress_percentage_rounds_to_one_decimal_place_test() {
+pub fn document_progress_percentage_rounds_to_one_decimal_place_test() {
   // Same one-decimal snap as `progress_percentage` so the serialised
-  // `width:<n>%` style stays a clean prefix: `1 / 3 * 100 = 33.333…`
+  // `width:<n>%` style stays a clean prefix: `(0 + 1) / 3 * 100 = 33.333…`
   // rounds to `33.3`.
-  assert state_helpers.anchor_progress_percentage(1, 3) == 33.3
+  assert state_helpers.document_progress_percentage(0, 3) == 33.3
 }
 
 // ---------------------------------------------------------------------------
@@ -3951,6 +3974,7 @@ pub fn update_reading_state_loaded_resolves_anchor_to_page_test() {
   // page → sentence 2 lives on page 1. The anchor must win over the
   // (deliberately wrong) raw `current_page: 0` in the body: a page
   // index does not survive a device change, the sentence anchor does.
+  //
   let prior = paginated_anchor_model(2)
   let body = reading_state_body_with_anchor("book-1", 0, 2)
 

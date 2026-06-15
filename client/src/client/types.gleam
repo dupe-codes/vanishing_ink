@@ -215,11 +215,11 @@ pub type ReadingState {
     anchor_sentence_index: Int,
     /// Document-position progress percentage in `[0, 100]`. The server
     /// stores the value the client last PUT (computed as
-    /// `anchor_sentence_index / total_sentence_count * 100`) and echoes
-    /// it back on the read; the GET handler stays a pure mirror of the
-    /// on-disk row, no derivation. Deriving from document position rather
-    /// than page index makes the figure viewport-agnostic — see
-    /// `state/helpers.gleam:anchor_progress_percentage`.
+    /// `(last_read_sentence_index + 1) / total_sentence_count * 100`) and
+    /// echoes it back on the read; the GET handler stays a pure mirror of
+    /// the on-disk row, no derivation. Deriving from document position
+    /// rather than page index makes the figure viewport-agnostic — see
+    /// `state/helpers.gleam:document_progress_percentage`.
     percent_progress: Float,
     /// Random destructive deletion settings, persisted per book. The
     /// page-per-page toggle and the once-per-book full-sweep guard ride

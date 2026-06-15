@@ -241,6 +241,16 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
       let anchor_sentence_index =
         pagination.first_sentence_index_on_page(model.pages, model.current_page)
         |> option.unwrap(-1)
+      // Progress is reported through the *last* sentence on the page, not
+      // the anchor (which is the *first*). On a page the reader has read
+      // through to its bottom, so the document-position figure must reach
+      // 100% on the final page — the first-sentence anchor never can,
+      // because the last page's first sentence is strictly below the last.
+      // `None` (pages empty / pathological empty page) maps to the same
+      // `-1` "no progress" sentinel `document_progress_percentage` guards.
+      let last_read_sentence_index =
+        pagination.last_sentence_index_on_page(model.pages, model.current_page)
+        |> option.unwrap(-1)
       let body =
         json.object([
           #("book_id", json.string(id)),
@@ -258,18 +268,20 @@ pub fn save_reading_state(model: Model) -> Effect(Msg) {
           ),
           #("current_page", json.int(model.current_page)),
           #("anchor_sentence_index", json.int(anchor_sentence_index)),
-          // Progress derives from the anchor's document position
-          // (`anchor_sentence_index / total_sentence_count`), not from
-          // the page index, so the persisted figure is
+          // Progress derives from document position
+          // (`(last_read_sentence_index + 1) / total_sentence_count`), not
+          // from the page index, so the persisted figure is
           // pagination-independent: it reads back the same on any device.
-          // See `helpers.anchor_progress_percentage`. `helpers
-          // .progress_percentage` (the old page-based computation) is
+          // Using the *last* sentence on the page (plus one) keeps the
+          // figure in lock-step with the in-reader bar — both reach 100%
+          // on the final page. See `helpers.document_progress_percentage`.
+          // `helpers.progress_percentage` (the page-based computation) is
           // retained for the in-reader progress bar, which is always a
           // single-viewport read.
           #(
             "percent_progress",
-            json.float(helpers.anchor_progress_percentage(
-              anchor_sentence_index,
+            json.float(helpers.document_progress_percentage(
+              last_read_sentence_index,
               model.total_sentence_count,
             )),
           ),
