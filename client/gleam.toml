@@ -44,6 +44,13 @@ lustre_dev_tools = ">= 2.0.0 and < 3.0.0"
 [tools.lustre.html]
 title = "Vanishing Ink"
 
+# Favicon. The PNG lives in `client/assets/` and is copied into the dist
+# bundle on build (same flow as the stylesheet below), served at the root.
+[[tools.lustre.html.links]]
+rel = "icon"
+type = "image/png"
+href = "/vanishing-ink.png"
+
 [[tools.lustre.html.stylesheets]]
 href = "/styles.css"
 
