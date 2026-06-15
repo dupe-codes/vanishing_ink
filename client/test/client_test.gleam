@@ -3975,7 +3975,21 @@ pub fn update_reading_state_loaded_resolves_anchor_to_page_test() {
   // (deliberately wrong) raw `current_page: 0` in the body: a page
   // index does not survive a device change, the sentence anchor does.
   //
-  let prior = paginated_anchor_model(2)
+  // The prior model is seeded with the OPPOSITE of what the body carries
+  // — `RealTime` mode and non-empty erase sets — so the assertions below
+  // verify the reducer arm actually stamps every field it owns from the
+  // loaded state (`mode`, `erased`, `erased_words`), not just the page
+  // resolution. The body's `mode: "manual"` and null bitsets must
+  // overwrite all three. (Asserting the whole `Model` is impractical here
+  // — it carries dozens of unrelated fields — so this pins the arm's
+  // full output set rather than a single field.)
+  let prior =
+    Model(
+      ..paginated_anchor_model(2),
+      mode: RealTime,
+      erased: set.from_list([0, 1]),
+      erased_words: set.from_list([0]),
+    )
   let body = reading_state_body_with_anchor("book-1", 0, 2)
 
   let #(updated, _effect) =
@@ -3984,6 +3998,11 @@ pub fn update_reading_state_loaded_resolves_anchor_to_page_test() {
   assert updated.current_page == 1
   // Resolved inline — nothing parked for a later repagination.
   assert updated.resume_anchor == None
+  // The body's `mode: "manual"` and null bitsets overwrite the prior
+  // `RealTime` / non-empty sets the model carried in.
+  assert updated.mode == Manual
+  assert updated.erased == set.new()
+  assert updated.erased_words == set.new()
 }
 
 pub fn update_reading_state_loaded_legacy_row_falls_back_to_current_page_test() {
