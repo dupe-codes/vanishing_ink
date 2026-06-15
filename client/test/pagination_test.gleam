@@ -395,6 +395,54 @@ pub fn first_sentence_index_on_page_is_none_when_page_out_of_range_test() {
   assert pagination.first_sentence_index_on_page(pages, 99) == None
 }
 
+pub fn last_sentence_index_on_page_reads_the_bottom_sentence_test() {
+  // Mirror of the `first_sentence` top-sentence test, for the *bottom*
+  // of the page. Two paragraphs per page makes each page multi-sentence:
+  // page 0 holds sentences 0 and 1, page 1 holds 2 and 3. The last
+  // sentence is therefore distinct from the first on the same page —
+  // page 0 opens on 0 but closes on 1 — which is precisely the walk the
+  // document-position percentage relies on (`+ 1` on the last sentence
+  // reaches a clean 100% on the final page). Pinning both endpoints of
+  // page 0 proves this reads the tail, not the head.
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+
+  // Bottom sentence of each page.
+  assert pagination.last_sentence_index_on_page(pages, 0) == Some(1)
+  assert pagination.last_sentence_index_on_page(pages, 1) == Some(3)
+
+  // And on page 0 the bottom (1) is genuinely below the top (0) — the
+  // two primitives read opposite ends of the same multi-sentence page.
+  assert pagination.first_sentence_index_on_page(pages, 0) == Some(0)
+  assert pagination.last_sentence_index_on_page(pages, 0)
+    != pagination.first_sentence_index_on_page(pages, 0)
+}
+
+pub fn last_sentence_index_on_page_is_none_when_page_out_of_range_test() {
+  // Same `None` conditions as `first_sentence_index_on_page`: pagination
+  // pending (empty pages) or an index past the last page. The caller
+  // maps `None` onto the `-1` "no progress" sentinel.
+  assert pagination.last_sentence_index_on_page([], 0) == None
+
+  let flat = pagination.flatten(four_sentence_book())
+  let heights =
+    pagination.heights_from_pairs([
+      #(0, 100.0),
+      #(1, 100.0),
+      #(2, 100.0),
+      #(3, 100.0),
+    ])
+  let pages = pagination.calculate_pages(flat, heights, 250.0)
+  assert pagination.last_sentence_index_on_page(pages, 99) == None
+}
+
 pub fn same_anchor_resolves_across_different_paginations_test() {
   // THE CORE REGRESSION. The same sentence anchor (global_index 2),
   // restored under two DIFFERENT paginations of the same text, must
