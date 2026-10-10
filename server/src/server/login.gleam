@@ -19,7 +19,7 @@ pub fn handle(
     "content-security-policy",
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
   )
-  |> response.set_header("referrer-policy", "no-referrer")
+  |> response.set_header("referrer-policy", "same-origin")
 }
 
 fn submit(

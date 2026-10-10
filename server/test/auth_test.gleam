@@ -207,6 +207,7 @@ pub fn login_form_public_and_self_contained_test() {
   with_context(fn(ctx) {
     let result = router.handle_request(request(http.Get, "/login"), ctx)
     assert result.status == 200
+    assert response.get_header(result, "referrer-policy") == Ok("same-origin")
     assert string.contains(
       simulate.read_body(result),
       "autocomplete=\"current-password\"",
@@ -288,6 +289,18 @@ pub fn cross_origin_login_rejected_test() {
       |> simulate.form_body([#("password", "test-password")])
       |> simulate.header("origin", "https://evil.example")
     assert router.handle_request(req, ctx).status == 400
+  })
+}
+
+pub fn null_origin_login_rejected_test() {
+  with_context(fn(ctx) {
+    let req =
+      request(http.Post, "/login")
+      |> simulate.form_body([#("password", "test-password")])
+      |> simulate.header("origin", "null")
+    let result = router.handle_request(req, ctx)
+    assert result.status == 400
+    assert response.get_header(result, "set-cookie") == Error(Nil)
   })
 }
 
