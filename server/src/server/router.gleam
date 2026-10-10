@@ -25,6 +25,7 @@ import gleam/result
 import gleam/string
 import server/clock
 import server/db
+import server/login
 import server/reading_state
 import server/router/metadata
 import server/sessions
@@ -43,6 +44,7 @@ pub fn handle_request(req: Request, ctx: Context) -> Response {
   use req <- web.middleware(req, ctx)
 
   case wisp.path_segments(req) {
+    ["login"] -> login.handle(req, ctx.auth_verifier, ctx.login_throttle)
     // API routes
     ["api", "status"] -> api_status(req)
     ["api", "books"] -> books_collection(req, ctx)

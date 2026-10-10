@@ -27,13 +27,14 @@ vanishing_ink/
 - [just](https://github.com/casey/just) (recipe runner)
 
 The Lustre dev tools fetch their own bundled Bun runtime on first
-client build — nothing else to install.
+client build. Set `AUTH_PASSWORD_HASH` before starting the server. See
+the authentication section below.
 
 ## Common tasks
 
 | Command             | Effect                                                |
 | ------------------- | ----------------------------------------------------- |
-| `just dev`          | Start the BEAM server on `http://localhost:3000`      |
+| `just run`          | Build the client and start the server on `http://localhost:3000` |
 | `just build`        | Build the server and the client JS bundle             |
 | `just server-build` | Build the BEAM server only                            |
 | `just client-build` | Build the Lustre client bundle to `client/dist/`      |
@@ -46,17 +47,75 @@ Run `just` with no arguments for the full recipe listing.
 ## Smoke check
 
 ```sh
-just dev &
-curl http://localhost:3000/
+just run &
+curl http://localhost:3000/api/status
 # => {"status":"ok"}
 ```
 
-For the client, `just client-build` produces `client/dist/index.html`
-mounting the Lustre app at `#app`. Serve `client/dist/` with any static
-file server (or open `index.html` after adjusting the script path) to
-see the bundled sample text rendered as per-word `<span>`s under
-`#vi-shell` — a brief `Loading...` placeholder is replaced once the
-hardcoded sample has been dispatched through the update loop.
+Open `http://localhost:3000/` and sign in to use the library and reader.
+The BEAM server serves the client bundle and API from the same origin.
+
+## Authentication
+
+The app uses one shared password. It has no users table or separate
+libraries. The server protects the API, static assets, and app pages.
+Only `/login` and the GET/HEAD health probe at `/api/status` are public.
+Unauthenticated API requests receive `401`. Page requests redirect to
+`/login` with `303`.
+
+The middleware checks CSRF headers and authentication before serving
+static files or routing requests. Scripted POST, PUT, PATCH, and DELETE
+requests must send the session cookie and a matching `Origin` or `Referer`.
+Without either header, CSRF protection removes the cookie and authentication
+returns `401`. For local scripts, use `Origin: http://localhost:3000`.
+For production scripts, use the actual HTTPS origin, including any port.
+
+Generate a salted PBKDF2-HMAC-SHA256 verifier with Python 3:
+
+```sh
+export AUTH_PASSWORD_HASH="$(python3 - <<'PY'
+import base64
+import getpass
+import hashlib
+import secrets
+
+password = getpass.getpass("New Vanishing Ink password: ").encode("utf-8")
+if not 1 <= len(password) <= 1024:
+    raise SystemExit("Password must contain 1 to 1024 UTF-8 bytes")
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac("sha256", password, salt, 600000, 32)
+print("pbkdf2-sha256$600000$" + base64.b64encode(salt).decode()
+      + "$" + base64.b64encode(digest).decode())
+PY
+)"
+just run
+```
+
+Missing or invalid `AUTH_PASSWORD_HASH` prevents startup. Use a long,
+unique password. Do not store the password or verifier in the repository.
+The fixed verifier format uses a 16-byte salt, 600,000 iterations, and
+a 32-byte digest. The login endpoint accepts URL-encoded forms only.
+It limits the body to 4 KB and the password to 1,024 UTF-8 bytes.
+
+An atomic, app-wide throttle permits at most one password attempt every
+two seconds. It counts successful, unsuccessful, and malformed attempts.
+Other attempts receive `429` with `Retry-After: 2`. The throttle uses
+constant memory and resets on restart. An attacker can occupy the login
+slots and delay legitimate login. Password derivation also permits only
+one concurrent operation, including requests with delayed bodies. Existing
+authenticated sessions and health probes do not consume slots. This is
+not a distributed rate limiter.
+
+Signed cookies expire after 60 days. The server checks the issue time
+and rejects expired or future-issued cookies. Cookies use HttpOnly,
+SameSite=Lax, and Secure, except for local HTTP development. Changing
+the verifier or signing key invalidates existing sessions. There is no
+individual session revocation. The server sends `Cache-Control: private,
+no-store` for protected responses. Offline support remains future work.
+
+There is no clock-skew tolerance. If the server clock moves backward,
+cookies issued after the new time fail authentication until the clock
+catches up. Sign in again to obtain a cookie with the current issue time.
 
 ## Deployment
 
@@ -69,9 +128,8 @@ with a SQLite volume and scale-to-zero. A push to `main` triggers
 
 ### Configuration
 
-The server reads its configuration from the environment, falling back to
-the dev defaults baked in for `just run` (so local development needs no
-env at all):
+The server reads its configuration from the environment. Most variables
+have development defaults. The password verifier is always required:
 
 | Variable          | Default                  | Notes                                              |
 | ----------------- | ------------------------ | -------------------------------------------------- |
@@ -79,7 +137,8 @@ env at all):
 | `HOST`            | `0.0.0.0`                | Bind address.                                      |
 | `DATABASE_PATH`   | `./vanishing_ink.db`     | SQLite file; on Fly this lives on the volume.      |
 | `STATIC_DIR`      | `../client/dist`         | Lustre bundle; `/app/static` in the container.     |
-| `SECRET_KEY_BASE` | random per boot          | Signed-cookie key. **Must** be set in production.  |
+| `SECRET_KEY_BASE` | random per boot          | Signed-cookie key, at least 64 bytes. **Must** be set in production. |
+| `AUTH_PASSWORD_HASH` | none                  | Required PBKDF2 verifier. Missing or malformed values prevent startup. |
 
 `SECRET_KEY_BASE` defaults to a fresh random string each boot, which is
 fine in dev but would invalidate every signed cookie on restart (and on
@@ -98,13 +157,21 @@ fly volumes create vanishing_ink_data --region iad --size 1
 # 3. Set a stable signed-cookie key (generate any 64+ char secret).
 fly secrets set SECRET_KEY_BASE="$(openssl rand -hex 64)"
 
-# 4. First deploy from your machine.
+# 4. Set the password verifier generated above before deploying.
+fly secrets set AUTH_PASSWORD_HASH="$AUTH_PASSWORD_HASH"
+
+# 5. First deploy from your machine.
 fly deploy
 
-# 5. Mint a deploy token and add it to GitHub as the FLY_API_TOKEN
+# 6. Mint a deploy token and add it to GitHub as the FLY_API_TOKEN
 #    repository secret so CI can deploy on subsequent pushes to main.
 fly tokens create deploy
 ```
 
 After the one-time setup, every push to `main` that passes tests deploys
 automatically.
+
+For an existing deployment, set `AUTH_PASSWORD_HASH` before deploying
+this version. Otherwise the new server refuses to start. A push to
+`main` can trigger deployment automatically, so set the secret before
+merging the authentication change.

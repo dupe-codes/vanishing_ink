@@ -10,6 +10,7 @@
 //// an encoder field, the `last_read_at` write) surfaces as a value
 //// mismatch on the first assertion that crosses it.
 
+import authenticated_router as router
 import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/http
@@ -20,9 +21,9 @@ import gleam/option.{type Option, None, Some}
 import gleam/order
 import gleam/string
 import gleeunit
+import server/auth
 import server/db
 import server/db_sessions
-import server/router
 import server/types.{
   type BookSettings, type ReadingSession, type ReadingState, type UserSettings,
   BookSettings, ReadingSession, ReadingState,
@@ -42,7 +43,12 @@ fn with_context(f: fn(web.Context) -> Nil) -> Nil {
   // ":memory:" gives every test an isolated database that disappears
   // when the connection closes — perfect for hermetic testing.
   let assert Ok(conn) = db.initialize(":memory:")
-  f(web.Context(db: conn, static_dir: "../client/dist"))
+  f(web.Context(
+    db: conn,
+    static_dir: "../client/dist",
+    auth_verifier: router.verifier(),
+    login_throttle: auth.new_throttle(),
+  ))
   let assert Ok(_) = sqlight.close(conn)
   Nil
 }
@@ -52,7 +58,12 @@ fn with_context(f: fn(web.Context) -> Nil) -> Nil {
 // CI. These tests use a checked-in fixture so they are self-contained.
 fn with_spa_context(f: fn(web.Context) -> Nil) -> Nil {
   let assert Ok(conn) = db.initialize(":memory:")
-  f(web.Context(db: conn, static_dir: "test/fixtures"))
+  f(web.Context(
+    db: conn,
+    static_dir: "test/fixtures",
+    auth_verifier: router.verifier(),
+    login_throttle: auth.new_throttle(),
+  ))
   let assert Ok(_) = sqlight.close(conn)
   Nil
 }

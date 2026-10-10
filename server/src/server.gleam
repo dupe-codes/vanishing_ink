@@ -11,6 +11,7 @@
 import gleam/erlang/process
 import gleam/string
 import mist
+import server/auth
 import server/config
 import server/db
 import server/router
@@ -46,7 +47,13 @@ pub fn main() -> Nil {
       panic as "db.initialize failed; see the logged reason above"
     }
   }
-  let context = web.Context(db: connection, static_dir: config.static_dir)
+  let context =
+    web.Context(
+      db: connection,
+      static_dir: config.static_dir,
+      auth_verifier: config.auth_verifier,
+      login_throttle: auth.new_throttle(),
+    )
 
   let start_result =
     router.handle_request(_, context)

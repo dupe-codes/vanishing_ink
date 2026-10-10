@@ -1,18 +1,7 @@
-//// Default middleware stack applied to every request. Mirrors the
-//// composition recommended by the upstream Wisp hello-world example —
-//// method override, request logging, crash rescue, HEAD rewriting, and
-//// CSRF protection — plus `wisp.serve_static` for the Lustre client
-//// bundle so the BEAM server is the single HTTP origin during dev.
-////
-//// Also defines the application `Context` — the shared resource bundle
-//// the router threads through every handler. Today that's the SQLite
-//// connection and the client dist directory; new long-lived state
-//// (caches, config) should land here so the routing layer stays a thin
-//// pattern-matcher.
-
 import gleam/dynamic/decode
 import gleam/list
 import gleam/string
+import server/auth
 import sqlight
 import wisp
 
@@ -24,7 +13,12 @@ import wisp
 /// the BEAM server can serve JS, CSS, and the SPA shell alongside the
 /// API — one origin, no proxy, no CORS.
 pub type Context {
-  Context(db: sqlight.Connection, static_dir: String)
+  Context(
+    db: sqlight.Connection,
+    static_dir: String,
+    auth_verifier: auth.Verifier,
+    login_throttle: auth.Throttle,
+  )
 }
 
 pub fn middleware(
@@ -37,6 +31,7 @@ pub fn middleware(
   use <- wisp.rescue_crashes
   use req <- wisp.handle_head(req)
   use req <- wisp.csrf_known_header_protection(req)
+  use <- auth.require_auth(req, ctx.auth_verifier)
 
   // Serve client assets (client.js, styles.css, etc.) from the Lustre
   // build output. Requests that don't match a file fall through to the

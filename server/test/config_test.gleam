@@ -11,6 +11,7 @@
 ////   - `parse_non_empty`      — unset, explicitly-empty, set value.
 ////   - `parse_secret_key_base`— unset (random mint), empty, set value.
 
+import gleam/string
 import server/config
 
 // An unset PORT (`envoy.get` returns `Error(Nil)`) falls back to the
@@ -93,5 +94,11 @@ pub fn parse_secret_key_base_empty_rejected_test() {
 
 // A set SECRET_KEY_BASE is used as-is so it survives restarts.
 pub fn parse_secret_key_base_set_test() {
-  assert config.parse_secret_key_base(Ok("deadbeef")) == Ok("deadbeef")
+  let key = string.repeat("a", 64)
+  assert config.parse_secret_key_base(Ok(key)) == Ok(key)
+}
+
+pub fn parse_secret_key_base_short_rejected_test() {
+  assert config.parse_secret_key_base(Ok(string.repeat("a", 63)))
+    == Error("SECRET_KEY_BASE must contain at least 64 bytes")
 }

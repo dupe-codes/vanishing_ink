@@ -4,6 +4,7 @@ description = "Vanishing Ink HTTP server. Compiles to the Erlang/BEAM target and
 target = "erlang"
 
 [dependencies]
+gleam_crypto = ">= 1.6.0 and < 2.0.0"
 gleam_stdlib = ">= 0.70.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"

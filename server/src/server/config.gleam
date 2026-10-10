@@ -1,13 +1,8 @@
-//// Server configuration loaded from the environment. The same binary
-//// runs in dev and in production; every value falls back to the
-//// historical hardcoded default so `just run` is unchanged with no env
-//// set. Parsing lives here, behind a pure `parse_port` seam and a thin
-//// `load_config` wire-up, so the env-parse branching is unit-testable
-//// rather than buried inline in `server.main`.
-
 import envoy
 import gleam/int
 import gleam/result
+import gleam/string
+import server/auth
 import wisp
 
 // Historical hardcoded defaults. Each is the value the server used
@@ -30,6 +25,7 @@ pub type Config {
     database_path: String,
     static_dir: String,
     secret_key_base: String,
+    auth_verifier: auth.Verifier,
   )
 }
 
@@ -105,25 +101,24 @@ pub fn parse_non_empty(
 //                          where the var is always set.
 //   - set but empty    -> fail fast; an empty signing key is a security
 //                          hole, not a usable default.
-//   - set, non-empty   -> use it as-is so it survives restarts and
-//                          scale-to-zero.
 pub fn parse_secret_key_base(
   raw: Result(String, Nil),
 ) -> Result(String, String) {
   case raw {
     Error(Nil) -> Ok(wisp.random_string(64))
     Ok("") -> Error("SECRET_KEY_BASE must not be empty")
-    Ok(value) -> Ok(value)
+    Ok(value) ->
+      case string.byte_size(value) >= 64 {
+        True -> Ok(value)
+        False -> Error("SECRET_KEY_BASE must contain at least 64 bytes")
+      }
   }
 }
 
-// Read configuration from the environment. The only failure modes are an
-// explicitly-set-but-invalid value (a malformed/out-of-range `PORT`, or an
-// explicitly-empty `HOST`/`DATABASE_PATH`/`STATIC_DIR`/`SECRET_KEY_BASE`);
-// every value has a safe default when unset, so this returns `Error` only
-// when production config is genuinely wrong and the server should refuse
-// to boot rather than fail late and opaquely.
 pub fn load_config() -> Result(Config, String) {
+  use auth_verifier <- result.try(
+    parse_auth_password_hash(envoy.get("AUTH_PASSWORD_HASH")),
+  )
   use port <- result.try(parse_port(envoy.get("PORT")))
 
   // `0.0.0.0` listens on all interfaces so the app is reachable from
@@ -162,5 +157,19 @@ pub fn load_config() -> Result(Config, String) {
     database_path: database_path,
     static_dir: static_dir,
     secret_key_base: secret_key_base,
+    auth_verifier: auth_verifier,
   ))
+}
+
+pub fn parse_auth_password_hash(
+  raw: Result(String, Nil),
+) -> Result(auth.Verifier, String) {
+  case raw {
+    Error(_) -> Error("AUTH_PASSWORD_HASH is required")
+    Ok(value) ->
+      auth.parse_verifier(value)
+      |> result.map_error(fn(_) {
+        "AUTH_PASSWORD_HASH is not a valid PBKDF2 verifier"
+      })
+  }
 }
